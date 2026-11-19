@@ -23,9 +23,11 @@ import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.callContent;
+import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
 import static com.google.adk.workflow.WorkflowResumeTesting.interrupt;
 import static com.google.adk.workflow.WorkflowResumeTesting.modelText;
+import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.Iterables.getOnlyElement;
@@ -52,12 +54,15 @@ import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils.EchoTool;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
@@ -67,10 +72,13 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
@@ -663,6 +671,235 @@ public final class LlmAgentAsNodeTest {
   }
 
   @Test
+  public void runAsync_resumableAppRetriesAWorkflowWhoseAgentsToolFailed_callsTheModelAgain() {
+    TestLlm model = modelCallingLookupUntilAnswered();
+    LlmAgent worker = LlmAgent.builder().name("worker").model(model).tools(failsOnce()).build();
+    Workflow retried =
+        Workflow.builder()
+            .name("retried")
+            .edges(new Edge(Start.INSTANCE, worker))
+            .config(oneRetry())
+            .build();
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, retried)).build());
+
+    ImmutableList<Event> events = session.turn(go());
+
+    assertThat(model.getRequests()).hasSize(3);
+    assertThat(events.stream().map(Event::stringifyContent)).contains("found it");
+  }
+
+  @Test
+  public void runAsync_resumableAppRetriesATimedOutWorkflow_callsItsAgentsModelAgain() {
+    TestLlm model = modelCallingLookupUntilAnswered();
+    LlmAgent worker =
+        LlmAgent.builder()
+            .name("worker")
+            .model(model)
+            .tools(new FlakyLookupTool(Single.never()))
+            .build();
+    Workflow retried =
+        Workflow.builder()
+            .name("retried")
+            .edges(new Edge(Start.INSTANCE, worker))
+            .config(oneRetry().toBuilder().timeout(Duration.ofMillis(300)).build())
+            .build();
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, retried)).build());
+
+    ImmutableList<Event> events = session.turn(go());
+
+    assertThat(model.getRequests()).hasSize(3);
+    assertThat(events.stream().map(Event::stringifyContent)).contains("found it");
+  }
+
+  @Test
+  public void runAsync_resumableAppRetriesATimedOutFanOut_callsItsAgentsModelAgain() {
+    TestLlm model = modelCallingLookupUntilAnswered();
+    LlmAgent worker =
+        LlmAgent.builder()
+            .name("worker")
+            .model(model)
+            .tools(new FlakyLookupTool(Single.never()))
+            .build();
+    Workflow sub = Workflow.builder().name("sub").edges(new Edge(Start.INSTANCE, worker)).build();
+    Workflow retried =
+        Workflow.builder()
+            .name("retried")
+            .edges(new Edge(Start.INSTANCE, sub), new Edge(Start.INSTANCE, TestNode.of("other")))
+            .config(oneRetry().toBuilder().timeout(Duration.ofMillis(300)).build())
+            .build();
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, retried)).build());
+
+    ImmutableList<Event> events = session.turn(go());
+
+    assertThat(model.getRequests()).hasSize(3);
+    assertThat(events.stream().map(Event::stringifyContent)).contains("found it");
+  }
+
+  @Test
+  public void runAsync_retriedFanOutWithTheFailedCallLastOnItsBranch_runsTheCallAgain() {
+    TestLlm model = modelCallingLookupUntilAnswered();
+    LlmAgent worker =
+        LlmAgent.builder()
+            .name("worker")
+            .model(model)
+            .tools(new FlakyLookupTool(Single.never()))
+            .build();
+    Workflow retried =
+        Workflow.builder()
+            .name("retried")
+            .edges(new Edge(Start.INSTANCE, worker), new Edge(Start.INSTANCE, TestNode.of("other")))
+            .config(oneRetry().toBuilder().timeout(Duration.ofMillis(300)).build())
+            .build();
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, retried)).build());
+
+    ImmutableList<Event> events = session.turn(go());
+
+    // Nothing follows the call on the agent's own branch, so the retry runs it, as before.
+    assertThat(
+            events.stream()
+                .flatMap(event -> event.functionResponses().stream())
+                .map(response -> response.id().orElse("")))
+        .contains("call_1");
+    assertThat(events.stream().map(Event::stringifyContent)).contains("found it");
+  }
+
+  @Test
+  public void runAsync_resumableAppRetriesAnAgentWhoseToolFailed_callsTheModelAgain() {
+    TestLlm model = modelCallingLookupUntilAnswered();
+    LlmAgent worker =
+        withNodeConfig(
+            LlmAgent.builder().name("worker").model(model).tools(failsOnce()), oneRetry());
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, worker)).build());
+
+    ImmutableList<Event> events = session.turn(go());
+
+    assertThat(model.getRequests()).hasSize(3);
+    assertThat(events.stream().map(Event::stringifyContent)).contains("found it");
+  }
+
+  @Test
+  public void runAsync_resumableAppRetriesAnAgentWhoseToolTimedOut_callsTheModelAgain() {
+    TestLlm model = modelCallingLookupUntilAnswered();
+    LlmAgent worker =
+        withNodeConfig(
+            LlmAgent.builder()
+                .name("worker")
+                .model(model)
+                .tools(new FlakyLookupTool(Single.never())),
+            oneRetry().toBuilder().timeout(Duration.ofMillis(300)).build());
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, worker)).build());
+
+    ImmutableList<Event> events = session.turn(go());
+
+    assertThat(model.getRequests()).hasSize(3);
+    assertThat(events.stream().map(Event::stringifyContent)).contains("found it");
+  }
+
+  @Test
+  public void runAsync_resumableAppRetriesASingleTurnAgentWhoseToolFailed_outputsItsAnswer() {
+    LlmAgent worker =
+        withNodeConfig(
+            LlmAgent.builder()
+                .name("worker")
+                .model(modelCallingLookupUntilAnswered())
+                .mode(AgentMode.SINGLE_TURN)
+                .tools(failsOnce()),
+            oneRetry());
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder()
+                .name("wf")
+                .edges(new Edge(Start.INSTANCE, worker), new Edge(worker, captureInput("reply")))
+                .build());
+
+    ImmutableList<Event> events = session.turn(go());
+
+    assertThat(replyInput(events)).isEqualTo("found it");
+  }
+
+  @Test
+  public void runAsync_loopBackToAnAgentWhoseEarlierRunRetried_callsTheModelAgain() {
+    TestLlm model =
+        TestLlm.create(
+            createFunctionCallLlmResponse("call_1", "lookup", ImmutableMap.of()),
+            createTextLlmResponse("draft"),
+            createTextLlmResponse("final"));
+    LlmAgent worker =
+        withNodeConfig(
+            LlmAgent.builder().name("worker").model(model).tools(failsOnce()), oneRetry());
+    AtomicInteger reviews = new AtomicInteger();
+    Node review =
+        new TestNode(
+            "review",
+            (ctx, input) -> {
+              String route = reviews.incrementAndGet() == 1 ? "again" : "done";
+              ctx.routes(ImmutableList.of(new Route.Tag(route)));
+              return Flowable.empty();
+            });
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder()
+                .name("wf")
+                .edges(
+                    new Edge(Start.INSTANCE, worker),
+                    new Edge(worker, review),
+                    new Edge(review, worker, new Route.Tag("again")))
+                .build());
+
+    session.advance(go());
+
+    assertThat(model.getRequests()).hasSize(3);
+  }
+
+  @Test
+  public void runAsync_agentAfterAnAgentWhoseFailedAttemptAskedForApproval_callsItsModel() {
+    Content approveAndLookUp =
+        Content.builder()
+            .role("model")
+            .parts(
+                Part.builder()
+                    .functionCall(FunctionCall.builder().name("pendingTool").id("p1").build())
+                    .build(),
+                Part.builder()
+                    .functionCall(FunctionCall.builder().name("lookup").id("c1").build())
+                    .build())
+            .build();
+    LlmAgent first =
+        withNodeConfig(
+            LlmAgent.builder()
+                .name("first")
+                .model(
+                    TestLlm.create(
+                        createLlmResponse(approveAndLookUp), createTextLlmResponse("first done")))
+                .tools(pendingFunctionTool(), failsOnce()),
+            oneRetry());
+    TestLlm secondModel = TestLlm.create(createTextLlmResponse("second done"));
+    LlmAgent second = LlmAgent.builder().name("second").model(secondModel).build();
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder()
+                .name("wf")
+                .edges(new Edge(Start.INSTANCE, first), new Edge(first, second))
+                .build());
+
+    session.advance(go());
+
+    assertThat(secondModel.getRequests()).hasSize(1);
+  }
+
+  @Test
   public void runAsync_singleTurnNodesRunningAtOnce_doNotSeeEachOthersInput() {
     CountDownLatch otherAsked = new CountDownLatch(1);
     // The other node's model answers only once this node asked, so both inputs exist at once.
@@ -1056,6 +1293,36 @@ public final class LlmAgentAsNodeTest {
         .build();
   }
 
+  /** Returns a model that calls {@code lookup}, calls it again, then answers "found it". */
+  private static TestLlm modelCallingLookupUntilAnswered() {
+    return TestLlm.create(
+        createFunctionCallLlmResponse("call_1", "lookup", ImmutableMap.of()),
+        createFunctionCallLlmResponse("call_2", "lookup", ImmutableMap.of()),
+        createTextLlmResponse("found it"));
+  }
+
+  private static NodeConfig oneRetry() {
+    return NodeConfig.builder()
+        .retryConfig(
+            RetryConfig.builder().maxAttempts(2).initialDelay(Duration.ZERO).jitter(0).build())
+        .build();
+  }
+
+  /** Returns the agent that {@code builder} builds, as a node with {@code config}. */
+  private static LlmAgent withNodeConfig(LlmAgent.Builder builder, NodeConfig config) {
+    return new LlmAgent(builder) {
+      @Override
+      public NodeConfig config() {
+        return config;
+      }
+    };
+  }
+
+  /** Returns a {@code lookup} tool whose first call fails, as a flaky backend's does. */
+  private static BaseTool failsOnce() {
+    return new FlakyLookupTool(Single.error(new IllegalStateException("backend down")));
+  }
+
   /** Returns every text and function name in {@code request}'s contents, for substring checks. */
   private static String textsOf(LlmRequest request) {
     return request.contents().stream()
@@ -1191,6 +1458,29 @@ public final class LlmAgentAsNodeTest {
             .runId("1")
             .resumeInputs(answers)
             .build());
+  }
+
+  /** A {@code lookup} tool whose first call gives {@code firstCall}; later calls succeed. */
+  private static final class FlakyLookupTool extends BaseTool {
+    private final Single<Map<String, Object>> firstCall;
+    private final AtomicInteger calls = new AtomicInteger();
+
+    FlakyLookupTool(Single<Map<String, Object>> firstCall) {
+      super("lookup", "Looks something up.");
+      this.firstCall = firstCall;
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(FunctionDeclaration.builder().name("lookup").build());
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+      return calls.incrementAndGet() == 1
+          ? firstCall
+          : Single.just(ImmutableMap.of("result", "found"));
+    }
   }
 
   private record Trip(String city, int days) {}
