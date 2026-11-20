@@ -42,6 +42,7 @@ import com.fasterxml.jackson.databind.type.TypeFactory;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Streams;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
@@ -57,6 +58,7 @@ import org.jspecify.annotations.Nullable;
 /**
  * Infers the schema of a {@link FunctionNode} port's JSON form from the port's type. An input
  * port's schema lists the keys its Jackson mapper reads, and an output port's the keys it writes.
+ * An input port's schema also lists, as optional, the keys the mapper writes but does not read.
  */
 final class PortSchemas {
 
@@ -85,7 +87,7 @@ final class PortSchemas {
 
   /**
    * Returns the schema of {@code type}'s JSON form as an output port writes it or an input port
-   * reads it, or {@code null} if that form has no fixed shape or {@code type} contains itself.
+   * takes it, or {@code null} if that form has no fixed shape or {@code type} contains itself.
    */
   static @Nullable Schema infer(JavaType type, boolean output) {
     PortSchemas inference = new PortSchemas(output);
@@ -218,6 +220,15 @@ final class PortSchemas {
                   || bean.required().contains(property.getName()))) {
         required.add(property.getName());
       }
+    }
+    Schema writtenSchema = output ? null : infer(type, /* output= */ true);
+    if (writtenSchema != null) {
+      // The mapper skips a key it writes but does not read, so a type's output fits its own input.
+      ImmutableMap<String, Schema> readKeys = properties.buildKeepingLast();
+      properties.putAll(
+          Maps.filterKeys(
+              writtenSchema.properties().orElse(ImmutableMap.of()),
+              key -> !readKeys.containsKey(key)));
     }
     enclosing.remove(type);
     ImmutableList<String> requiredNames = required.build();

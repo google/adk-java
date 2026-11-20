@@ -123,11 +123,18 @@ final class Graph {
                 + (function != null
                         && function.acceptsExtraKeysWithASchema()
                         && SchemaFit.fits(output.get(), input.get(), /* closed= */ false)
-                    ? " It was inferred from the port's type and takes no other keys; set"
-                        + " inputSchema on the builder or read the objects as Maps to accept them."
+                    ? extraKeysHint(output.get(), input.get())
                     : ""));
       }
     }
+  }
+
+  private static String extraKeysHint(Schema output, Schema input) {
+    ImmutableSet<String> keys = SchemaFit.extraKeys(output, input);
+    return " The port's type, which the input schema was inferred from, does not read "
+        + (keys.isEmpty() ? "some of these keys" : "these keys: " + String.join(", ", keys))
+        + ". To accept them, set inputSchema on the builder or read the objects as Maps; if a"
+        + " derived getter writes one, mark it @JsonIgnore.";
   }
 
   ImmutableList<Node> nodes() {
