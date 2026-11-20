@@ -45,8 +45,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -55,6 +57,7 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.Callbacks.AfterModelCallback;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LiveRequest;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.ParallelAgent;
@@ -116,6 +119,8 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import io.reactivex.rxjava3.subjects.CompletableSubject;
+import io.reactivex.rxjava3.subjects.MaybeSubject;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Instant;
@@ -129,6 +134,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
@@ -139,6 +145,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mockito;
 
 @RunWith(JUnit4.class)
@@ -2438,6 +2445,203 @@ public final class RunnerTest {
     testSubscriber.await();
     testSubscriber.assertComplete();
     assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void runLive_runsBeforeRunAndAfterRunCallbacks() throws Exception {
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    InOrder inOrder = Mockito.inOrder(plugin);
+    inOrder.verify(plugin).beforeRunCallback(any());
+    inOrder.verify(plugin, atLeastOnce()).onEventCallback(any(), any());
+    inOrder.verify(plugin).afterRunCallback(any());
+  }
+
+  @Test
+  public void runLive_callerCancels_runsAfterRunCallback() throws Exception {
+    // The model stream stays open, so only caller cancellation ends the run.
+    TestLlm liveLlm = createTestLlm(Flowable::never);
+    LlmAgent liveAgent = createTestAgentBuilder(liveLlm).build();
+    Runner liveRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(liveAgent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
+    Session liveSession = liveRunner.sessionService().createSession("test", "user").blockingGet();
+    AtomicBoolean closedBeforeAfterRun = new AtomicBoolean();
+    when(plugin.afterRunCallback(any()))
+        .thenAnswer(invocation -> {
+          closedBeforeAfterRun.set(
+              liveLlm.getLiveRequestHistory().stream().anyMatch(LiveRequest::shouldClose));
+          return Completable.complete();
+        });
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        liveRunner.runLive(liveSession, liveRequestQueue, RunConfig.builder().build()).test();
+    liveRequestQueue.content(createContent("from user"));
+    verify(plugin, never()).afterRunCallback(any());
+
+    testSubscriber.cancel();
+
+    verify(plugin).afterRunCallback(any());
+    // As in ADK Python, afterRun runs only after the agent stops and closes its connection.
+    assertThat(closedBeforeAfterRun.get()).isTrue();
+  }
+
+  @Test
+  public void runLive_callerCancelsDuringAfterRun_doesNotAbandonIt() throws Exception {
+    CompletableSubject afterRun = CompletableSubject.create();
+    when(plugin.afterRunCallback(any())).thenReturn(afterRun);
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+    verify(plugin, timeout(5000)).afterRunCallback(any());
+
+    testSubscriber.cancel();
+
+    assertThat(afterRun.hasObservers()).isTrue();
+    verify(plugin).afterRunCallback(any());
+  }
+
+  @Test
+  public void runLive_callerCancels_runsAfterRunCallbackInCallerContext() throws Exception {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    AtomicReference<String> beforeRunValue = new AtomicReference<>();
+    AtomicReference<String> afterRunValue = new AtomicReference<>();
+    when(plugin.beforeRunCallback(any()))
+        .thenAnswer(invocation -> {
+          beforeRunValue.set(Context.current().get(testKey));
+          return Maybe.empty();
+        });
+    when(plugin.afterRunCallback(any()))
+        .thenAnswer(invocation -> {
+          afterRunValue.set(Context.current().get(testKey));
+          return Completable.complete();
+        });
+    Runner liveRunner = runnerWithOpenModelStream();
+    Session liveSession = liveRunner.sessionService().createSession("test", "user").blockingGet();
+    TestSubscriber<Event> testSubscriber;
+    try (Scope scope = Context.current().with(testKey, "test-value").makeCurrent()) {
+      testSubscriber =
+          liveRunner
+              .runLive(liveSession, new LiveRequestQueue(), RunConfig.builder().build())
+              .test();
+    }
+
+    testSubscriber.cancel();
+
+    verify(plugin).afterRunCallback(any());
+    assertThat(beforeRunValue.get()).isEqualTo("test-value");
+    assertThat(afterRunValue.get()).isEqualTo(beforeRunValue.get());
+  }
+
+  @Test
+  public void runLive_callerCancelsDuringBeforeRun_skipsAfterRun() throws Exception {
+    MaybeSubject<Content> beforeRun = MaybeSubject.create();
+    when(plugin.beforeRunCallback(any())).thenReturn(beforeRun);
+    Runner liveRunner = runnerWithOpenModelStream();
+    Session liveSession = liveRunner.sessionService().createSession("test", "user").blockingGet();
+    TestSubscriber<Event> testSubscriber =
+        liveRunner.runLive(liveSession, new LiveRequestQueue(), RunConfig.builder().build()).test();
+    verify(plugin).beforeRunCallback(any());
+
+    testSubscriber.cancel();
+
+    assertThat(beforeRun.hasObservers()).isFalse();
+    verify(plugin, never()).afterRunCallback(any());
+  }
+
+  @Test
+  public void runLive_callerCancelsAndAfterRunFails_callsOnRunError() throws Exception {
+    Exception exception = new Exception("test");
+    when(plugin.afterRunCallback(any())).thenReturn(Completable.error(exception));
+    when(plugin.onRunErrorCallback(any(), any())).thenReturn(Completable.complete());
+    Runner liveRunner = runnerWithOpenModelStream();
+    Session liveSession = liveRunner.sessionService().createSession("test", "user").blockingGet();
+    TestSubscriber<Event> testSubscriber =
+        liveRunner.runLive(liveSession, new LiveRequestQueue(), RunConfig.builder().build()).test();
+
+    testSubscriber.cancel();
+
+    verify(plugin).afterRunCallback(any());
+    verify(plugin).onRunErrorCallback(any(), eq(exception));
+  }
+
+  /** Returns a runner with {@code plugin}; its model stream stays open until the caller cancels. */
+  private Runner runnerWithOpenModelStream() {
+    LlmAgent liveAgent = createTestAgentBuilder(createTestLlm(Flowable::never)).build();
+    return Runner.builder()
+        .app(
+            App.builder()
+                .name("test")
+                .rootAgent(liveAgent)
+                .plugins(ImmutableList.of(plugin))
+                .build())
+        .build();
+  }
+
+  @Test
+  public void runLive_beforeRunCallbackError_callsOnRunErrorAndSkipsAfterRun() throws Exception {
+    Exception exception = new Exception("test");
+    when(plugin.beforeRunCallback(any())).thenReturn(Maybe.error(exception));
+    when(plugin.onRunErrorCallback(any(), any())).thenReturn(Completable.complete());
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertError(exception);
+    verify(plugin).onRunErrorCallback(any(), eq(exception));
+    verify(plugin, never()).afterRunCallback(any());
+  }
+
+  @Test
+  public void runLive_beforeRunCallbackContent_skipsAgent() throws Exception {
+    when(plugin.beforeRunCallback(any())).thenReturn(Maybe.just(pluginContent));
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("will not be processed"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("model: from plugin");
+    assertThat(liveRequestTexts(testLlm)).isEmpty();
+    verify(plugin).afterRunCallback(any());
+  }
+
+  @Test
+  public void runLive_onEventCallback_replacesEmittedEvent() throws Exception {
+    when(plugin.onEventCallback(any(), any()))
+        .thenReturn(Maybe.just(TestUtils.createEvent("from plugin")));
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values()))
+        .containsExactly("author: content for event from plugin");
   }
 
   // Each runLive opens a new connection and sends it the session's stored history.

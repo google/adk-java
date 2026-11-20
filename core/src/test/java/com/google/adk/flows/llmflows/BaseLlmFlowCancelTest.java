@@ -25,8 +25,11 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LiveRequest;
+import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.ParallelAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.models.LlmResponse;
@@ -93,6 +96,43 @@ public final class BaseLlmFlowCancelTest {
     subscription.dispose();
 
     assertThat(model.cancelled.await(2, SECONDS)).isTrue();
+  }
+
+  @Test
+  public void runLive_disposed_closesConnectionAndStopsSending() throws Exception {
+    TestLlm testLlm = createTestLlm(Flowable::never);
+    LlmAgent agent = createTestAgentBuilder(testLlm).executor(Runnable::run).build();
+    InMemoryRunner runner = new InMemoryRunner(agent);
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    Disposable subscription =
+        runner
+            .runLive(session, liveRequestQueue, RunConfig.builder().build())
+            .subscribe(event -> {}, error -> {});
+    subscription.dispose();
+    liveRequestQueue.content(Content.fromParts(Part.fromText("after dispose")));
+
+    assertThat(testLlm.getLiveRequestHistory())
+        .containsExactly(LiveRequest.builder().close(true).build());
+  }
+
+  @Test
+  public void runLive_modelStreamFails_closesConnectionAndStopsSending() throws Exception {
+    TestLlm testLlm = createTestLlm(() -> Flowable.error(new IllegalStateException("failed")));
+    LlmAgent agent = createTestAgentBuilder(testLlm).executor(Runnable::run).build();
+    InMemoryRunner runner = new InMemoryRunner(agent);
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+    assertThat(testSubscriber.await(5, SECONDS)).isTrue();
+    liveRequestQueue.content(Content.fromParts(Part.fromText("after the failure")));
+
+    testSubscriber.assertError(IllegalStateException.class);
+    assertThat(testLlm.getLiveRequestHistory())
+        .containsExactly(LiveRequest.builder().close(true).build());
   }
 
   @Test
