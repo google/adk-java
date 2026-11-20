@@ -632,7 +632,7 @@ public final class ParallelWorkersTest {
     ImmutableList<Event> events = session.turn(answer("ask-2", ImmutableMap.of("result", 20)));
 
     assertThat(runsByItem).containsExactly(1, 1, 2, 1, 3, 1);
-    assertThat(replyInput(events)).isEqualTo(ImmutableList.of(1, 20, 3));
+    assertThat(replyInput(events)).isEqualTo(ImmutableList.of(1, 20L, 3));
   }
 
   @Test
@@ -661,7 +661,7 @@ public final class ParallelWorkersTest {
 
     assertThat(runsAfterFirstTurn).containsExactly(1, 1, 2, 1);
     assertThat(runsByItem).containsExactly(1, 1, 2, 1, 3, 1);
-    assertThat(replyInput(events)).isEqualTo(ImmutableList.of(1, 20, 30));
+    assertThat(replyInput(events)).isEqualTo(ImmutableList.of(1, 20L, 30L));
   }
 
   @Test

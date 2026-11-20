@@ -81,7 +81,7 @@ public final class ResumeScanTest {
 
     assertThat(recovered.keySet()).containsExactly("d@1");
     assertThat(recovered.get("d@1").resolvedResponses)
-        .containsExactly("ask_1", ImmutableMap.of("v", 1));
+        .containsExactly("ask_1", ImmutableMap.of("v", 1L));
   }
 
   @Test
@@ -582,7 +582,34 @@ public final class ResumeScanTest {
   public void validateAnswer_answerThatFits_isReturned() {
     Object answer = ResumeScan.validateAnswer(COUNT_SCHEMA, ImmutableMap.of("count", 1), "ask_1");
 
-    assertThat(answer).isEqualTo(ImmutableMap.of("count", 1));
+    assertThat(answer).isEqualTo(ImmutableMap.of("count", 1L));
+  }
+
+  @Test
+  public void validateAnswer_answerWithoutAJsonForm_failsNamingTheInterrupt() {
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> ResumeScan.validateAnswer(null, ImmutableMap.of("x", new Object()), "ask_1"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Validation failed for interrupt ask_1: the answer has no JSON form.");
+    assertThat(error).hasCauseThat().isNull();
+  }
+
+  @Test
+  public void validateAnswer_answerHoldingNaN_failsNamingTheInterrupt() {
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> ResumeScan.validateAnswer(null, ImmutableMap.of("x", Double.NaN), "ask_1"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "Validation failed for interrupt ask_1: the answer holds a NaN or infinite number,"
+                + " which JSON lacks.");
   }
 
   @Test
@@ -600,7 +627,7 @@ public final class ResumeScanTest {
 
     Object answer = ResumeScan.validateAnswer(schema, ImmutableMap.of("count", 1), "ask_1");
 
-    assertThat(answer).isEqualTo(ImmutableMap.of("count", 1));
+    assertThat(answer).isEqualTo(ImmutableMap.of("count", 1L));
   }
 
   @Test
@@ -635,7 +662,7 @@ public final class ResumeScanTest {
         ResumeScan.validateAnswer(
             INTEGER_ARRAY_SCHEMA, ImmutableMap.of("result", ImmutableList.of(1, 2)), "a");
 
-    assertThat(answer).isEqualTo(ImmutableList.of(1, 2));
+    assertThat(answer).isEqualTo(ImmutableList.of(1L, 2L));
   }
 
   @Test
@@ -696,7 +723,7 @@ public final class ResumeScanTest {
 
     Object answer = ResumeScan.validateAnswer(countOrAge, ImmutableMap.of("age", 3), "a");
 
-    assertThat(answer).isEqualTo(ImmutableMap.of("age", 3));
+    assertThat(answer).isEqualTo(ImmutableMap.of("age", 3L));
   }
 
   @Test

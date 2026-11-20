@@ -61,6 +61,7 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
+import com.fasterxml.jackson.databind.util.RawValue;
 import com.fasterxml.jackson.databind.util.StdConverter;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
@@ -832,7 +833,7 @@ public final class FunctionNodeTest {
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/describe@1")).isEqualTo("a1 x3");
     assertThat(result.outputAt("wf@1/make_order@1"))
-        .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3));
+        .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3L));
   }
 
   @Test
@@ -868,6 +869,130 @@ public final class FunctionNodeTest {
     Event liveOutput = run(chain(makeOrder)).outputEventAt("wf@1/make_order@1");
 
     assertThat(liveOutput.output()).hasValue(Event.fromJson(liveOutput.toJson()).output().get());
+  }
+
+  @Test
+  public void of_outputReadByUntypedPorts_holdsWholeNumbersAsLong() {
+    // A FunctionNode output is in JSON form, which holds whole numbers as Long, as in ADK Kotlin.
+    FunctionNode<Content, Object> produce =
+        FunctionNodes.of(
+            "produce",
+            Content.class,
+            Object.class,
+            (ctx, message) ->
+                ImmutableMap.of(
+                    "count", 3, "items", ImmutableList.of(-1, 2147483648L), "price", 3.0));
+    AtomicReference<Object> asObject = new AtomicReference<>();
+    FunctionNode<Object, Void> readObject = recorder(new TypeReference<Object>() {}, asObject);
+    AtomicReference<Map<String, Object>> asMap = new AtomicReference<>();
+    FunctionNode<Map<String, Object>, Void> readMap =
+        recorder(new TypeReference<Map<String, Object>>() {}, asMap);
+    ImmutableMap<String, Object> asJson =
+        ImmutableMap.of("count", 3L, "items", ImmutableList.of(-1L, 2147483648L), "price", 3.0);
+
+    RunResult objectRun = run(chain(produce, readObject));
+    RunResult mapRun = run(chain(produce, readMap));
+
+    objectRun.assertCompleted();
+    mapRun.assertCompleted();
+    assertThat(objectRun.outputAt("wf@1/produce@1")).isEqualTo(asJson);
+    assertThat(objectRun.storedOutputAt("wf@1/produce@1")).isEqualTo(asJson);
+    assertThat(asObject.get()).isEqualTo(asJson);
+    assertThat(asMap.get()).isEqualTo(asJson);
+  }
+
+  @Test
+  public void of_outputWithRawJson_holdsItAsJsonValues() {
+    FunctionNode<Content, Object> produce =
+        FunctionNodes.of(
+            "produce",
+            Content.class,
+            Object.class,
+            (ctx, message) -> ImmutableMap.of("details", new RawValue("{\"count\": 3}")));
+    ImmutableMap<String, Object> asJson = ImmutableMap.of("details", ImmutableMap.of("count", 3L));
+
+    RunResult result = run(chain(produce));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/produce@1")).isEqualTo(asJson);
+    assertThat(result.storedOutputAt("wf@1/produce@1")).isEqualTo(asJson);
+  }
+
+  @Test
+  public void of_outputWithRawJsonThatDoesNotParse_fails() {
+    for (String raw : ImmutableList.of("{not json", "{\"c\": 3} {\"x\": 1}", "3 garbage", "")) {
+      FunctionNode<Content, Object> produce =
+          FunctionNodes.of(
+              "produce",
+              Content.class,
+              Object.class,
+              (ctx, message) -> ImmutableMap.of("details", new RawValue(raw)));
+
+      RunResult result = run(chain(produce));
+
+      assertThat(result.errorMessage("IllegalArgumentException"))
+          .isEqualTo("output of node 'produce' has no JSON form.");
+    }
+  }
+
+  @Test
+  public void of_untypedPortsFedIntegersInMemory_keepThemUntilStored() {
+    // ADK Kotlin also keeps an Int passed in memory; only the JSON form holds Long.
+    ImmutableMap<String, Object> made = ImmutableMap.of("count", 3, "items", ImmutableList.of(-1));
+    AtomicReference<Object> asObject = new AtomicReference<>();
+    FunctionNode<Object, Void> readObject = recorder(new TypeReference<Object>() {}, asObject);
+    AtomicReference<Map<String, Object>> asMap = new AtomicReference<>();
+    FunctionNode<Map<String, Object>, Void> readMap =
+        recorder(new TypeReference<Map<String, Object>>() {}, asMap);
+
+    RunResult objectRun = run(chain(emitter("make", made), readObject));
+    RunResult mapRun = run(chain(emitter("make", made), readMap));
+
+    objectRun.assertCompleted();
+    mapRun.assertCompleted();
+    assertThat(asObject.get()).isEqualTo(made);
+    assertThat(asMap.get()).isEqualTo(made);
+    assertThat(objectRun.storedOutputAt("wf@1/make@1"))
+        .isEqualTo(ImmutableMap.of("count", 3L, "items", ImmutableList.of(-1L)));
+  }
+
+  @Test
+  public void of_contentPortFedAMessageWithAFunctionCall_readsItAsGenaiDoes() {
+    Content message =
+        Content.builder()
+            .role("model")
+            .parts(Part.fromFunctionCall("lookup", ImmutableMap.<String, Object>of("n", 3)))
+            .build();
+    AtomicReference<@Nullable Content> received = new AtomicReference<>();
+
+    RunResult result =
+        run(
+            chain(
+                FunctionNodes.of("make", Content.class, Content.class, (ctx, input) -> message),
+                FunctionNodes.of(
+                    "read",
+                    Content.class,
+                    Void.class,
+                    (ctx, input) -> {
+                      received.set(input);
+                      return null;
+                    })));
+
+    result.assertCompleted();
+    // Numbers in the received Content decode as genai reads them, so it equals the message sent.
+    assertThat(received.get()).isEqualTo(message);
+  }
+
+  @Test
+  public void of_contentPortFedRawJsonWithTrailingText_fails() {
+    Node make =
+        emitter("make", new RawValue("{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]} more"));
+
+    RunResult result =
+        run(chain(make, FunctionNodes.of("read", Content.class, Void.class, (ctx, input) -> null)));
+
+    assertThat(result.errorMessage("NodeInputValidationException"))
+        .startsWith("validation error: input of node 'read'");
   }
 
   @Test
@@ -985,7 +1110,7 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/router@1"))
-        .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3));
+        .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3L));
     assertThat(result.storedOutputAt("wf@1/router@1")).isEqualTo(result.outputAt("wf@1/router@1"));
   }
 
@@ -1000,7 +1125,7 @@ public final class FunctionNodeTest {
 
   @Test
   public void builder_bodyDelegatingAnOutputAlreadyWrittenAsO_sendsOnlyTheChildsEvent() {
-    ImmutableMap<String, Object> order = ImmutableMap.of("id", "a1", "quantity", 3);
+    ImmutableMap<String, Object> order = ImmutableMap.of("id", "a1", "quantity", 3L);
 
     RunResult result = run(chain(delegating(Order.class, order)));
 
@@ -1111,7 +1236,7 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/order@1"))
-        .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3));
+        .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3L));
   }
 
   @Test
@@ -1203,7 +1328,7 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/make_order@1"))
-        .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3));
+        .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3L));
   }
 
   @Test
@@ -3674,8 +3799,8 @@ public final class FunctionNodeTest {
     RunResult result = run(chain(pick, place, readX));
 
     result.assertCompleted();
-    assertThat(result.outputAt("wf@1/pick@1")).isEqualTo(ImmutableMap.of("low", 2, "high", 5));
-    assertThat(result.outputAt("wf@1/read_x@1")).isEqualTo(3);
+    assertThat(result.outputAt("wf@1/pick@1")).isEqualTo(ImmutableMap.of("low", 2L, "high", 5L));
+    assertThat(result.outputAt("wf@1/read_x@1")).isEqualTo(3L);
   }
 
   @Test
@@ -3891,7 +4016,7 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/orders@1"))
-        .isEqualTo(ImmutableList.of(ImmutableMap.of("id", "a1", "quantity", 2)));
+        .isEqualTo(ImmutableList.of(ImmutableMap.of("id", "a1", "quantity", 2L)));
   }
 
   @Test
@@ -5315,7 +5440,7 @@ public final class FunctionNodeTest {
     RunResult result = run(chain(makeParams, mutate));
 
     assertThat(result.errorMessage("UnsupportedOperationException")).isEmpty();
-    assertThat(result.outputAt("wf@1/make_params@1")).isEqualTo(ImmutableMap.of("a", 1));
+    assertThat(result.outputAt("wf@1/make_params@1")).isEqualTo(ImmutableMap.of("a", 1L));
   }
 
   @Test
@@ -5341,7 +5466,7 @@ public final class FunctionNodeTest {
 
     assertThat(result.errorMessage("UnsupportedOperationException")).isEmpty();
     assertThat(result.outputAt("wf@1/make_params@1"))
-        .isEqualTo(ImmutableMap.of("items", ImmutableList.of(1)));
+        .isEqualTo(ImmutableMap.of("items", ImmutableList.of(1L)));
   }
 
   @Test
@@ -5437,6 +5562,28 @@ public final class FunctionNodeTest {
 
     assertThat(onlyRequest(paused).args().orElseThrow())
         .containsEntry(RequestInput.PAYLOAD_KEY, ImmutableMap.of("day", "2026-12-24"));
+  }
+
+  @Test
+  public void requestInput_payloadWithWholeNumbers_sendsThemAsAStoredSessionReadsThemBack() {
+    // genai reads FunctionCall.args back with Integer where it fits, so the sent payload matches.
+    FunctionNode<Content, String> asker =
+        FunctionNodes.of(
+            "asker",
+            Content.class,
+            String.class,
+            (ctx, message) ->
+                FunctionNodes.requestInput(
+                    "limit_1", "Approve?", ImmutableMap.of("limit", 50, "big", 5_000_000_000L)));
+
+    ImmutableList<Event> paused = new WorkflowSession(chain(asker)).turn(go());
+
+    Event request =
+        paused.stream().filter(event -> !event.functionCalls().isEmpty()).collect(onlyElement());
+    assertThat(onlyRequest(paused).args().orElseThrow())
+        .containsEntry(
+            RequestInput.PAYLOAD_KEY, ImmutableMap.of("limit", 50, "big", 5_000_000_000L));
+    assertThat(Event.fromJson(request.toJson()).functionCalls()).isEqualTo(request.functionCalls());
   }
 
   @Test
@@ -5595,6 +5742,53 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void of_requestInputAnsweredInJson_outputsWholeNumbersAsLong() {
+    AtomicReference<Map<String, Object>> asMap = new AtomicReference<>();
+    WorkflowSession session =
+        new WorkflowSession(
+            chain(
+                asker(Object.class, "n_1"),
+                recorder(new TypeReference<Map<String, Object>>() {}, asMap)));
+    session.advance(go());
+    ImmutableMap<String, Object> asJson =
+        ImmutableMap.of("count", 3L, "items", ImmutableList.of(-1L, 2.5));
+
+    ImmutableList<Event> events =
+        session.turn(jsonRequestResult("n_1", "{\"count\": 3, \"items\": [-1, 2.5]}"));
+
+    Event output = WorkflowResumeTesting.outputEventAt(events, "wf@1/asker@1");
+    assertThat(output.output()).hasValue(asJson);
+    assertThat(Event.fromJson(output.toJson()).output()).isEqualTo(output.output());
+    assertThat(asMap.get()).isEqualTo(asJson);
+    assertThrows(UnsupportedOperationException.class, () -> asMap.get().clear());
+    assertThrows(
+        UnsupportedOperationException.class, () -> ((List<?>) asMap.get().get("items")).clear());
+  }
+
+  @Test
+  public void builder_rerunOnResumeBodyReadingAJsonAnswer_getsWholeNumbersAsLong() {
+    AtomicReference<Object> answer = new AtomicReference<>();
+    FunctionNode<Content, String> asker =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("asker")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              if (!ctx.resumeInputs().containsKey("n_1")) {
+                return FunctionNodes.requestInput("n_1", "How many?");
+              }
+              answer.set(ctx.resumeInputs().get("n_1"));
+              return "done";
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(asker));
+    session.advance(go());
+
+    session.advance(jsonRequestResult("n_1", "{\"count\": 3}"));
+
+    assertThat(answer.get()).isEqualTo(ImmutableMap.of("count", 3L));
+  }
+
+  @Test
   public void of_typedPortsHandedAnEvent_failNamingTheEventType() {
     // Arrange
     Event event = Event.builder().author("someone").build();
@@ -5736,7 +5930,7 @@ public final class FunctionNodeTest {
         outputOn(scale, "[{\"id\": \"a1\", \"quantity\": 1}, {\"id\": \"b2\", \"quantity\": 2}]");
 
     // Assert
-    assertThat(output).isEqualTo(ImmutableList.of(10, 20));
+    assertThat(output).isEqualTo(ImmutableList.of(10L, 20L));
   }
 
   @Test
@@ -6275,14 +6469,14 @@ public final class FunctionNodeTest {
     ImmutableList<Written> roundTrips =
         ImmutableList.of(
             // Jackson writes a number: under a numeric shape, or ARRAY on an enum.
-            new Written(Rank.HIGH, 1),
+            new Written(Rank.HIGH, 1L),
             new Written(
                 new Voucher(Rank.HIGH, Status.SHIPPED, true, false),
-                ImmutableMap.of("rank", 1, "status", 1, "open", 1, "paid", 0)),
+                ImmutableMap.of("rank", 1L, "status", 1L, "open", 1L, "paid", 0L)),
             new Written(
-                new Listed(Status.SHIPPED, true), ImmutableMap.of("status", 1, "lit", true)),
+                new Listed(Status.SHIPPED, true), ImmutableMap.of("status", 1L, "lit", true)),
             // Jackson writes the @JsonValue, so LOW's 1, which is HIGH's ordinal, reads as LOW.
-            new Written(Level.LOW, 1),
+            new Written(Level.LOW, 1L),
             new Written(Answer.NO, "n"),
             new Written(Padded.A, " a"),
             // Jackson writes text: STRING on scalars, and a char even under NUMBER.
@@ -6632,7 +6826,7 @@ public final class FunctionNodeTest {
     assertThat(replyInput(events)).isEqualTo("sent");
     assertThat(seen.get().confirmed()).isTrue();
     assertThat(seen.get().hint()).isEmpty();
-    assertThat(seen.get().payload()).isEqualTo(ImmutableMap.of("limit", 50));
+    assertThat(seen.get().payload()).isEqualTo(ImmutableMap.of("limit", 50L));
   }
 
   @Test
@@ -7566,6 +7760,34 @@ public final class FunctionNodeTest {
   private static <O> FunctionNode<Content, O> asker(Class<O> type, String id) {
     return FunctionNodes.of(
         "asker", Content.class, type, (ctx, message) -> FunctionNodes.requestInput(id, "?"));
+  }
+
+  /**
+   * Returns the answer {@code {"result": <resultJson>}} to the request {@code interruptId}, read
+   * from JSON as a client sends it.
+   */
+  private static Content jsonRequestResult(String interruptId, String resultJson) {
+    return Content.fromJson(
+        "{\"role\": \"user\", \"parts\": [{\"functionResponse\": {\"id\": \""
+            + interruptId
+            + "\", \"name\": \""
+            + RequestInput.FUNCTION_CALL_NAME
+            + "\", \"response\": {\"result\": "
+            + resultJson
+            + "}}}]}");
+  }
+
+  /** Returns a node {@code read} that stores its input in {@code seen} and outputs nothing. */
+  private static <T> FunctionNode<T, Void> recorder(
+      TypeReference<T> inputType, AtomicReference<T> seen) {
+    return FunctionNodes.of(
+        "read",
+        inputType,
+        Void.class,
+        (ctx, in) -> {
+          seen.set(in);
+          return null;
+        });
   }
 
   /**

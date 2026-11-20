@@ -111,7 +111,7 @@ public final class WorkflowResumeTest {
 
     ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
 
-    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1));
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1L));
     assertThat(events.stream().map(Event::invocationId).distinct()).hasSize(1);
     assertThat(session.invocationIds()).hasSize(1);
   }
@@ -162,7 +162,7 @@ public final class WorkflowResumeTest {
 
     assertThat(routerRuns.get()).isEqualTo(1);
     assertThat(unreached.runs()).isEqualTo(0);
-    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1));
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1L));
   }
 
   @Test
@@ -209,7 +209,7 @@ public final class WorkflowResumeTest {
     assertThat(pathsOf(second)).doesNotContain("wf@1/j@1");
     assertThat(outputEventAt(third, "wf@1/j@1").output())
         .hasValue(
-            ImmutableMap.of("ask_a", ImmutableMap.of("a", 1), "ask_b", ImmutableMap.of("b", 2)));
+            ImmutableMap.of("ask_a", ImmutableMap.of("a", 1L), "ask_b", ImmutableMap.of("b", 2L)));
   }
 
   @Test
@@ -411,7 +411,7 @@ public final class WorkflowResumeTest {
 
     ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
 
-    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1));
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1L));
   }
 
   @Test
@@ -428,7 +428,7 @@ public final class WorkflowResumeTest {
 
     ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
 
-    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1));
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1L));
   }
 
   @Test
@@ -451,7 +451,7 @@ public final class WorkflowResumeTest {
     ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
 
     assertThat(first.runs()).isEqualTo(1);
-    assertThat(replyInput(events)).isEqualTo(ImmutableList.of("a_out", ImmutableMap.of("v", 1)));
+    assertThat(replyInput(events)).isEqualTo(ImmutableList.of("a_out", ImmutableMap.of("v", 1L)));
   }
 
   @Test
@@ -471,8 +471,8 @@ public final class WorkflowResumeTest {
     ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
 
     assertThat(events.stream().filter(event -> event.errorCode().isPresent())).isEmpty();
-    assertThat(outputEventAt(events, "wf@1/caller@1").output()).hasValue(ImmutableMap.of("v", 1));
-    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1));
+    assertThat(outputEventAt(events, "wf@1/caller@1").output()).hasValue(ImmutableMap.of("v", 1L));
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1L));
   }
 
   @Test
@@ -621,7 +621,7 @@ public final class WorkflowResumeTest {
 
     assertThat(callerRuns.get()).isEqualTo(2);
     assertThat(outputEventAt(events, "wf@1/j@1").output())
-        .hasValue(ImmutableMap.of("caller", "DONE", "other", ImmutableMap.of("v", 2)));
+        .hasValue(ImmutableMap.of("caller", "DONE", "other", ImmutableMap.of("v", 2L)));
   }
 
   @Test
@@ -656,7 +656,7 @@ public final class WorkflowResumeTest {
 
     assertThat(callerRuns.get()).isEqualTo(2);
     assertThat(outputEventAt(events, "wf@1/j@1").output())
-        .hasValue(ImmutableMap.of("caller", "DONE", "other", ImmutableMap.of("v", 2)));
+        .hasValue(ImmutableMap.of("caller", "DONE", "other", ImmutableMap.of("v", 2L)));
   }
 
   @Test
@@ -676,7 +676,7 @@ public final class WorkflowResumeTest {
     ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
 
     assertThat(replyInput(events))
-        .isEqualTo(ImmutableMap.of("resumed", ImmutableMap.of("ask_1", ImmutableMap.of("v", 1))));
+        .isEqualTo(ImmutableMap.of("resumed", ImmutableMap.of("ask_1", ImmutableMap.of("v", 1L))));
   }
 
   @Test
@@ -847,7 +847,7 @@ public final class WorkflowResumeTest {
 
     ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
 
-    assertThat(outputEventAt(events, "ask@1").output()).hasValue(ImmutableMap.of("v", 1));
+    assertThat(outputEventAt(events, "ask@1").output()).hasValue(ImmutableMap.of("v", 1L));
     assertThat(interruptEvents(events)).isEmpty();
   }
 
@@ -922,7 +922,7 @@ public final class WorkflowResumeTest {
     // The successor gets the message it got live, not the message's text.
     assertThat(outputEventAt(events, "wf@1/j@1").output())
         .hasValue(
-            ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1)));
+            ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1L)));
   }
 
   @Test
@@ -955,9 +955,9 @@ public final class WorkflowResumeTest {
                 "chat",
                 modelText("agent said hi"),
                 "first",
-                ImmutableMap.of("v", 1),
+                ImmutableMap.of("v", 1L),
                 "second",
-                ImmutableMap.of("v", 2)));
+                ImmutableMap.of("v", 2L)));
   }
 
   @Test
@@ -981,7 +981,7 @@ public final class WorkflowResumeTest {
         .isTrue();
     assertThat(outputEventAt(events, "wf@1/j@1").output())
         .hasValue(
-            ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1)));
+            ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1L)));
   }
 
   record Profile(String id, int age) {}
@@ -1035,9 +1035,9 @@ public final class WorkflowResumeTest {
                 "chat",
                 modelText("agent said hi"),
                 "first",
-                ImmutableMap.of("v", 1),
+                ImmutableMap.of("v", 1L),
                 "second",
-                ImmutableMap.of("v", 2)));
+                ImmutableMap.of("v", 2L)));
   }
 
   @Test
@@ -1103,7 +1103,36 @@ public final class WorkflowResumeTest {
         .isTrue();
     assertThat(received.get())
         .isEqualTo(
-            ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1)));
+            ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1L)));
+  }
+
+  @Test
+  public void resume_messageOutputWithAFunctionCallFromJsonStore_equalsTheLiveMessage() {
+    Content message =
+        Content.builder()
+            .role("model")
+            .parts(Part.fromFunctionCall("lookup", ImmutableMap.<String, Object>of("n", 3)))
+            .build();
+    Node chat =
+        new TestNode("chat", (ctx, input) -> Flowable.just(newEvent().output(message).build()));
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    AtomicReference<@Nullable Object> received = new AtomicReference<>();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, chat),
+                new Edge(START, ask),
+                new Edge(chat, join),
+                new Edge(ask, join),
+                new Edge(join, recordInput(received))),
+            new JsonSessionService());
+
+    session.advance(go());
+    session.advance(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    // The stored message reads back with numbers in its parts decoded as genai does.
+    assertThat(((Map<?, ?>) received.get()).get("chat")).isEqualTo(message);
   }
 
   @Test
@@ -1131,7 +1160,7 @@ public final class WorkflowResumeTest {
 
     assertThat(outputEventAt(events, "wf@1/j@1").output())
         .hasValue(
-            ImmutableMap.of("inner", modelText("{\"age\": 3}"), "ask", ImmutableMap.of("v", 1)));
+            ImmutableMap.of("inner", modelText("{\"age\": 3}"), "ask", ImmutableMap.of("v", 1L)));
   }
 
   @Test
@@ -1155,7 +1184,7 @@ public final class WorkflowResumeTest {
     ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
 
     assertThat(outputEventAt(events, "wf@1/j@1").output())
-        .hasValue(ImmutableMap.of("caller", modelText("hi"), "ask", ImmutableMap.of("v", 1)));
+        .hasValue(ImmutableMap.of("caller", modelText("hi"), "ask", ImmutableMap.of("v", 1L)));
   }
 
   @Test
@@ -1185,7 +1214,7 @@ public final class WorkflowResumeTest {
 
     // Live, the caller output the agent's text, so the replay gives the text too.
     assertThat(outputEventAt(events, "wf@1/j@1").output())
-        .hasValue(ImmutableMap.of("caller", "agent said hi", "ask", ImmutableMap.of("v", 1)));
+        .hasValue(ImmutableMap.of("caller", "agent said hi", "ask", ImmutableMap.of("v", 1L)));
   }
 
   @Test
@@ -1220,7 +1249,7 @@ public final class WorkflowResumeTest {
     // Only an LlmAgent outputs its text; any other agent gives the message it output.
     assertThat(outputEventAt(events, "wf@1/j@1").output())
         .hasValue(
-            ImmutableMap.of("agent", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1)));
+            ImmutableMap.of("agent", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1L)));
   }
 
   @Test
@@ -1246,7 +1275,7 @@ public final class WorkflowResumeTest {
 
     // Live, an agent's output is its text, so the replay gives the text too.
     assertThat(outputEventAt(events, "wf@1/j@1").output())
-        .hasValue(ImmutableMap.of("agent", "agent said hi", "ask", ImmutableMap.of("v", 1)));
+        .hasValue(ImmutableMap.of("agent", "agent said hi", "ask", ImmutableMap.of("v", 1L)));
   }
 
   @Test
@@ -1270,7 +1299,7 @@ public final class WorkflowResumeTest {
 
     // Assert: as an enum port reads it live, the quoted name reads as the name.
     assertThat(outputEventAt(events, "wf@1/j@1").output())
-        .hasValue(ImmutableMap.of("chat", "SHIPPED", "ask", ImmutableMap.of("v", 1)));
+        .hasValue(ImmutableMap.of("chat", "SHIPPED", "ask", ImmutableMap.of("v", 1L)));
   }
 
   @Test
@@ -1313,7 +1342,7 @@ public final class WorkflowResumeTest {
     assertThat(outputEventAt(events, "wf@1/j@1").output())
         .hasValue(
             ImmutableMap.of(
-                "chat", ImmutableMap.of("city", "Paris"), "ask", ImmutableMap.of("v", 1)));
+                "chat", ImmutableMap.of("city", "Paris"), "ask", ImmutableMap.of("v", 1L)));
   }
 
   @Test
@@ -1334,7 +1363,7 @@ public final class WorkflowResumeTest {
 
     assertThat(outputEventAt(events, "wf@1/j@1").output())
         .hasValue(
-            ImmutableMap.of("chat", ImmutableMap.of("age", 42L), "ask", ImmutableMap.of("v", 1)));
+            ImmutableMap.of("chat", ImmutableMap.of("age", 42L), "ask", ImmutableMap.of("v", 1L)));
   }
 
   @Test
@@ -1367,7 +1396,7 @@ public final class WorkflowResumeTest {
 
     assertThat(first.error()).isInstanceOf(IllegalStateException.class);
     assertThat(outputEventAt(events, "wf@1/j@1").output())
-        .hasValue(ImmutableMap.of("ask", ImmutableMap.of("v", 1), "flaky", "recovered"));
+        .hasValue(ImmutableMap.of("ask", ImmutableMap.of("v", 1L), "flaky", "recovered"));
   }
 
   @Test
@@ -1438,7 +1467,7 @@ public final class WorkflowResumeTest {
 
     ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
 
-    assertThat(outputEventAt(events, "wf@1/ask@1").output()).hasValue(ImmutableMap.of("v", 1));
+    assertThat(outputEventAt(events, "wf@1/ask@1").output()).hasValue(ImmutableMap.of("v", 1L));
     Event request = interruptEvents(events).stream().collect(onlyElement());
     assertThat(pathOf(request)).isEqualTo("wf@1/ask@2");
     assertThat(request.functionCalls().get(0).id()).hasValue("ask_2");

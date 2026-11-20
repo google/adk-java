@@ -342,7 +342,9 @@ public class Context extends ReadonlyContext {
   /**
    * Returns the user's answers to the requests for input and long-running calls that this workflow
    * node or its descendants made in an earlier turn, keyed by interrupt ID. A node that reruns on
-   * resume reads these answers. A null answer has a null value in the map.
+   * resume reads these answers in JSON form, with unmodifiable maps and lists and whole numbers as
+   * {@code Long} ({@code BigInteger} past the long range). A null answer has a null value in the
+   * map.
    *
    * @throws IllegalStateException if this is not the context of a workflow node.
    */
