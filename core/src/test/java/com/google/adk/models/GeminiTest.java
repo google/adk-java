@@ -1019,6 +1019,23 @@ public final class GeminiTest {
   }
 
   @Test
+  public void processRawResponses_stopWithFinishMessage_finalHasNoErrorMessage() {
+    GenerateContentResponse stopped =
+        toResponse(
+            Candidate.builder()
+                .content(Content.builder().parts(Part.fromText("Done.")).build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .finishMessage("Model finished.")
+                .build());
+
+    LlmResponse aggregated = aggregateFinalResponse(stopped);
+
+    assertThat(aggregated.finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.STOP);
+    assertThat(aggregated.errorMessage()).isEmpty();
+  }
+
+  @Test
   public void processRawResponses_textThenEmpty_emitsPartialTextThenFullText() {
     Flowable<GenerateContentResponse> rawResponses =
         Flowable.just(toResponseWithText("Thinking..."), GenerateContentResponse.builder().build());
