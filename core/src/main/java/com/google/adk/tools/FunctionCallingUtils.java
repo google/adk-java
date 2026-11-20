@@ -49,8 +49,13 @@ public final class FunctionCallingUtils {
 
   /** Holds the state during a single schema generation process to handle caching and recursion. */
   private static class SchemaGenerationContext {
+    private final boolean input;
     private final Map<JavaType, Schema> definitions = new LinkedHashMap<>();
     private final Set<JavaType> processingStack = new HashSet<>();
+
+    SchemaGenerationContext(boolean input) {
+      this.input = input;
+    }
 
     boolean isProcessing(JavaType type) {
       return processingStack.contains(type);
@@ -83,6 +88,18 @@ public final class FunctionCallingUtils {
    */
   public static FunctionDeclaration buildFunctionDeclaration(
       Method func, List<String> ignoreParams) {
+    return buildFunctionDeclaration(func, ignoreParams, defaultObjectMapper);
+  }
+
+  static FunctionDeclaration buildFunctionDeclaration(
+      Method func, List<String> ignoreParams, ObjectMapper objectMapper) {
+    return buildFunctionDeclaration(
+        func, ignoreParams, ToolSchemaObjectMapper.forMethod(objectMapper, func));
+  }
+
+  static FunctionDeclaration buildFunctionDeclaration(
+      Method func, List<String> ignoreParams, ToolSchemaObjectMapper.ResolvedMapper resolved) {
+    ObjectMapper objectMapper = resolved.mapper();
     String name =
         func.isAnnotationPresent(Annotations.Schema.class)
                 && !func.getAnnotation(Annotations.Schema.class).name().isEmpty()
@@ -108,7 +125,7 @@ public final class FunctionCallingUtils {
       if (schema == null || !schema.optional()) {
         required.add(paramName);
       }
-      properties.put(paramName, buildSchemaFromParameter(param));
+      properties.put(paramName, buildSchemaFromParameter(param, objectMapper));
     }
     builder.parameters(
         Schema.builder().required(required).properties(properties).type("OBJECT").build());
@@ -126,7 +143,7 @@ public final class FunctionCallingUtils {
           actualReturnType = parameterizedReturnType.getActualTypeArguments()[0];
         }
       }
-      builder.response(buildSchemaFromType(actualReturnType));
+      builder.response(schemaOf(actualReturnType, objectMapper));
     }
     return builder.build();
   }
@@ -143,8 +160,8 @@ public final class FunctionCallingUtils {
     return declaration;
   }
 
-  private static Schema buildSchemaFromParameter(Parameter param) {
-    Schema schema = buildSchemaFromType(param.getParameterizedType());
+  private static Schema buildSchemaFromParameter(Parameter param, ObjectMapper objectMapper) {
+    Schema schema = schemaOf(param.getParameterizedType(), objectMapper, true);
     if (param.isAnnotationPresent(Annotations.Schema.class)
         && !param.getAnnotation(Annotations.Schema.class).description().isEmpty()) {
       return schema.toBuilder()
@@ -155,7 +172,8 @@ public final class FunctionCallingUtils {
   }
 
   /**
-   * Builds a Schema from a Java Type, creating a new context for the generation process.
+   * Builds an output Schema from a Java Type. Creator-only inputs are included only in function
+   * parameter schemas, not in this serialization-oriented schema.
    *
    * @param type The Java {@link Type} to convert into a Schema.
    * @return The generated {@link Schema}.
@@ -166,7 +184,20 @@ public final class FunctionCallingUtils {
   }
 
   /**
-   * Builds a Schema from a Java Type, creating a new context for the generation process.
+   * Builds an output Schema from a Java Type. Creator-only inputs are included only in function
+   * parameter schemas, not in this serialization-oriented schema.
+   *
+   * <p>On object properties, non-empty {@code @Schema} names and descriptions take precedence over
+   * Jackson annotations. {@code optional = true} relaxes Jackson's required marker; the default
+   * {@code false} retains Jackson's requiredness. Business JSON is not changed. Custom mapper
+   * naming strategies also apply to unannotated properties. Isolated tool views are reused until
+   * modules or immutable mapper configuration change. Configure mix-ins, subtypes, default
+   * visibility/inclusion/setter/mergeable/leniency, {@code configOverride(Class)}, {@code
+   * coercionConfigFor(...)} and {@code coercionConfigDefaults()} before the first tool or schema
+   * operation; in-place changes to these settings are not tracked. Complete configuration before
+   * concurrent use. View selection follows declared property types only; annotations found only on
+   * polymorphic subtypes or runtime values behind {@code Object} or raw containers do not activate
+   * a view. Declare the annotated DTO or a typed container directly in those cases.
    *
    * @param type The Java {@link Type} to convert into a Schema.
    * @param objectMapper The {@link ObjectMapper} to use for introspecting types.
@@ -174,8 +205,16 @@ public final class FunctionCallingUtils {
    * @throws IllegalArgumentException if a type is encountered that cannot be serialized by Jackson.
    */
   public static Schema buildSchemaFromType(Type type, ObjectMapper objectMapper) {
+    return schemaOf(type, ToolSchemaObjectMapper.forType(objectMapper, type));
+  }
+
+  private static Schema schemaOf(Type type, ObjectMapper schemaMapper) {
+    return schemaOf(type, schemaMapper, false);
+  }
+
+  private static Schema schemaOf(Type type, ObjectMapper schemaMapper, boolean input) {
     return buildSchemaRecursive(
-        objectMapper.constructType(type), new SchemaGenerationContext(), objectMapper);
+        schemaMapper.constructType(type), new SchemaGenerationContext(input), schemaMapper);
   }
 
   /**
@@ -241,7 +280,25 @@ public final class FunctionCallingUtils {
         }
         builder.enum_(enumValues).type("STRING").format("enum");
       } else { // POJO
-        if (!objectMapper.canSerialize(rawClass)) {
+        BeanDescription beanDescription =
+            objectMapper.getSerializationConfig().introspect(javaType);
+        Map<String, BeanPropertyDefinition> definitions = new LinkedHashMap<>();
+        for (BeanPropertyDefinition property : beanDescription.findProperties()) {
+          if (property.couldSerialize()) {
+            definitions.put(property.getName(), property);
+          }
+        }
+        if (context.input) {
+          // Only add creator-only inputs; a pure setter may instead be a tool such as
+          // setAlarm(int).
+          for (BeanPropertyDefinition property :
+              objectMapper.getDeserializationConfig().introspect(javaType).findProperties()) {
+            if (property.hasConstructorParameter()) {
+              definitions.putIfAbsent(property.getName(), property);
+            }
+          }
+        }
+        if (!objectMapper.canSerialize(rawClass) && (!context.input || definitions.isEmpty())) {
           throw new IllegalArgumentException(
               "Unsupported type: "
                   + rawClass.getName()
@@ -249,15 +306,18 @@ public final class FunctionCallingUtils {
                   + " primitive. Opaque types like Protobuf models are not supported"
                   + " directly.");
         }
-        BeanDescription beanDescription =
-            objectMapper.getSerializationConfig().introspect(javaType);
         Map<String, Schema> properties = new LinkedHashMap<>();
         List<String> required = new ArrayList<>();
-        for (BeanPropertyDefinition property : beanDescription.findProperties()) {
+        for (BeanPropertyDefinition property : definitions.values()) {
           AnnotatedMember member = property.getPrimaryMember();
           if (member != null) {
-            properties.put(
-                property.getName(), buildSchemaRecursive(member.getType(), context, objectMapper));
+            Schema propertySchema =
+                buildSchemaRecursive(property.getPrimaryType(), context, objectMapper);
+            String description = property.getMetadata().getDescription();
+            if (description != null && !description.isEmpty()) {
+              propertySchema = propertySchema.toBuilder().description(description).build();
+            }
+            properties.put(property.getName(), propertySchema);
             if (property.isRequired()) {
               required.add(property.getName());
             }
