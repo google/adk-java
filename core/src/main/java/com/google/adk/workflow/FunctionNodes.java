@@ -33,7 +33,8 @@ import org.jspecify.annotations.Nullable;
  *   <li>A primitive or boxed number or boolean, also in a primitive array other than {@code byte[]}
  *       (base64) or as a map key, accepts only its own JSON type or the same value quoted ({@code
  *       "3"}). An integer also accepts a whole number such as {@code 3.0}, and a char only one
- *       character of text.
+ *       character of text. Inside a record or class, an {@code OptionalInt}, {@code OptionalLong}
+ *       or {@code OptionalDouble} reads its value the same way, and null as empty.
  *   <li>An enum or boolean reads a number only where Jackson writes it as one.
  *   <li>A port of {@code Event} or of a {@code com.google.genai.types} type such as {@code
  *       Content}, or of a list, map or array of them, rejects unknown keys anywhere in its value.

@@ -35,17 +35,20 @@ import com.google.common.primitives.Primitives;
 import java.io.IOException;
 import java.lang.reflect.Array;
 import java.math.BigInteger;
+import java.util.OptionalDouble;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.function.Function;
 import java.util.function.LongFunction;
 import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Number, boolean and char readers, also for primitive arrays and map keys. Each accepts a value's
- * own JSON type, the same value quoted, and for an integer type a whole number such as {@code
- * "1e2"}; Jackson's coercion configs cannot express this. {@code BigInteger}, {@code BigDecimal},
- * {@code Number}, {@code OptionalInt}, {@code OptionalLong}, {@code OptionalDouble} and the {@code
- * Atomic} types keep Jackson's readers.
+ * Number, boolean and char readers, also for primitive arrays, map keys and {@code OptionalInt},
+ * {@code OptionalLong} and {@code OptionalDouble}. Each accepts a value's own JSON type, the same
+ * value quoted, and for an integer type a whole number such as {@code "1e2"}; Jackson's coercion
+ * configs cannot express this. {@code BigInteger}, {@code BigDecimal}, {@code Number} and the
+ * {@code Atomic} types keep Jackson's readers.
  */
 final class PortScalars {
 
@@ -73,6 +76,20 @@ final class PortScalars {
     addArray(module, double[].class);
     addArray(module, float[].class);
     addArray(module, boolean[].class);
+    addOptional(
+        module, OptionalInt.class, whole(n -> (int) n), OptionalInt::of, OptionalInt.empty());
+    addOptional(
+        module,
+        OptionalLong.class,
+        PortScalars::integerLiteral,
+        OptionalLong::of,
+        OptionalLong.empty());
+    addOptional(
+        module,
+        OptionalDouble.class,
+        PortScalars::doubleLiteral,
+        OptionalDouble::of,
+        OptionalDouble.empty());
     return module;
   }
 
@@ -85,6 +102,15 @@ final class PortScalars {
     module.addDeserializer(boxed, new ScalarDeserializer<>(boxed, defaultValue, reader));
     module.addDeserializer(primitive, new ScalarDeserializer<>(primitive, defaultValue, reader));
     module.addKeyDeserializer(boxed, new ScalarKeyDeserializer(boxed, reader));
+  }
+
+  private static <T, E> void addOptional(
+      SimpleModule module,
+      Class<T> type,
+      Function<@Nullable Object, @Nullable E> reader,
+      Function<E, T> wrap,
+      T empty) {
+    module.addDeserializer(type, new PrimitiveOptionalDeserializer<>(type, reader, wrap, empty));
   }
 
   private static <A> void addArray(SimpleModule module, Class<A> type) {
@@ -306,6 +332,38 @@ final class PortScalars {
     @Override
     public A getEmptyValue(DeserializationContext ctxt) {
       return type.cast(Array.newInstance(type.getComponentType(), 0));
+    }
+  }
+
+  /**
+   * Reads an {@code OptionalInt}, {@code OptionalLong} or {@code OptionalDouble}: null as empty.
+   */
+  private static final class PrimitiveOptionalDeserializer<T, E> extends StdScalarDeserializer<T> {
+    private final Function<@Nullable Object, @Nullable E> reader;
+    private final Function<E, T> wrap;
+    private final T empty;
+
+    PrimitiveOptionalDeserializer(
+        Class<T> type,
+        Function<@Nullable Object, @Nullable E> reader,
+        Function<E, T> wrap,
+        T empty) {
+      super(type);
+      this.reader = reader;
+      this.wrap = wrap;
+      this.empty = empty;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked") // handleUnexpectedToken returns a T or throws.
+    public T deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+      E value = reader.apply(scalarValue(p));
+      return value != null ? wrap.apply(value) : (T) ctxt.handleUnexpectedToken(handledType(), p);
+    }
+
+    @Override
+    public T getNullValue(DeserializationContext ctxt) {
+      return empty;
     }
   }
 }

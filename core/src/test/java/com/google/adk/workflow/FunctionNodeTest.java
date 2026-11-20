@@ -120,6 +120,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CancellationException;
@@ -5642,6 +5645,7 @@ public final class FunctionNodeTest {
     record Tally(List<Integer> counts, Map<String, Boolean> flags) {}
     record Blank(@JsonSetter(nulls = Nulls.AS_EMPTY) int n) {}
     record Keyed(Map<Integer, String> byId) {}
+    record Optionals(OptionalInt n, OptionalLong l, OptionalDouble d) {}
     ImmutableList<Case> cases =
         ImmutableList.of(
             new Case("3", int.class, "Integer:3"),
@@ -5720,7 +5724,32 @@ public final class FunctionNodeTest {
                 ImmutableMap.of("byId", ImmutableMap.of("3.0", "a")),
                 Keyed.class,
                 "Keyed:Keyed[byId={3=a}]"),
-            new Case(ImmutableMap.of("byId", ImmutableMap.of("003", "a")), Keyed.class, "fails"));
+            new Case(ImmutableMap.of("byId", ImmutableMap.of("003", "a")), Keyed.class, "fails"),
+            // OptionalInt, OptionalLong and OptionalDouble read as int, long and double; null is
+            // empty.
+            new Case(
+                ImmutableMap.of("n", 2.0, "l", 2.0),
+                Optionals.class,
+                "Optionals:Optionals[n=OptionalInt[2], l=OptionalLong[2], d=OptionalDouble.empty]"),
+            new Case(
+                ImmutableMap.of("n", "3", "l", "1e2", "d", "2.5"),
+                Optionals.class,
+                "Optionals:Optionals[n=OptionalInt[3], l=OptionalLong[100],"
+                    + " d=OptionalDouble[2.5]]"),
+            new Case(ImmutableMap.of("n", 3_000_000_000L), Optionals.class, "fails"),
+            new Case(
+                ImmutableMap.of("l", 3_000_000_000L),
+                Optionals.class,
+                "Optionals:Optionals[n=OptionalInt.empty, l=OptionalLong[3000000000],"
+                    + " d=OptionalDouble.empty]"),
+            new Case(ImmutableMap.of("n", "003"), Optionals.class, "fails"),
+            new Case(ImmutableMap.of("l", "003"), Optionals.class, "fails"),
+            new Case(ImmutableMap.of("d", "NaN"), Optionals.class, "fails"),
+            new Case(
+                JsonNodeFactory.instance.objectNode().putNull("n"),
+                Optionals.class,
+                "Optionals:Optionals[n=OptionalInt.empty, l=OptionalLong.empty,"
+                    + " d=OptionalDouble.empty]"));
 
     // Act
     ImmutableMap<String, Object> actual = readAll(cases);
