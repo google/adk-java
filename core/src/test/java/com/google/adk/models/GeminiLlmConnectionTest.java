@@ -32,6 +32,7 @@ import com.google.genai.types.LiveSendClientContentParameters;
 import com.google.genai.types.LiveSendRealtimeInputParameters;
 import com.google.genai.types.LiveSendToolResponseParameters;
 import com.google.genai.types.LiveServerContent;
+import com.google.genai.types.LiveServerGoAway;
 import com.google.genai.types.LiveServerMessage;
 import com.google.genai.types.LiveServerSetupComplete;
 import com.google.genai.types.LiveServerToolCall;
@@ -39,8 +40,11 @@ import com.google.genai.types.LiveServerToolCallCancellation;
 import com.google.genai.types.Part;
 import com.google.genai.types.Transcription;
 import com.google.genai.types.UsageMetadata;
+import com.google.genai.types.VoiceActivity;
+import com.google.genai.types.VoiceActivityDetectionSignal;
 import io.reactivex.rxjava3.observers.TestObserver;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -54,6 +58,160 @@ import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public final class GeminiLlmConnectionTest {
+
+  @Test
+  public void convertToServerResponse_goAway_isNotAnError() {
+    LiveServerMessage message =
+        LiveServerMessage.builder()
+            .goAway(LiveServerGoAway.builder().timeLeft(Duration.ofSeconds(30)).build())
+            .build();
+
+    TestObserver<LlmResponse> observer =
+        GeminiLlmConnection.convertToServerResponse(message, new PendingText()).test();
+
+    observer.assertComplete().assertNoErrors().assertValueCount(1);
+    LlmResponse response = getOnlyElement(observer.values());
+    assertThat(response.errorCode()).isEmpty();
+    assertThat(response.errorMessage()).isEmpty();
+    assertThat(response.goAway()).isEqualTo(message.goAway());
+    assertThat(response.content()).isEmpty();
+    assertThat(response.turnComplete().orElse(false)).isFalse();
+  }
+
+  @Test
+  public void convertToServerResponse_voiceActivity_isNotAnError() {
+    for (String type : ImmutableList.of("ACTIVITY_START", "ACTIVITY_END")) {
+      LiveServerMessage message =
+          LiveServerMessage.builder()
+              .voiceActivity(VoiceActivity.builder().voiceActivityType(type).build())
+              .build();
+
+      TestObserver<LlmResponse> observer =
+          GeminiLlmConnection.convertToServerResponse(message, new PendingText()).test();
+
+      observer.assertComplete().assertNoErrors().assertValueCount(1);
+      LlmResponse response = getOnlyElement(observer.values());
+      assertThat(response.errorCode()).isEmpty();
+      assertThat(response.errorMessage()).isEmpty();
+      assertThat(response.voiceActivity()).isEqualTo(message.voiceActivity());
+      assertThat(response.content()).isEmpty();
+      assertThat(response.turnComplete().orElse(false)).isFalse();
+    }
+  }
+
+  @Test
+  public void convertToServerResponse_voiceActivityDetectionSignal_isIgnored() {
+    LiveServerMessage message =
+        LiveServerMessage.builder()
+            .voiceActivityDetectionSignal(
+                VoiceActivityDetectionSignal.builder().vadSignalType("VAD_SIGNAL_TYPE_SOS").build())
+            .build();
+
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).test().assertResult();
+  }
+
+  @Test
+  public void convertToServerResponse_controlMessages_preserveEmptyPayloads() {
+    LiveServerGoAway goAway = LiveServerGoAway.builder().build();
+    VoiceActivity voiceActivity = VoiceActivity.builder().build();
+    LiveServerMessage message =
+        LiveServerMessage.builder().goAway(goAway).voiceActivity(voiceActivity).build();
+
+    TestObserver<LlmResponse> observer =
+        GeminiLlmConnection.convertToServerResponse(message, new PendingText()).test();
+
+    observer.assertComplete().assertNoErrors().assertValueCount(2);
+    assertThat(observer.values().get(0).goAway()).hasValue(goAway);
+    assertThat(observer.values().get(1).voiceActivity()).hasValue(voiceActivity);
+    for (LlmResponse response : observer.values()) {
+      assertThat(response.errorCode()).isEmpty();
+    }
+  }
+
+  @Test
+  public void convertToServerResponse_controlsAlongsideContentAndUsage_preservesAllFields() {
+    LiveServerGoAway goAway = LiveServerGoAway.builder().timeLeft(Duration.ofSeconds(30)).build();
+    VoiceActivity voiceActivity = VoiceActivity.builder().voiceActivityType("ACTIVITY_END").build();
+    LiveServerMessage message =
+        LiveServerMessage.builder()
+            .serverContent(
+                LiveServerContent.builder().modelTurn(modelContent(Part.fromText("Hello"))).build())
+            .usageMetadata(UsageMetadata.builder().totalTokenCount(7).build())
+            .goAway(goAway)
+            .voiceActivity(voiceActivity)
+            .voiceActivityDetectionSignal(
+                VoiceActivityDetectionSignal.builder().vadSignalType("VAD_SIGNAL_TYPE_EOS").build())
+            .build();
+
+    TestObserver<LlmResponse> observer =
+        GeminiLlmConnection.convertToServerResponse(message, new PendingText()).test();
+
+    observer.assertComplete().assertNoErrors().assertValueCount(4);
+    assertThat(observer.values().get(0).content().get().text()).isEqualTo("Hello");
+    assertThat(observer.values().get(1).usageMetadata().get().totalTokenCount()).hasValue(7);
+    assertThat(observer.values().get(2).goAway()).hasValue(goAway);
+    assertThat(observer.values().get(3).voiceActivity()).hasValue(voiceActivity);
+    for (LlmResponse response : observer.values()) {
+      assertThat(response.errorCode()).isEmpty();
+    }
+  }
+
+  @Test
+  public void convertToServerResponse_controlMessages_doNotFlushPendingText() {
+    PendingText pendingText = new PendingText();
+    List<LlmResponse> responses = new ArrayList<>();
+    for (LiveServerMessage message :
+        ImmutableList.of(
+            modelTurn(Part.fromText("Hel")),
+            LiveServerMessage.builder()
+                .goAway(LiveServerGoAway.builder().timeLeft(Duration.ofSeconds(30)).build())
+                .voiceActivity(VoiceActivity.builder().voiceActivityType("ACTIVITY_START").build())
+                .build(),
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("lo")))
+                    .turnComplete(true)))) {
+      responses.addAll(
+          GeminiLlmConnection.convertToServerResponse(message, pendingText).toList().blockingGet());
+    }
+
+    assertThat(responses).hasSize(5);
+    assertThat(responses.get(0).partial()).hasValue(true);
+    assertThat(responses.get(1).goAway()).isPresent();
+    assertThat(responses.get(2).voiceActivity()).isPresent();
+    assertThat(responses.get(3).content().get().text()).isEqualTo("Hello");
+    assertThat(responses.get(3).partial()).hasValue(false);
+    assertThat(responses.get(4).turnComplete()).hasValue(true);
+  }
+
+  @Test
+  public void receive_goAway_doesNotCloseConnectionOrStopLaterResponses() {
+    CompletableFuture<GeminiLiveTransport> future = new CompletableFuture<>();
+    GeminiLlmConnection connection = new GeminiLlmConnection(future);
+    TestSubscriber<LlmResponse> subscriber = connection.receive().test();
+    FakeTransport transport =
+        new FakeTransport(
+            /* endStreamOnReceive= */ false,
+            ImmutableList.of(
+                LiveServerMessage.builder()
+                    .goAway(LiveServerGoAway.builder().timeLeft(Duration.ofSeconds(30)).build())
+                    .build(),
+                serverContent(
+                    LiveServerContent.builder()
+                        .modelTurn(modelContent(Part.fromText("Still connected")))
+                        .turnComplete(true))));
+    try {
+      future.complete(transport);
+      subscriber.awaitCount(3).assertNoErrors().assertNotComplete().assertValueCount(3);
+
+      assertThat(subscriber.values().get(0).goAway()).isPresent();
+      assertThat(subscriber.values().get(1).content().get().text()).isEqualTo("Still connected");
+      assertThat(subscriber.values().get(2).turnComplete()).hasValue(true);
+      assertThat(transport.closeCount.get()).isEqualTo(0);
+    } finally {
+      connection.close();
+    }
+  }
 
   @Test
   public void sendContent_withoutPartial_completesTurn() {

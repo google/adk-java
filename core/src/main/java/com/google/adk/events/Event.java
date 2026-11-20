@@ -37,7 +37,9 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.LiveServerGoAway;
 import com.google.genai.types.Transcription;
+import com.google.genai.types.VoiceActivity;
 import java.time.InstantSource;
 import java.util.List;
 import java.util.Objects;
@@ -70,6 +72,8 @@ public class Event extends JsonBaseModel {
   private @Nullable String modelVersion;
   private @Nullable Transcription inputTranscription;
   private @Nullable Transcription outputTranscription;
+  private @Nullable LiveServerGoAway goAway;
+  private @Nullable VoiceActivity voiceActivity;
   private @Nullable Object output;
   private @Nullable NodeInfo nodeInfo;
   private @Nullable CacheMetadata cacheMetadata;
@@ -329,6 +333,26 @@ public class Event extends JsonBaseModel {
     this.outputTranscription = outputTranscription;
   }
 
+  /** A Live server warning that the connection will close; does not complete the model turn. */
+  @JsonProperty("goAway")
+  public Optional<LiveServerGoAway> goAway() {
+    return Optional.ofNullable(goAway);
+  }
+
+  public void setGoAway(@Nullable LiveServerGoAway goAway) {
+    this.goAway = goAway;
+  }
+
+  /** A Live server notification that the user has started or stopped speaking. */
+  @JsonProperty("voiceActivity")
+  public Optional<VoiceActivity> voiceActivity() {
+    return Optional.ofNullable(voiceActivity);
+  }
+
+  public void setVoiceActivity(@Nullable VoiceActivity voiceActivity) {
+    this.voiceActivity = voiceActivity;
+  }
+
   /**
    * For a workflow node, returns the value handed to successors, distinct from {@link #content()},
    * or empty when the event carries no node output. Holds any value Jackson can serialize, such as
@@ -436,6 +460,8 @@ public class Event extends JsonBaseModel {
     }
     return functionCalls().isEmpty()
         && functionResponses().isEmpty()
+        && goAway().isEmpty()
+        && voiceActivity().isEmpty()
         && !partial().orElse(false)
         && !hasTrailingCodeExecutionResult();
   }
@@ -503,6 +529,8 @@ public class Event extends JsonBaseModel {
     private @Nullable String modelVersion;
     private @Nullable Transcription inputTranscription;
     private @Nullable Transcription outputTranscription;
+    private @Nullable LiveServerGoAway goAway;
+    private @Nullable VoiceActivity voiceActivity;
     private @Nullable Object output;
     private @Nullable NodeInfo nodeInfo;
     private @Nullable CacheMetadata cacheMetadata;
@@ -691,6 +719,20 @@ public class Event extends JsonBaseModel {
       return this;
     }
 
+    @CanIgnoreReturnValue
+    @JsonProperty("goAway")
+    public Builder goAway(@Nullable LiveServerGoAway value) {
+      this.goAway = value;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    @JsonProperty("voiceActivity")
+    public Builder voiceActivity(@Nullable VoiceActivity value) {
+      this.voiceActivity = value;
+      return this;
+    }
+
     @Experimental
     @CanIgnoreReturnValue
     @JsonProperty("output")
@@ -739,6 +781,8 @@ public class Event extends JsonBaseModel {
           timestamp().orElseGet(() -> InstantSource.system().instant().toEpochMilli()));
       event.setInputTranscription(inputTranscription);
       event.setOutputTranscription(outputTranscription);
+      event.setGoAway(goAway);
+      event.setVoiceActivity(voiceActivity);
       event.setOutput(output);
       event.setNodeInfo(nodeInfo);
       event.setCacheMetadata(cacheMetadata);
@@ -779,6 +823,8 @@ public class Event extends JsonBaseModel {
         .modelVersion(this.modelVersion)
         .inputTranscription(this.inputTranscription)
         .outputTranscription(this.outputTranscription)
+        .goAway(this.goAway)
+        .voiceActivity(this.voiceActivity)
         .output(this.output)
         .nodeInfo(this.nodeInfo)
         .cacheMetadata(this.cacheMetadata)
@@ -815,6 +861,8 @@ public class Event extends JsonBaseModel {
         && Objects.equals(modelVersion, other.modelVersion)
         && Objects.equals(inputTranscription, other.inputTranscription)
         && Objects.equals(outputTranscription, other.outputTranscription)
+        && Objects.equals(goAway, other.goAway)
+        && Objects.equals(voiceActivity, other.voiceActivity)
         && Objects.equals(output, other.output)
         && Objects.equals(nodeInfo, other.nodeInfo)
         && Objects.equals(cacheMetadata, other.cacheMetadata);
@@ -849,6 +897,8 @@ public class Event extends JsonBaseModel {
         modelVersion,
         inputTranscription,
         outputTranscription,
+        goAway,
+        voiceActivity,
         output,
         nodeInfo,
         cacheMetadata,
