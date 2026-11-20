@@ -506,16 +506,23 @@ final class PortCodec<T> {
     if (raw == Object.class || hasType(value, type, /* trustGenericFields= */ false)) {
       return (T) value;
     }
-    if (value instanceof Content || value instanceof Event) {
+    if (value instanceof Event) {
       throw mismatch(what, value.getClass().getSimpleName());
+    }
+    boolean fromMessage = value instanceof Content;
+    if (value instanceof Content content) {
+      value = MessageReader.readValue(content, schema(), what);
     }
     T converted;
     try {
       converted = MAPPER.convertValue(value, type);
     } catch (RuntimeException e) {
       // Jackson's and genai's messages can quote the value, so no cause.
-      throw new NodeInputValidationException(
-          "validation error: " + what + " does not match " + type.toCanonical() + ".");
+      throw doesNotMatch(what);
+    }
+    // A message's JSON null, or "null" read as a Character, is not a value.
+    if (converted == null && fromMessage) {
+      throw doesNotMatch(what);
     }
     // A value such as an empty Optional converts to null.
     if (converted == null && primitive) {
@@ -588,6 +595,11 @@ final class PortCodec<T> {
   private NodeInputValidationException mismatch(String what, String got) {
     return new NodeInputValidationException(
         "validation error: " + what + " expected " + type.toCanonical() + ", but got " + got + ".");
+  }
+
+  private NodeInputValidationException doesNotMatch(String what) {
+    return new NodeInputValidationException(
+        "validation error: " + what + " does not match " + type.toCanonical() + ".");
   }
 
   /**
@@ -739,6 +751,8 @@ final class PortCodec<T> {
 
   /** Reads a float with no fraction, such as 2.0, into a whole-number type, and rejects 2.5. */
   private static final class WholeNumberDeserializer extends DelegatingDeserializer {
+    private static final int MAX_WHOLE_NUMBER_DIGITS = 1000;
+
     WholeNumberDeserializer(JsonDeserializer<?> delegate) {
       super(delegate);
     }
@@ -754,10 +768,16 @@ final class PortCodec<T> {
         return super.deserialize(p, ctxt);
       }
       BigDecimal number = p.getDecimalValue();
-      if (number.stripTrailingZeros().scale() > 0) {
+      BigDecimal whole = number.stripTrailingZeros();
+      if (whole.scale() > 0) {
         return ctxt.handleWeirdNumberValue(handledType(), number, "not a whole number");
       }
-      return ctxt.readTreeAsValue(BigIntegerNode.valueOf(number.toBigInteger()), handledType());
+      // Caps the integer digits before converting untrusted input, which lint requires.
+      // A long, since the subtraction overflows an int for an exponent such as 1e2147483647.
+      if ((long) whole.precision() - whole.scale() > MAX_WHOLE_NUMBER_DIGITS) {
+        return ctxt.handleWeirdNumberValue(handledType(), number, "too many digits");
+      }
+      return ctxt.readTreeAsValue(BigIntegerNode.valueOf(whole.toBigIntegerExact()), handledType());
     }
   }
 }

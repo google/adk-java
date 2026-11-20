@@ -18,9 +18,6 @@ package com.google.adk.workflow;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectReader;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Context;
@@ -37,9 +34,7 @@ import com.google.common.collect.Sets;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
-import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
-import com.google.genai.types.Type;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -63,12 +58,6 @@ import org.jspecify.annotations.Nullable;
 final class ResumeScan {
 
   private static final String RESULT_KEY = "result";
-  // Stands for text that is not JSON, since the JSON text null reads as a null value.
-  private static final Object NOT_JSON = new Object();
-  private static final ObjectReader STRICT_JSON =
-      JsonBaseModel.getMapper()
-          .readerFor(Object.class)
-          .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
   private ResumeScan() {}
 
@@ -201,22 +190,27 @@ final class ResumeScan {
 
   /**
    * Returns the output of a node whose content was its output: the content's text, read as JSON
-   * when the node has an output schema that does not accept a string. Blank text is no output.
+   * when the node has an output schema that does not accept a string, or as the enum value it
+   * quotes. Blank text is no output.
    *
    * @throws IllegalArgumentException if the schema needs JSON and the text is not JSON
    */
   static @Nullable Object processRehydratedOutput(Node node, Content content) {
-    String text = textOf(content).trim();
+    String text = MessageReader.textOf(content).trim();
     if (text.isEmpty()) {
       return null;
     }
     Optional<Schema> schema = node.outputSchema();
-    // Model text is raw rather than JSON-quoted, so it stays text when the schema accepts strings.
-    if (schema.isEmpty() || acceptsString(schema.get())) {
+    if (schema.isEmpty()) {
       return text;
     }
-    Object value = readJson(text);
-    if (value == NOT_JSON) {
+    // Model text is raw rather than JSON-quoted, so it stays text when the schema accepts strings,
+    // unless it quotes one of the schema's enum values.
+    if (MessageReader.acceptsString(schema.get())) {
+      return MessageReader.enumValueOrText(schema.get(), text);
+    }
+    Object value = MessageReader.readJson(text);
+    if (value == MessageReader.NOT_JSON) {
       throw new IllegalArgumentException(
           "Validation failed for rehydrated output against schema: value is not valid JSON.");
     }
@@ -249,37 +243,11 @@ final class ResumeScan {
       return response;
     }
     Object value = map.get(RESULT_KEY);
-    if (!(value instanceof String text) || (schema != null && acceptsString(schema))) {
+    if (!(value instanceof String text)
+        || (schema != null && MessageReader.acceptsString(schema))) {
       return value;
     }
-    Object json = readJson(text);
-    return json == NOT_JSON ? text : json;
-  }
-
-  /** Returns whether {@code schema} accepts a string, directly or through an {@code anyOf}. */
-  private static boolean acceptsString(Schema schema) {
-    return schema.type().map(Type::knownEnum).orElse(null) == Type.Known.STRING
-        || schema.anyOf().orElse(ImmutableList.of()).stream().anyMatch(ResumeScan::acceptsString);
-  }
-
-  /** Reads {@code text} as strict JSON, or returns {@link #NOT_JSON} if it is not JSON. */
-  private static @Nullable Object readJson(String text) {
-    try {
-      return STRICT_JSON.readValue(text);
-    } catch (JsonProcessingException e) {
-      return NOT_JSON;
-    }
-  }
-
-  /** Returns the text of the non-thought parts of {@code content}. */
-  private static String textOf(Content content) {
-    StringBuilder text = new StringBuilder();
-    for (Part part : content.parts().orElse(ImmutableList.of())) {
-      if (!part.thought().orElse(false)) {
-        part.text().ifPresent(text::append);
-      }
-    }
-    return text.toString();
+    return MessageReader.jsonOrText(text);
   }
 
   /** Reads the response schema that an {@value RequestInput#FUNCTION_CALL_NAME} call carried. */

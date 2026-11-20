@@ -31,6 +31,7 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
@@ -853,6 +854,15 @@ public final class FunctionNodeTest {
     assertThat(result.outputAt("wf@1/router@1"))
         .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3));
     assertThat(result.storedOutputAt("wf@1/router@1")).isEqualTo(result.outputAt("wf@1/router@1"));
+  }
+
+  @Test
+  public void builder_stringBodyDelegatingAMessage_outputsItsText() {
+    RunResult result = run(chain(delegating(String.class, Content.fromParts(Part.fromText("hi")))));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/router@1")).isEqualTo("hi");
+    assertThat(result.storedOutputAt("wf@1/router@1")).isEqualTo("hi");
   }
 
   @Test
@@ -4650,6 +4660,51 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void of_bigIntegerPortFedAWholeFloat_readsItExactly() {
+    FunctionNode<BigInteger, String> read =
+        FunctionNodes.of("read", BigInteger.class, String.class, (ctx, n) -> n.toString());
+
+    RunResult whole = run(chain(emitter("make", 3.0), read));
+    RunResult exponent = run(chain(emitter("make", new BigDecimal("3e2")), read));
+    RunResult thousandDigits = run(chain(emitter("make", new BigDecimal("1e999")), read));
+
+    assertThat(whole.outputAt("wf@1/read@1")).isEqualTo("3");
+    assertThat(exponent.outputAt("wf@1/read@1")).isEqualTo("300");
+    assertThat(thousandDigits.outputAt("wf@1/read@1")).isEqualTo("1" + "0".repeat(999));
+  }
+
+  @Test
+  public void of_bigIntegerPortFedAFractionOrMoreThanAThousandDigits_failsWithAValidationError() {
+    FunctionNode<BigInteger, String> read =
+        FunctionNodes.of("read", BigInteger.class, String.class, (ctx, n) -> n.toString());
+
+    RunResult fraction = run(chain(emitter("make", 2.5), read));
+    RunResult thousandAndOneDigits = run(chain(emitter("make", new BigDecimal("1e1000")), read));
+
+    assertThat(fraction.errorMessage("NodeInputValidationException"))
+        .contains("input of node 'read'");
+    assertThat(thousandAndOneDigits.errorMessage("NodeInputValidationException"))
+        .contains("input of node 'read'");
+  }
+
+  @Test
+  public void of_wholeNumberPortsFedAHugeExponent_failWithAValidationError() {
+    FunctionNode<Long, Long> longPort =
+        FunctionNodes.of("read", Long.class, Long.class, (ctx, n) -> n);
+    FunctionNode<BigInteger, BigInteger> bigPort =
+        FunctionNodes.of("read", BigInteger.class, BigInteger.class, (ctx, n) -> n);
+    BigDecimal huge = new BigDecimal("1e30000000");
+
+    RunResult asLong = run(chain(emitter("make", huge), longPort));
+    RunResult asBigInteger = run(chain(emitter("make", huge), bigPort));
+
+    assertThat(asLong.errorMessage("NodeInputValidationException"))
+        .contains("input of node 'read'");
+    assertThat(asBigInteger.errorMessage("NodeInputValidationException"))
+        .contains("input of node 'read'");
+  }
+
+  @Test
   public void of_intPortFedAWholeFloat_readsTheWholeNumber() {
     FunctionNode<Integer, Integer> increment =
         FunctionNodes.of("increment", int.class, Integer.class, (ctx, n) -> n + 1);
@@ -5173,16 +5228,249 @@ public final class FunctionNodeTest {
   }
 
   @Test
-  public void of_recordPortFedTheUserMessage_failsNamingTheMessageType() {
+  public void of_typedPortsHandedAnEvent_failNamingTheEventType() {
+    // Arrange
+    Event event = Event.builder().author("someone").build();
+    FunctionNode<String, String> text =
+        FunctionNodes.of("text", String.class, String.class, (ctx, in) -> in);
+    FunctionNode<Order, String> order =
+        FunctionNodes.of("order", Order.class, String.class, (ctx, in) -> in.id());
+
+    // Act
+    RunResult intoText = run(chain(handing(event, text)));
+    RunResult intoOrder = run(chain(handing(event, order)));
+
+    // Assert
+    assertThat(intoText.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'text' expected java.lang.String, but got Event.");
+    assertThat(intoOrder.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'order' expected "
+                + Order.class.getName()
+                + ", but got Event.");
+  }
+
+  @Test
+  public void of_recordPortFedAMessageOfJsonNull_failsWithAValidationError() {
     FunctionNode<Order, String> describe =
         FunctionNodes.of("describe", Order.class, String.class, (ctx, order) -> order.id());
 
-    RunResult result = run(chain(describe));
+    RunResult result = runOn(chain(describe), "null");
 
     assertThat(result.errorMessage("NodeInputValidationException"))
-        .contains("input of node 'describe' expected");
+        .isEqualTo(
+            "validation error: input of node 'describe' does not match "
+                + Order.class.getName()
+                + ".");
+  }
+
+  @Test
+  public void of_portsFedTheUserMessage_readItByTheirType() {
+    // Arrange: text types get the message's text, other typed ports its JSON, the rest the message.
+    String json = "{\"id\": \"a1\", \"quantity\": 3}";
+    FunctionNode<String, String> text =
+        FunctionNodes.of("text", String.class, String.class, (ctx, in) -> in);
+    FunctionNode<byte[], String> bytes =
+        FunctionNodes.of("bytes", byte[].class, String.class, (ctx, in) -> new String(in, UTF_8));
+    FunctionNode<Order, String> order =
+        FunctionNodes.of(
+            "order", Order.class, String.class, (ctx, in) -> in.id() + " x" + in.quantity());
+    FunctionNode<Integer, Integer> increment =
+        FunctionNodes.of("increment", int.class, Integer.class, (ctx, n) -> n + 1);
+    FunctionNode<Content, String> content =
+        FunctionNodes.of("content", Content.class, String.class, (ctx, in) -> in.text());
+    FunctionNode<Object, String> any =
+        FunctionNodes.of(
+            "any",
+            Object.class,
+            String.class,
+            (ctx, in) -> in instanceof Content message ? "message " + message.text() : "other");
+    FunctionNode<Event, String> event =
+        FunctionNodes.of("event", Event.class, String.class, (ctx, in) -> in.author());
+
+    // Act
+    Object textOutput = outputOn(text, json);
+    // byte[] is a text type, which Jackson reads as base64.
+    Object bytesOutput = outputOn(bytes, "aGk=");
+    Object orderOutput = outputOn(order, json);
+    // Read as JSON, the message is the string "41"; its raw text would fail the int port.
+    Object incrementOutput = outputOn(increment, "\"41\"");
+    Object contentOutput = outputOn(content, json);
+    Object anyOutput = outputOn(any, json);
+    Object eventOutput = outputOn(event, "{\"author\": \"someone\"}");
+
+    // Assert
+    assertThat(textOutput).isEqualTo(json);
+    assertThat(bytesOutput).isEqualTo("hi");
+    assertThat(orderOutput).isEqualTo("a1 x3");
+    assertThat(incrementOutput).isEqualTo(42);
+    assertThat(contentOutput).isEqualTo(json);
+    assertThat(anyOutput).isEqualTo("message " + json);
+    assertThat(eventOutput).isEqualTo("someone");
+  }
+
+  @Test
+  public void of_stringPortFedAMultiPartMessage_readsItsTextPartsJoined() {
+    // Arrange
+    FunctionNode<String, String> echo =
+        FunctionNodes.of("echo", String.class, String.class, (ctx, text) -> text);
+    Content message =
+        Content.fromParts(
+            Part.fromText("Hello "),
+            Part.fromBytes(new byte[] {1, 2}, "image/png"),
+            Part.fromText("World"));
+
+    // Act
+    RunResult result = run(chain(echo), message);
+
+    // Assert: the image part is dropped.
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/echo@1")).isEqualTo("Hello World");
+  }
+
+  @Test
+  public void of_typedPortsFedAnAnswerWithThoughts_readOnlyTheAnswer() {
+    // Arrange
+    FunctionNode<String, String> text =
+        FunctionNodes.of("text", String.class, String.class, (ctx, in) -> in);
+    FunctionNode<Order, String> order =
+        FunctionNodes.of(
+            "order", Order.class, String.class, (ctx, in) -> in.id() + " x" + in.quantity());
+
+    // Act
+    RunResult intoText = run(chain(emitter("produce", answerWithThoughts("hello")), text));
+    RunResult intoOrder =
+        run(
+            chain(
+                emitter("produce", answerWithThoughts("{\"id\": \"a1\", \"quantity\": 3}")),
+                order));
+
+    // Assert
+    intoText.assertCompleted();
+    intoOrder.assertCompleted();
+    assertThat(intoText.outputAt("wf@1/text@1")).isEqualTo("hello");
+    assertThat(intoOrder.outputAt("wf@1/order@1")).isEqualTo("a1 x3");
+  }
+
+  @Test
+  public void of_listOfRecordsPortFedAJsonMessage_readsEachRecord() {
+    // Arrange
+    FunctionNode<List<Order>, List<Integer>> scale =
+        FunctionNodes.of(
+            "scale",
+            new TypeReference<List<Order>>() {},
+            new TypeReference<List<Integer>>() {},
+            (ctx, orders) ->
+                orders.stream().map(o -> o.quantity() * 10).collect(toImmutableList()));
+
+    // Act
+    Object output =
+        outputOn(scale, "[{\"id\": \"a1\", \"quantity\": 1}, {\"id\": \"b2\", \"quantity\": 2}]");
+
+    // Assert
+    assertThat(output).isEqualTo(ImmutableList.of(10, 20));
+  }
+
+  @Test
+  public void of_enumPortFedAMessageThatIsNotJson_readsItsText() {
+    // Arrange
+    FunctionNode<Status, Status> status =
+        FunctionNodes.of("status", Status.class, Status.class, (ctx, in) -> in);
+
+    // Act
+    Object output = outputOn(status, "SHIPPED");
+
+    // Assert
+    assertThat(output).isEqualTo("SHIPPED");
+  }
+
+  @Test
+  public void of_enumPortFedAQuotedName_readsTheName() {
+    // Arrange
+    FunctionNode<Status, Status> status =
+        FunctionNodes.of("status", Status.class, Status.class, (ctx, in) -> in);
+    FunctionNode<Color, Color> color =
+        FunctionNodes.of("color", Color.class, Color.class, (ctx, in) -> in);
+
+    // Act
+    Object statusOutput = outputOn(status, "\"SHIPPED\"");
+    Object colorOutput = outputOn(color, "\"dark-blue\"");
+
+    // Assert: as in ADK Python, an enum port takes its name with or without JSON quotes.
+    assertThat(statusOutput).isEqualTo("SHIPPED");
+    assertThat(colorOutput).isEqualTo("dark-blue");
+  }
+
+  @Test
+  public void of_enumPortFedAnUnknownOrPaddedName_failsWithAValidationError() {
+    // Arrange
+    FunctionNode<Status, Status> status =
+        FunctionNodes.of("status", Status.class, Status.class, (ctx, in) -> in);
+    String error =
+        "validation error: input of node 'status' does not match " + Status.class.getName() + ".";
+
+    // Act
+    RunResult unknown = runOn(chain(status), "\"FOO\"");
+    RunResult quotedPadded = runOn(chain(status), "\" SHIPPED\"");
+
+    // Assert
+    assertThat(unknown.errorMessage("NodeInputValidationException")).isEqualTo(error);
+    assertThat(quotedPadded.errorMessage("NodeInputValidationException")).isEqualTo(error);
+  }
+
+  @Test
+  public void of_stringPortFedAQuotedMessage_keepsTheQuotes() {
+    // Arrange
+    FunctionNode<String, String> echo =
+        FunctionNodes.of("echo", String.class, String.class, (ctx, s) -> s);
+
+    // Act
+    Object output = outputOn(echo, "\"hi\"");
+
+    // Assert
+    assertThat(output).isEqualTo("\"hi\"");
+  }
+
+  @Test
+  public void of_characterPortFedTheMessageNull_failsWithAValidationError() {
+    // Arrange
+    FunctionNode<Character, Character> echo =
+        FunctionNodes.of("echo", Character.class, Character.class, (ctx, c) -> c);
+
+    // Act
+    RunResult result = runOn(chain(echo), "null");
+
+    // Assert
     assertThat(result.errorMessage("NodeInputValidationException"))
-        .containsMatch("but got \\w*Content");
+        .isEqualTo("validation error: input of node 'echo' does not match java.lang.Character.");
+  }
+
+  @Test
+  public void of_characterPortFedAMessage_readsItsText() {
+    // Arrange
+    FunctionNode<Character, Character> echo =
+        FunctionNodes.of("echo", Character.class, Character.class, (ctx, c) -> c);
+
+    // Act
+    Object output = outputOn(echo, "7");
+
+    // Assert: read as JSON, "7" would be the number 7, which Jackson takes as a code point.
+    assertThat(output).isEqualTo("7");
+  }
+
+  @Test
+  public void of_recordPortFedAMessageThatIsNotJson_failsWithoutQuotingIt() {
+    FunctionNode<Order, String> describe =
+        FunctionNodes.of("describe", Order.class, String.class, (ctx, order) -> order.id());
+
+    RunResult result = runOn(chain(describe), "plain words");
+
+    assertThat(result.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'describe' does not match "
+                + Order.class.getName()
+                + ".");
   }
 
   @Test
@@ -6325,6 +6613,15 @@ public final class FunctionNodeTest {
     return (required.length == 0 ? object : object.required(required)).build();
   }
 
+  /** Returns a model message with a thought part before its {@code answer}. */
+  private static Content answerWithThoughts(String answer) {
+    return Content.builder()
+        .role("model")
+        .parts(
+            Part.builder().text("Let me think first.").thought(true).build(), Part.fromText(answer))
+        .build();
+  }
+
   /** Returns a node named {@code reply} that returns a Content saying "hi". */
   private static FunctionNode<Content, Content> reply() {
     return FunctionNodes.of(
@@ -6379,21 +6676,32 @@ public final class FunctionNodeTest {
     return FunctionNodes.builder(Content.class, outputType)
         .name("router")
         .rerunOnResume(true)
-        .body(
-            (ctx, message) -> {
-              Object unused =
-                  ctx.runNode(
-                          emitter("child", childOutput),
-                          null,
-                          RunNodeConfig.builder().useAsOutput(true).build())
-                      .blockingGet();
-              return null;
-            })
+        .body((ctx, message) -> {
+          Object unused =
+              ctx.runNode(
+                      emitter("child", childOutput),
+                      null,
+                      RunNodeConfig.builder().useAsOutput(true).build())
+                  .blockingGet();
+          return null;
+        })
+        .build();
+  }
+
+  /** Returns a node named {@code parent} that runs {@code child} on {@code input}. */
+  private static FunctionNode<Content, Void> handing(Object input, Node child) {
+    return FunctionNodes.builder(Content.class, Void.class)
+        .name("parent")
+        .rerunOnResume(true)
+        .body((ctx, message) -> {
+          Object unused = ctx.runNode(child, input).blockingGet();
+          return null;
+        })
         .build();
   }
 
   private static RunResult run(Node root) {
-    return run(root, null);
+    return run(root, /* scheduler= */ null, new InMemorySessionService());
   }
 
   private static RunResult run(Node root, @Nullable Scheduler scheduler) {
@@ -6403,15 +6711,39 @@ public final class FunctionNodeTest {
   /** Runs {@code root} as an app's root node through a {@link Runner} on a "go" message. */
   private static RunResult run(
       Node root, @Nullable Scheduler scheduler, BaseSessionService sessionService) {
+    return run(root, scheduler, sessionService, Content.fromParts(Part.fromText("go")));
+  }
+
+  private static RunResult run(Node root, Content message) {
+    return run(root, /* scheduler= */ null, new InMemorySessionService(), message);
+  }
+
+  private static RunResult run(
+      Node root,
+      @Nullable Scheduler scheduler,
+      BaseSessionService sessionService,
+      Content message) {
     Runner runner = runner(root, scheduler, sessionService);
     Session session = runner.sessionService().createSession(APP, USER).blockingGet();
     List<Event> events = new ArrayList<>();
     AtomicReference<Throwable> error = new AtomicReference<>();
     runner
-        .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+        .runAsync(USER, session.id(), message)
         .timeout(30, SECONDS)
         .blockingSubscribe(events::add, error::set);
     return new RunResult(ImmutableList.copyOf(events), error.get());
+  }
+
+  /** Like {@link #run(Node)}, but on a message with {@code text} instead of "go". */
+  private static RunResult runOn(Node root, String text) {
+    return run(root, Content.fromParts(Part.fromText(text)));
+  }
+
+  /** Runs {@code node} alone on a message with {@code text} and returns its output. */
+  private static @Nullable Object outputOn(Node node, String text) {
+    RunResult result = runOn(chain(node), text);
+    result.assertCompleted();
+    return result.outputAt("wf@1/" + node.name() + "@1");
   }
 
   /**

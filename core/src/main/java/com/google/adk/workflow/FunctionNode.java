@@ -29,6 +29,7 @@ import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
+import com.google.genai.types.Content;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Completable;
@@ -51,13 +52,19 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * A workflow node that runs a Java function on each input, with a type per port; build one with
- * {@link FunctionNodes#of} or {@link FunctionNodes#builder}. An {@code Object} input port takes its
- * input as it is, a {@code Content} or {@code Event} port reads its own type, a {@code Void} port
- * ignores its input, and Jackson reads any other type, so a user message reaches only a {@code
- * Content} or {@code Object} port. Every output is written in JSON form, so a successor reads the
- * same value whether it comes live or from a stored session. A body that gives its output to a
- * child with {@code useAsOutput} outputs the child's output written as {@code O}, as if it had
- * returned it.
+ * {@link FunctionNodes#of} or {@link FunctionNodes#builder}. An input port reads its input by type:
+ *
+ * <ul>
+ *   <li>{@code Void} ignores it; {@code Object}, or a type the input already has, takes it as is.
+ *   <li>Any other type rejects an {@link Event} and takes a {@link Content} message as its
+ *       non-thought text: the text itself if the port's schema is a string, as for {@code String}
+ *       or an enum ({@code byte[]} reads it as base64), and otherwise the text's JSON, or the text
+ *       if it is not JSON.
+ *   <li>Jackson converts that value, or any other input, to the port's type.
+ * </ul>
+ *
+ * <p>Every output, including the output of a {@code useAsOutput} child, is written as {@code O} in
+ * JSON form, so a successor reads the same value live or from a stored session.
  *
  * <p>The body may send events before its output with {@link Context#emit(Event)}:
  *

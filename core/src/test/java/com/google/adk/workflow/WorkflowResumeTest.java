@@ -906,6 +906,46 @@ public final class WorkflowResumeTest {
   }
 
   @Test
+  public void resume_messageOutputNodeWithAnEnumSchema_isRehydratedToTheQuotedName() {
+    // Arrange
+    Schema status = Schema.builder().type(Type.Known.STRING).enum_("OPEN", "SHIPPED").build();
+    Node chat = new MessageOutputNode("chat", "\"SHIPPED\"", status);
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, chat),
+                new Edge(START, ask),
+                new Edge(chat, join),
+                new Edge(ask, join)));
+    session.advance(go());
+
+    // Act
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    // Assert: as an enum port reads it live, the quoted name reads as the name.
+    assertThat(outputEventAt(events, "wf@1/j@1").output())
+        .hasValue(ImmutableMap.of("chat", "SHIPPED", "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_messageOutputNodeWithAnAnyOfSchema_readsOnlyStringEnumsUnquoted() {
+    // Arrange
+    Schema text = Schema.builder().type(Type.Known.STRING).build();
+    Schema letters = Schema.builder().type(Type.Known.STRING).enum_("A", "B").build();
+    Schema digits = Schema.builder().type(Type.Known.INTEGER).enum_("1", "2").build();
+
+    // Act
+    Object letter = rehydratedChat("\"A\"", Schema.builder().anyOf(letters, text).build());
+    Object digit = rehydratedChat("\"1\"", Schema.builder().anyOf(text, digits).build());
+
+    // Assert: only a string schema's enum values read without their quotes.
+    assertThat(letter).isEqualTo("A");
+    assertThat(digit).isEqualTo("\"1\"");
+  }
+
+  @Test
   public void resume_messageOutputNodeWithAnOutputSchema_isRehydratedToTheParsedValue() {
     Schema schema =
         Schema.builder()
@@ -1561,6 +1601,23 @@ public final class WorkflowResumeTest {
 
     assertThat(turn.error()).isInstanceOf(IllegalArgumentException.class);
     assertThat(turn.error()).hasMessageThat().contains("rehydrated output");
+  }
+
+  /** Returns the output of a node named chat that wrote {@code text}, as a resume rehydrates it. */
+  private static @Nullable Object rehydratedChat(String text, Schema schema) {
+    Node chat = new MessageOutputNode("chat", text, schema);
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, chat),
+                new Edge(START, ask),
+                new Edge(chat, join),
+                new Edge(ask, join)));
+    session.advance(go());
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+    return ((Map<?, ?>) outputEventAt(events, "wf@1/j@1").output().orElseThrow()).get("chat");
   }
 
   private static ImmutableList<Event> interruptEvents(List<Event> events) {
