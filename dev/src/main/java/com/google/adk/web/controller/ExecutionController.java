@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -79,15 +80,7 @@ public class ExecutionController {
    */
   @PostMapping("/run")
   public List<Event> agentRun(@RequestBody AgentRunRequest request) {
-    if (request.appName == null || request.appName.trim().isEmpty()) {
-      log.warn("appName cannot be null or empty in POST /run request.");
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "appName cannot be null or empty");
-    }
-    if (request.sessionId == null || request.sessionId.trim().isEmpty()) {
-      log.warn("sessionId cannot be null or empty in POST /run request.");
-      throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST, "sessionId cannot be null or empty");
-    }
+    validateRunRequest(request, "POST /run");
     log.info("Request received for POST /run for session: {}", request.sessionId);
 
     Runner runner = this.runnerService.getRunner(request.appName);
@@ -124,22 +117,10 @@ public class ExecutionController {
   public SseEmitter agentRunSse(@RequestBody AgentRunRequest request) {
     SseEmitter emitter = new SseEmitter(60 * 60 * 1000L); // 1 hour timeout
 
-    if (request.appName == null || request.appName.trim().isEmpty()) {
-      log.warn(
-          "appName cannot be null or empty in SseEmitter request for appName: {}, session: {}",
-          request.appName,
-          request.sessionId);
-      emitter.completeWithError(
-          new ResponseStatusException(HttpStatus.BAD_REQUEST, "appName cannot be null or empty"));
-      return emitter;
-    }
-    if (request.sessionId == null || request.sessionId.trim().isEmpty()) {
-      log.warn(
-          "sessionId cannot be null or empty in SseEmitter request for appName: {}, session: {}",
-          request.appName,
-          request.sessionId);
-      emitter.completeWithError(
-          new ResponseStatusException(HttpStatus.BAD_REQUEST, "sessionId cannot be null or empty"));
+    try {
+      validateRunRequest(request, "POST /run_sse");
+    } catch (ResponseStatusException e) {
+      emitter.completeWithError(e);
       return emitter;
     }
 
@@ -304,5 +285,17 @@ public class ExecutionController {
       details.put("stacktrace", Throwables.getStackTraceAsString(error));
     }
     return ImmutableMap.of("error", type + ": " + message, "error_details", details.buildOrThrow());
+  }
+
+  private static void validateRunRequest(AgentRunRequest request, String endpoint) {
+    requireNonBlank(request.appName, "appName", endpoint);
+    requireNonBlank(request.sessionId, "sessionId", endpoint);
+  }
+
+  private static void requireNonBlank(@Nullable String value, String field, String endpoint) {
+    if (value == null || value.trim().isEmpty()) {
+      log.warn("{} cannot be null or empty in {} request.", field, endpoint);
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, field + " cannot be null or empty");
+    }
   }
 }
