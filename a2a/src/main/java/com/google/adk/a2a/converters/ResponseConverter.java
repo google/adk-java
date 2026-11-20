@@ -77,9 +77,9 @@ public final class ResponseConverter {
 
   /**
    * Converts a A2A {@link ClientEvent} to an ADK {@link Event}, based on the event type. Returns an
-   * empty optional if the event should be ignored (e.g. if the event is not a final update for
-   * TaskArtifactUpdateEvent, if the message is empty for TaskStatusUpdateEvent, or if no part could
-   * be converted from a message or from the message of a status update that does not end the turn).
+   * empty optional if the event should be ignored: a TaskArtifactUpdateEvent that is not a final
+   * update, a TaskStatusUpdateEvent with an empty message or none of whose parts convert and that
+   * does not end the turn, or a message none of whose parts convert and that reports no error code.
    *
    * @throws IllegalArgumentException if the event type is not supported.
    */
@@ -87,7 +87,7 @@ public final class ResponseConverter {
       ClientEvent event, InvocationContext invocationContext) {
     if (event instanceof MessageEvent messageEvent) {
       return Optional.of(messageToEvent(messageEvent.getMessage(), invocationContext))
-          .filter(ResponseConverter::hasParts);
+          .filter(converted -> hasParts(converted) || converted.errorCode().isPresent());
     } else if (event instanceof TaskEvent taskEvent) {
       return Optional.of(taskToEvent(taskEvent.getTask(), invocationContext));
     } else if (event instanceof TaskUpdateEvent updateEvent) {

@@ -719,6 +719,21 @@ public final class ResponseConverterTest {
   }
 
   @Test
+  public void clientEventToEvent_withOnlyUnconvertibleMessagePartAndErrorCode_keepsEvent() {
+    Message a2aMessage =
+        agentMessage()
+            .parts(ImmutableList.of(invalidBase64Part()))
+            .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "\"SAFETY\""))
+            .build();
+
+    Optional<Event> optionalEvent =
+        ResponseConverter.clientEventToEvent(new MessageEvent(a2aMessage), invocationContext);
+
+    assertThat(optionalEvent.flatMap(Event::errorCode))
+        .hasValue(new FinishReason(FinishReason.Known.SAFETY));
+  }
+
+  @Test
   public void clientEventToEvent_withOnlyUnconvertibleMessagePart_returnsEmpty() {
     Message a2aMessage =
         new Message.Builder()
