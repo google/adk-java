@@ -463,6 +463,9 @@ public final class FunctionNodeTest {
   @JsonFormat(shape = JsonFormat.Shape.ARRAY)
   record Pair(int x, int y) {}
 
+  /** A user record that holds an event. */
+  record Envelope(String id, Event event) {}
+
   /** Written as its ordinal wherever it appears, as its numeric shape asks. */
   @JsonFormat(shape = JsonFormat.Shape.NUMBER)
   enum Rank {
@@ -976,6 +979,44 @@ public final class FunctionNodeTest {
 
     assertThat(result.errorMessage("IllegalArgumentException"))
         .contains("output of node 'router' does not match");
+  }
+
+  @Test
+  public void builder_contentBodyDelegatingAValueWithAnUnknownKey_fails() {
+    // Arrange
+    ImmutableMap<String, Object> message =
+        ImmutableMap.of("parts", ImmutableList.of(ImmutableMap.of("text", "hi", "extra", 1)));
+
+    // Act
+    RunResult result = run(chain(delegating(Content.class, message)));
+
+    // Assert
+    assertThat(result.errorMessage("IllegalArgumentException"))
+        .isEqualTo(
+            "validation error: output of node 'router' does not match "
+                + Content.class.getName()
+                + ".");
+  }
+
+  @Test
+  public void of_partListBodyReturningAnUnknownKey_fails() {
+    // Arrange: an unchecked cast lets a map with an unknown key into the list.
+    Map<String, Object> part = new HashMap<>();
+    part.put("text", "hi");
+    part.put("extra", 1);
+    @SuppressWarnings("unchecked")
+    List<Part> parts = (List<Part>) (List<?>) ImmutableList.of(part);
+    FunctionNode<Content, List<Part>> node =
+        FunctionNodes.of(
+            "parts", Content.class, new TypeReference<List<Part>>() {}, (ctx, m) -> parts);
+
+    // Act
+    RunResult result = run(chain(node));
+
+    // Assert
+    assertThat(result.errorMessage("IllegalArgumentException"))
+        .isEqualTo(
+            "output of node 'parts' does not match java.util.List<" + Part.class.getName() + ">.");
   }
 
   @Test
@@ -2927,22 +2968,6 @@ public final class FunctionNodeTest {
   }
 
   @Test
-  public void build_recordIntoAContentPort_failsWithoutSuggestingABuilderSchema() {
-    // Arrange: a builder schema on a Content port describes the text, so it cannot help here.
-    FunctionNode<Content, FullOrder> full = fullOrder();
-    FunctionNode<Content, String> read =
-        FunctionNodes.of("read", Content.class, String.class, (ctx, content) -> content.text());
-
-    // Act
-    WorkflowConfigurationException error =
-        assertThrows(WorkflowConfigurationException.class, () -> chain(full, read));
-
-    // Assert
-    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge full -> read.");
-    assertThat(error).hasMessageThat().doesNotContain("inputSchema on the builder");
-  }
-
-  @Test
   public void build_contentIntoAStringPort_fails() {
     // Arrange: a returned Content is the output in its JSON form, an object.
     FunctionNode<Content, Content> reply = reply();
@@ -2959,18 +2984,31 @@ public final class FunctionNodeTest {
   }
 
   @Test
-  public void build_recordIntoAnEventPort_fails() {
-    // Arrange: an Event port takes only an event's keys, and a FullOrder has others.
+  public void build_recordIntoAnEventOrGenaiPort_failsWithoutSuggestingABuilderSchema() {
+    // Arrange: these ports reject a FullOrder's other keys at run time, whatever their schema.
     FunctionNode<Content, FullOrder> full = fullOrder();
+    FunctionNode<Content, String> read =
+        FunctionNodes.of("read", Content.class, String.class, (ctx, content) -> content.text());
     FunctionNode<Event, String> author =
         FunctionNodes.of("author", Event.class, String.class, (ctx, event) -> event.author());
+    FunctionNode<Part, String> part =
+        FunctionNodes.of("part", Part.class, String.class, (ctx, p) -> p.text().orElse(""));
 
     // Act
-    WorkflowConfigurationException error =
+    WorkflowConfigurationException intoContent =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(full, read));
+    WorkflowConfigurationException intoEvent =
         assertThrows(WorkflowConfigurationException.class, () -> chain(full, author));
+    WorkflowConfigurationException intoPart =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(full, part));
 
     // Assert
-    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge full -> author.");
+    assertThat(intoContent).hasMessageThat().startsWith("Schema mismatch on edge full -> read.");
+    assertThat(intoContent).hasMessageThat().doesNotContain("inputSchema on the builder");
+    assertThat(intoEvent).hasMessageThat().startsWith("Schema mismatch on edge full -> author.");
+    assertThat(intoEvent).hasMessageThat().doesNotContain("inputSchema on the builder");
+    assertThat(intoPart).hasMessageThat().startsWith("Schema mismatch on edge full -> part.");
+    assertThat(intoPart).hasMessageThat().doesNotContain("inputSchema on the builder");
   }
 
   @Test
@@ -5807,6 +5845,99 @@ public final class FunctionNodeTest {
     assertThat(nullField).isEqualTo("[]");
     assertThat(skippedElement).isEqualTo("[1, 2]");
     assertThat(singleValue).isEqualTo("[5]");
+  }
+
+  @Test
+  public void of_eventOrGenaiPortsFedAnUnknownKey_rejectIt() {
+    // Arrange: each value has an unknown key, at its top level or deeper.
+    ImmutableMap<String, Object> part = ImmutableMap.of("text", "hi", "extra", 1);
+    ImmutableList<Case> cases =
+        ImmutableList.of(
+            new Case(ImmutableMap.of("author", "a", "extra", 1), Event.class, "fails"),
+            new Case(
+                ImmutableMap.of("actions", ImmutableMap.of("stateDetla", 1)), Event.class, "fails"),
+            new Case(
+                ImmutableMap.of("nodeInfo", ImmutableMap.of("pathh", "wf@1")),
+                Event.class,
+                "fails"),
+            new Case(part, Part.class, "fails"),
+            new Case(ImmutableList.of(part), Part[].class, "fails"),
+            new Case(ImmutableMap.of("parts", ImmutableList.of(part)), Content.class, "fails"));
+
+    // Act
+    ImmutableMap<String, Object> actual = readAll(cases);
+
+    // Assert
+    assertThat(actual).containsExactlyEntriesIn(expected(cases)).inOrder();
+  }
+
+  @Test
+  public void of_userRecordPortsFedAnUnknownKey_dropIt() {
+    // Arrange: each value has unknown keys, also inside an event or genai value it holds.
+    ImmutableMap<String, Object> event =
+        ImmutableMap.of("author", "a", "extra", 1, "actions", ImmutableMap.of("stateDetla", 1));
+    ImmutableMap<String, Object> part = ImmutableMap.of("text", "hi", "extra", 1);
+    ImmutableMap<String, Object> content =
+        ImmutableMap.of("parts", ImmutableList.of(part), "extra", 1);
+    FunctionNode<Order, String> order =
+        FunctionNodes.of("n", Order.class, String.class, (ctx, o) -> o.id() + " x" + o.quantity());
+    FunctionNode<Envelope, String> envelope =
+        FunctionNodes.of(
+            "n", Envelope.class, String.class, (ctx, e) -> e.id() + " " + e.event().author());
+    FunctionNode<Reply, String> reply =
+        FunctionNodes.of(
+            "n", Reply.class, String.class, (ctx, r) -> r.id() + " " + r.content().text());
+
+    // Act
+    Object orderOutput = readWith(ImmutableMap.of("id", "a1", "quantity", 3, "extra", 1), order);
+    Object envelopeOutput =
+        readWith(ImmutableMap.of("id", "e1", "event", event, "extra", 1), envelope);
+    Object replyOutput = readWith(ImmutableMap.of("id", "r1", "content", content), reply);
+
+    // Assert
+    assertThat(orderOutput).isEqualTo("a1 x3");
+    assertThat(envelopeOutput).isEqualTo("e1 a");
+    assertThat(replyOutput).isEqualTo("r1 hi");
+  }
+
+  @Test
+  public void of_eventListsAndGenaiMapPortsFedAnUnknownKey_rejectIt() {
+    // Arrange
+    FunctionNode<List<Event>, String> events =
+        FunctionNodes.of(
+            "n", new TypeReference<List<Event>>() {}, String.class, (ctx, l) -> l.get(0).author());
+    FunctionNode<List<List<Event>>, String> nestedEvents =
+        FunctionNodes.of(
+            "n",
+            new TypeReference<List<List<Event>>>() {},
+            String.class,
+            (ctx, l) -> l.get(0).get(0).author());
+    FunctionNode<Map<String, Part>, String> parts =
+        FunctionNodes.of(
+            "n",
+            new TypeReference<Map<String, Part>>() {},
+            String.class,
+            (ctx, m) -> m.get("a").text().orElse(""));
+
+    // Act
+    Object known = readWith(ImmutableList.of(ImmutableMap.of("author", "a")), events);
+    Object eventsOutput =
+        readWith(ImmutableList.of(ImmutableMap.of("author", "a", "extra", 1)), events);
+    Object nestedKnown =
+        readWith(ImmutableList.of(ImmutableList.of(ImmutableMap.of("author", "a"))), nestedEvents);
+    Object nestedOutput =
+        readWith(
+            ImmutableList.of(ImmutableList.of(ImmutableMap.of("author", "a", "extra", 1))),
+            nestedEvents);
+    Object partsOutput =
+        readWith(ImmutableMap.of("a", ImmutableMap.of("text", "hi", "extra", 1)), parts);
+
+    // Assert
+    assertThat(known).isEqualTo("a");
+    assertThat(eventsOutput).isEqualTo("fails");
+    assertThat(nestedKnown).isEqualTo("a");
+    assertThat(nestedOutput).isEqualTo("fails");
+    assertThat(partsOutput).isEqualTo("fails");
   }
 
   @Test

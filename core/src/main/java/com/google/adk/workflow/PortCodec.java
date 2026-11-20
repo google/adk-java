@@ -99,12 +99,12 @@ import org.jspecify.annotations.Nullable;
 final class PortCodec<T> {
 
   /**
-   * One mapper for every port: unknown properties are ignored, null fields are written, {@code
-   * java.time} values travel as ISO-8601 strings, and genai types as genai writes them. Numbers,
-   * booleans and chars, also inside genai types, read as {@link PortScalars} describes, and any
-   * other whole-number type reads a float only when it has no fraction. It rejects a null
-   * primitive, an empty string as a number, boolean, enum or date, a number as an enum not written
-   * as one, a number or boolean as text, and a missing {@link RequiredProperties} property.
+   * The port mapper: unknown properties are ignored, null fields are written, {@code java.time}
+   * values travel as ISO-8601 strings, and genai types as genai writes them. Numbers, booleans and
+   * chars, also inside genai types, read as {@link PortScalars} describes, and any other
+   * whole-number type reads a float only when it has no fraction. It rejects a null primitive, an
+   * empty string as a number, boolean, enum or date, a number as an enum not written as one, a
+   * number or boolean as text, and a missing {@link RequiredProperties} property.
    */
   static final ObjectMapper MAPPER =
       JsonMapper.builder()
@@ -131,6 +131,14 @@ final class PortCodec<T> {
   /** Genai's own reader of the form genai writes, with the port rules for scalars. */
   private static final ObjectReader GENAI_READER = genaiReader();
 
+  /** {@link #GENAI_READER} rejecting unknown properties. */
+  private static final ObjectReader STRICT_GENAI_READER =
+      GENAI_READER.with(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
+  /** {@link #MAPPER} rejecting unknown properties, for a port that {@link #rejectsUnknownKeys}. */
+  private static final ObjectMapper STRICT_MAPPER =
+      MAPPER.copy().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
   /** The port's type, with a primitive boxed. */
   private final JavaType type;
 
@@ -138,6 +146,9 @@ final class PortCodec<T> {
 
   /** Whether the declared type is primitive, so the port takes no null. */
   private final boolean primitive;
+
+  /** {@link #STRICT_MAPPER} if this port {@link #rejectsUnknownKeys}, else {@link #MAPPER}. */
+  private final ObjectMapper mapper;
 
   private PortCodec(JavaType declared, boolean output) {
     this.primitive = declared.isPrimitive();
@@ -151,6 +162,7 @@ final class PortCodec<T> {
         output && type.getRawClass() == Event.class
             ? () -> null
             : Suppliers.memoize(() -> PortSchemas.infer(type, output));
+    this.mapper = rejectsUnknownKeys() ? STRICT_MAPPER : MAPPER;
   }
 
   static JavaType javaType(Class<?> type) {
@@ -495,6 +507,19 @@ final class PortCodec<T> {
   }
 
   /**
+   * Whether this port rejects unknown keys at any depth: it reads an {@code Event} or genai value,
+   * or a list, map or array of them.
+   */
+  boolean rejectsUnknownKeys() {
+    JavaType value = type;
+    while (value.isContainerType()) {
+      value = value.getContentType();
+    }
+    return Event.class.isAssignableFrom(value.getRawClass())
+        || JsonSerializable.class.isAssignableFrom(value.getRawClass());
+  }
+
+  /**
    * Returns {@code value} read as this port's type; {@code what} names the port in errors.
    *
    * @throws NodeInputValidationException if {@code value} does not fit the port
@@ -523,7 +548,7 @@ final class PortCodec<T> {
     }
     T converted;
     try {
-      converted = MAPPER.convertValue(value, type);
+      converted = mapper.convertValue(value, type);
     } catch (RuntimeException e) {
       // Jackson's and genai's messages can quote the value, so no cause.
       throw doesNotMatch(what);
@@ -566,7 +591,7 @@ final class PortCodec<T> {
     // not be readable, so a generic type's own fields are trusted.
     if (!hasType(value, type, /* trustGenericFields= */ true)) {
       try {
-        value = MAPPER.convertValue(value, type);
+        value = mapper.convertValue(value, type);
       } catch (RuntimeException e) {
         // Jackson's message can quote the value, so no cause.
         throw new IllegalArgumentException(what + " does not match " + type.toCanonical() + ".");
@@ -778,7 +803,10 @@ final class PortCodec<T> {
         .setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail);
   }
 
-  /** Reads a genai value with {@link #GENAI_READER}. */
+  /**
+   * Reads a genai value with {@link #GENAI_READER}. Genai's reader drops unknown keys, so this
+   * rejects them when the calling mapper does.
+   */
   private static final class GenaiDeserializer extends StdDeserializer<Object> {
     GenaiDeserializer(Class<?> type) {
       super(type);
@@ -786,7 +814,11 @@ final class PortCodec<T> {
 
     @Override
     public Object deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
-      return GENAI_READER.treeToValue(ctxt.readTree(p), handledType());
+      ObjectReader reader =
+          ctxt.isEnabled(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+              ? STRICT_GENAI_READER
+              : GENAI_READER;
+      return reader.treeToValue(ctxt.readTree(p), handledType());
     }
   }
 

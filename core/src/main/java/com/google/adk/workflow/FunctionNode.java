@@ -160,7 +160,9 @@ public final class FunctionNode<I, O> extends BaseNode {
    * JSON shape infers none. An edge into an inferred record or POJO fails at build if the
    * producer's output schema lists a key the type does not, while a builder schema checks only the
    * keys it lists and requires. On a {@code Content} port a builder schema describes the message
-   * text, and an edge is checked against the {@code Content} schema instead.
+   * text, and an edge is checked against the {@code Content} schema instead. On an {@code Event} or
+   * genai port, or a list, map or array of them, a builder schema does not let the port take keys
+   * its type lacks.
    */
   @Override
   public Optional<Schema> inputSchema() {
@@ -189,7 +191,7 @@ public final class FunctionNode<I, O> extends BaseNode {
 
   /** Whether a builder schema would let this port take keys its type does not list. */
   boolean acceptsExtraKeysWithASchema() {
-    return inputSchemaInferred() && !inputCodec.takesContent();
+    return inputSchemaInferred() && !inputCodec.rejectsUnknownKeys();
   }
 
   /** Whether {@link #edgeInputSchema} was inferred, so its objects with properties are closed. */

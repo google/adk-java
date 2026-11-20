@@ -35,6 +35,9 @@ import org.jspecify.annotations.Nullable;
  *       "3"}). An integer also accepts a whole number such as {@code 3.0}, and a char only one
  *       character of text.
  *   <li>An enum or boolean reads a number only where Jackson writes it as one.
+ *   <li>A port of {@code Event} or of a {@code com.google.genai.types} type such as {@code
+ *       Content}, or of a list, map or array of them, rejects unknown keys anywhere in its value.
+ *       Other ports drop them.
  * </ul>
  *
  * <p>A node's body asks the user for input with {@link #requestInput}.
