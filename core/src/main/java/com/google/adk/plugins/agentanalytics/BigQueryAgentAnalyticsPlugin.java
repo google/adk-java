@@ -22,6 +22,7 @@ import static com.google.adk.plugins.agentanalytics.BigQueryUtils.maybeUpgradeSc
 import static com.google.adk.plugins.agentanalytics.JsonFormatter.convertToJsonNode;
 import static com.google.adk.plugins.agentanalytics.JsonFormatter.smartTruncate;
 import static com.google.adk.plugins.agentanalytics.JsonFormatter.toJavaObject;
+import static com.google.adk.plugins.agentanalytics.JsonFormatter.truncateWithStatus;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.CallbackContext;
@@ -74,6 +75,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -297,6 +299,23 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     return (message != null && !message.isEmpty()) ? message : error.getClass().getName();
   }
 
+  private static boolean isReflectAndRetryHandledError(Map<String, Object> result) {
+    return result != null
+        && "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN".equals(result.get("response_type"));
+  }
+
+  private static String extractReflectAndRetryErrorMessage(Map<String, Object> result) {
+    Object errorDetails = result.get("error_details");
+    if (errorDetails instanceof String && !((String) errorDetails).isEmpty()) {
+      return (String) errorDetails;
+    }
+    Object errorType = result.get("error_type");
+    if (errorType instanceof String && !((String) errorType).isEmpty()) {
+      return (String) errorType;
+    }
+    return "Tool raised an error that ReflectAndRetryToolPlugin handled.";
+  }
+
   private Completable logEvent(
       String eventType,
       InvocationContext invocationContext,
@@ -458,6 +477,32 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     return syntheticToolCallIds
         .asMap()
         .computeIfAbsent(toolContext, tc -> "tool-ctx-" + UUID.randomUUID());
+  }
+
+  private record ToolCallKey(String invocationId, String branch, String operationId) {}
+
+  // Tracks tool calls whose span was already terminated by onToolErrorCallback so that when a
+  // subsequent plugin or OnToolErrorCallback recovers the exception into a fallback map, the
+  // follow-on afterToolCallback does not emit a duplicate, span-less TOOL_COMPLETED row. Bounded
+  // and TTL-evicted so unrecovered errors whose afterToolCallback never fires cannot accumulate.
+  private final Cache<ToolCallKey, Boolean> toolErrorRecorded =
+      CacheBuilder.newBuilder()
+          .maximumSize(10_000)
+          .expireAfterWrite(Duration.ofMinutes(10))
+          .build();
+
+  private static ToolCallKey toolCallKey(InvocationContext invocationContext, String operationId) {
+    String branch = "";
+    try {
+      Optional<String> maybeBranch = invocationContext.branch();
+      if (maybeBranch != null) {
+        branch = maybeBranch.orElse("");
+      }
+    } catch (RuntimeException e) {
+      // Leave root branch sentinel if a test double throws on branch().
+    }
+    return new ToolCallKey(
+        Objects.toString(invocationContext.invocationId(), ""), branch, operationId);
   }
 
   /**
@@ -1133,6 +1178,9 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     if (!config.enabled() || state.isProcessed(toolContext.invocationContext().invocationId())) {
       return Maybe.empty();
     }
+    String operationId = toolOperationId(toolContext);
+    // Clear any stale marker left by a prior unrecovered tool error that used the same call ID.
+    toolErrorRecorded.invalidate(toolCallKey(toolContext.invocationContext(), operationId));
     ImmutableMap<String, Object> contentMap =
         ImmutableMap.of("tool_origin", getToolOrigin(tool), "tool", tool.name(), "args", toolArgs);
     // Push with the function-call identity: ADK executes an event's function calls concurrently by
@@ -1142,7 +1190,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     TraceManager.SpanRecord toolSpan =
         state
             .getTraceManager(toolContext.invocationContext().invocationId())
-            .pushSpanRecord(toolContext.invocationContext(), "tool", toolOperationId(toolContext));
+            .pushSpanRecord(toolContext.invocationContext(), "tool", operationId);
     EventData.Builder startingData = EventData.builder().setSpanIdOverride(toolSpan.spanId());
     if (toolSpan.parentSpanId() != null) {
       startingData.setParentSpanIdOverride(toolSpan.parentSpanId());
@@ -1164,13 +1212,33 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     if (!config.enabled() || state.isProcessed(toolContext.invocationContext().invocationId())) {
       return Maybe.empty();
     }
+    String operationId = toolOperationId(toolContext);
+    if (toolErrorRecorded.asMap().remove(toolCallKey(toolContext.invocationContext(), operationId))
+        != null) {
+      // A TOOL_ERROR row already terminated this tool call's span; another plugin or callback
+      // recovered the exception into a fallback result.
+      return Maybe.empty();
+    }
     state
         .getTraceManager(toolContext.invocationContext().invocationId())
         .ensureInvocationSpan(toolContext.invocationContext());
     TraceManager traceManager =
         state.getTraceManager(toolContext.invocationContext().invocationId());
     Optional<RecordData> popped =
-        traceManager.popSpan(toolContext.invocationContext(), "tool", toolOperationId(toolContext));
+        traceManager.popSpan(toolContext.invocationContext(), "tool", operationId);
+    if (isReflectAndRetryHandledError(result)) {
+      // ReflectAndRetryToolPlugin was registered ahead of this plugin and short-circuited
+      // onToolErrorCallback (or rewrote an embedded tool error); record TOOL_ERROR instead of OK.
+      return logToolErrorEvent(
+              tool,
+              toolArgs,
+              toolContext,
+              popped,
+              extractReflectAndRetryErrorMessage(result),
+              /* includeEmptyArgs= */ false,
+              Optional.empty())
+          .andThen(Maybe.empty());
+    }
     TruncationResult truncationResult = smartTruncate(result, config.maxContentLength());
     ImmutableMap<String, Object> contentMap =
         ImmutableMap.of(
@@ -1206,24 +1274,47 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     if (!config.enabled() || state.isProcessed(toolContext.invocationContext().invocationId())) {
       return Maybe.empty();
     }
+    String operationId = toolOperationId(toolContext);
     state
         .getTraceManager(toolContext.invocationContext().invocationId())
         .ensureInvocationSpan(toolContext.invocationContext());
     TraceManager traceManager =
         state.getTraceManager(toolContext.invocationContext().invocationId());
     Optional<RecordData> popped =
-        traceManager.popSpan(toolContext.invocationContext(), "tool", toolOperationId(toolContext));
+        traceManager.popSpan(toolContext.invocationContext(), "tool", operationId);
 
-    TruncationResult truncationResult = smartTruncate(toolArgs, config.maxContentLength());
-    ImmutableMap<String, Object> contentMap =
-        ImmutableMap.<String, Object>builder()
-            .put("tool", tool.name())
-            .put("args", truncationResult.node())
-            .put("tool_origin", getToolOrigin(tool))
-            .buildOrThrow();
+    return logToolErrorEvent(
+            tool,
+            toolArgs,
+            toolContext,
+            popped,
+            formatErrorMessage(error),
+            /* includeEmptyArgs= */ true,
+            Optional.of(operationId))
+        .andThen(Maybe.empty());
+  }
+
+  private Completable logToolErrorEvent(
+      BaseTool tool,
+      Map<String, Object> toolArgs,
+      ToolContext toolContext,
+      Optional<RecordData> popped,
+      String rawErrorMessage,
+      boolean includeEmptyArgs,
+      Optional<String> markErrorOperationId) {
+    TruncationResult argsTruncation = smartTruncate(toolArgs, config.maxContentLength());
+    TruncationResult errorTruncation =
+        truncateWithStatus(rawErrorMessage, config.maxContentLength());
+    ImmutableMap.Builder<String, Object> contentBuilder =
+        ImmutableMap.<String, Object>builder().put("tool", tool.name());
+    if (includeEmptyArgs || (toolArgs != null && !toolArgs.isEmpty())) {
+      contentBuilder.put("args", argsTruncation.node());
+    }
+    contentBuilder.put("tool_origin", getToolOrigin(tool));
+    ImmutableMap<String, Object> contentMap = contentBuilder.buildOrThrow();
 
     EventData.Builder eventDataBuilder =
-        EventData.builder().setStatus("ERROR").setErrorMessage(formatErrorMessage(error));
+        EventData.builder().setStatus("ERROR").setErrorMessage(errorTruncation.node().asText());
     if (popped.isPresent()) {
       eventDataBuilder.setLatency(popped.get().duration());
     }
@@ -1233,13 +1324,16 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
     popped.flatMap(RecordData::parentSpanId).ifPresent(eventDataBuilder::setParentSpanIdOverride);
 
+    markErrorOperationId.ifPresent(
+        opId ->
+            toolErrorRecorded.put(
+                toolCallKey(toolContext.invocationContext(), opId), Boolean.TRUE));
     return logEvent(
-            "TOOL_ERROR",
-            toolContext.invocationContext(),
-            contentMap,
-            truncationResult.isTruncated(),
-            Optional.of(eventDataBuilder.build()))
-        .andThen(Maybe.empty());
+        "TOOL_ERROR",
+        toolContext.invocationContext(),
+        contentMap,
+        argsTruncation.isTruncated() || errorTruncation.isTruncated(),
+        Optional.of(eventDataBuilder.build()));
   }
 
   private String getToolOrigin(BaseTool tool) {
