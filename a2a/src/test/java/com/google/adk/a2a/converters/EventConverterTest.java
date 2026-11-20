@@ -251,6 +251,7 @@ public final class EventConverterTest {
                             Content.builder()
                                 .parts(ImmutableList.of(Part.builder().text("hi").build()))
                                 .build())
+                        .customMetadata(ImmutableList.of(metadata("a2a:response", "{}")))
                         .build(),
                     Event.builder()
                         .author("other_agent")
@@ -282,6 +283,35 @@ public final class EventConverterTest {
     assertThat(((TextPart) parts.get(1)).getText()).isEqualTo("[other_agent] said: hey");
     // Another agent's output is rephrased as a complete message even when its event was partial.
     assertThat(parts.get(1).getMetadata()).doesNotContainKey(A2AMetadataKey.PARTIAL.getType());
+  }
+
+  @Test
+  public void messagePartsFromContext_afterLaterAgentEventWithoutResponse_sendsIt() {
+    // An event this agent authored without a recorded response, such as a callback's.
+    Session session =
+        Session.builder("session1")
+            .events(
+                ImmutableList.of(
+                    event("user", Part.builder().text("hello").build()),
+                    event("test_agent", Part.builder().text("hi").build()).toBuilder()
+                        .customMetadata(ImmutableList.of(metadata("a2a:response", "{}")))
+                        .build(),
+                    event("test_agent", Part.builder().text("noted").build()),
+                    event("user", Part.builder().text("how are you?").build())))
+            .build();
+    InvocationContext ctx =
+        InvocationContext.builder()
+            .session(session)
+            .sessionService(new InMemorySessionService())
+            .agent(new TestAgent())
+            .invocationId("invocation-id")
+            .build();
+
+    ImmutableList<io.a2a.spec.Part<?>> parts = EventConverter.messagePartsFromContext(ctx);
+
+    assertThat(parts.stream().map(part -> ((TextPart) part).getText()))
+        .containsExactly("noted", "how are you?")
+        .inOrder();
   }
 
   @Test

@@ -18,6 +18,7 @@ package com.google.adk.a2a.converters;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
+import com.google.adk.a2a.common.A2AMetadata;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
@@ -167,6 +168,24 @@ public final class EventConverter {
   }
 
   /**
+   * Returns the index of the last event in which {@code agentName} recorded a remote response, or
+   * -1. An event that kept its context ID but could not record its response counts too, as a
+   * fallback. The remote agent already has everything up to that event.
+   */
+  @Experimental
+  public static int lastRemoteResponseIndex(List<Event> events, String agentName) {
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event event = events.get(i);
+      if (event.author().equals(agentName)
+          && (findMetadata(event, A2AMetadata.Key.RESPONSE.getValue()).isPresent()
+              || !contextId(event).isEmpty())) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /**
    * Converts a GenAI Content object to a list of A2A Parts.
    *
    * @param content The GenAI Content object to convert.
@@ -198,14 +217,7 @@ public final class EventConverter {
       return ImmutableList.of();
     }
     ImmutableSet<String> credentialCallIds = credentialCallIds(events);
-    int lastResponseIndex = -1;
-    for (int i = events.size() - 1; i >= 0; i--) {
-      Event event = events.get(i);
-      if (event.author().equals(context.agent().name())) {
-        lastResponseIndex = i;
-        break;
-      }
-    }
+    int lastResponseIndex = lastRemoteResponseIndex(events, context.agent().name());
     ImmutableList.Builder<Part<?>> partsBuilder = ImmutableList.builder();
     for (int i = lastResponseIndex + 1; i < events.size(); i++) {
       // Drop credentials before another agent's turn is flattened to text.
