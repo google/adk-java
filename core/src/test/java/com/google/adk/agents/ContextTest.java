@@ -179,6 +179,27 @@ public final class ContextTest {
   }
 
   @Test
+  public void state_outsideAWorkflowNode_viewWritesChangeTheState() {
+    State state = new CallbackContext(newInvocationContext(), null).state();
+    state.putAll(ImmutableMap.of("a", 1, "b", 2));
+
+    state.keySet().remove("a");
+    state.entrySet().iterator().next().setValue(3);
+
+    assertThat(state).containsExactly("b", 3);
+  }
+
+  @Test
+  public void state_outsideAWorkflowNode_clearEmptiesTheState() {
+    State state = new CallbackContext(newInvocationContext(), null).state();
+    state.put("a", 1);
+
+    state.clear();
+
+    assertThat(state).isEmpty();
+  }
+
+  @Test
   public void runAsync_agentCallbackTakingContext_persistsItsStateWrite() {
     LlmAgent agent =
         createTestAgentBuilder(createTestLlm(createTextLlmResponse("done")))
