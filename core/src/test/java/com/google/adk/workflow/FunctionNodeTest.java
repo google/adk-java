@@ -34,6 +34,7 @@ import static com.google.common.truth.Truth.assertWithMessage;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static java.util.stream.Collectors.joining;
 import static org.junit.Assert.assertThrows;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
@@ -5639,6 +5640,77 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void of_mapPortFedAMessage_readsAJsonIntegerAsALong() {
+    // Act
+    Object output = outputOn(counting(), "{\"count\": 42}");
+
+    // Assert
+    assertThat(output).isEqualTo("Long:42");
+  }
+
+  @Test
+  public void of_mapPortFedAMessage_readsAnIntegerPastTheLongRangeExactly() {
+    // Act
+    Object output = outputOn(counting(), "{\"count\": 12345678901234567890}");
+
+    // Assert: ADK Kotlin reads it as a Double, but Java ports can hold an exact BigInteger.
+    assertThat(output).isEqualTo("BigInteger:12345678901234567890");
+  }
+
+  @Test
+  public void of_mapPortFedAMessage_readsJsonIntegersInAListAsLongs() {
+    // Arrange
+    FunctionNode<Map<String, Object>, String> counts =
+        FunctionNodes.of(
+            "counts",
+            new TypeReference<Map<String, Object>>() {},
+            String.class,
+            (ctx, in) ->
+                ((List<?>) in.get("counts"))
+                    .stream()
+                        .map(count -> count.getClass().getSimpleName() + ":" + count)
+                        .collect(joining(",")));
+
+    // Act
+    Object output = outputOn(counts, "{\"counts\": [42, 7]}");
+
+    // Assert
+    assertThat(output).isEqualTo("Long:42,Long:7");
+  }
+
+  @Test
+  public void of_bigIntegerPortFedAWholeNumberPastTheLongRange_readsItExactly() {
+    // Act
+    Object output = outputOn(describing(BigInteger.class), "12345678901234567890");
+
+    // Assert
+    assertThat(output).isEqualTo("BigInteger:12345678901234567890");
+  }
+
+  @Test
+  public void of_bigDecimalPortFedAWholeNumberPastTheLongRange_readsItExactly() {
+    // Act
+    Object output = outputOn(describing(BigDecimal.class), "12345678901234567890");
+
+    // Assert
+    assertThat(output).isEqualTo("BigDecimal:12345678901234567890");
+  }
+
+  @Test
+  public void of_mapPortFedAMessageWithAnInfiniteNumber_failsSinceItReadsTheText() {
+    // Act: a number that is not finite makes the text not JSON, as in ADK Kotlin.
+    RunResult inMap = runOn(chain(counting()), "{\"x\": 1e400}");
+    RunResult inList = runOn(chain(counting()), "{\"x\": [1, 1e400]}");
+
+    // Assert
+    String expected =
+        "validation error: input of node 'count' does not match"
+            + " java.util.Map<java.lang.String,java.lang.Object>.";
+    assertThat(inMap.errorMessage("NodeInputValidationException")).isEqualTo(expected);
+    assertThat(inList.errorMessage("NodeInputValidationException")).isEqualTo(expected);
+  }
+
+  @Test
   public void of_portsFedScalars_readOnlyTheJsonTypeAQuotedLiteralOrAWholeNumber() {
     // Arrange
     record Reading(int count, double ratio, boolean flag) {}
@@ -7222,6 +7294,20 @@ public final class FunctionNodeTest {
   private static <T> FunctionNode<T, String> describing(Class<T> type) {
     return FunctionNodes.of(
         "read", type, String.class, (ctx, in) -> in.getClass().getSimpleName() + ":" + in);
+  }
+
+  /**
+   * Returns a node named {@code count} that outputs its input's "count" as {@code "Class:value"}.
+   */
+  private static FunctionNode<Map<String, Object>, String> counting() {
+    return FunctionNodes.of(
+        "count",
+        new TypeReference<Map<String, Object>>() {},
+        String.class,
+        (ctx, in) -> {
+          Object count = in.get("count");
+          return count.getClass().getSimpleName() + ":" + count;
+        });
   }
 
   /** Returns a model message with a thought part before its {@code answer}. */

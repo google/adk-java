@@ -16,18 +16,12 @@
 
 package com.google.adk.workflow;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectReader;
-import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.Context;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.telemetry.Tracing;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
-import com.google.genai.types.Schema;
-import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
@@ -82,10 +76,6 @@ public final class ParallelWorkers {
 
   private static final class ParallelWorkerNode extends BaseNode {
 
-    private static final ObjectReader JSON_READER =
-        JsonBaseModel.getMapper()
-            .readerFor(Object.class)
-            .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     // No run ID: FanOut reserves IDs in input order, so each item keeps its ID on resume.
     private static final RunNodeConfig ITEM_CONFIG =
         RunNodeConfig.builder().useSubBranch(true).build();
@@ -132,24 +122,11 @@ public final class ParallelWorkers {
         return content;
       }
       String text = content.text();
-      Object json;
-      try {
-        json = JSON_READER.readValue(text);
-      } catch (JsonProcessingException e) {
-        return text;
-      }
+      Object json = MessageReader.jsonOrText(text);
       if (json instanceof List<?> list) {
         return list;
       }
-      return worker.inputSchema().map(ParallelWorkerNode::acceptsString).orElse(false)
-          ? text
-          : json;
-    }
-
-    private static boolean acceptsString(Schema schema) {
-      return schema.type().map(type -> type.knownEnum() == Type.Known.STRING).orElse(false)
-          || schema.anyOf().orElse(ImmutableList.of()).stream()
-              .anyMatch(ParallelWorkerNode::acceptsString);
+      return worker.inputSchema().map(MessageReader::acceptsString).orElse(false) ? text : json;
     }
 
     private final class FanOut {

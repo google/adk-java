@@ -20,6 +20,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.google.adk.JsonBaseModel;
 import com.google.common.collect.ImmutableList;
@@ -28,6 +29,10 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -42,9 +47,7 @@ final class MessageReader {
   static final Object NOT_JSON = new Object();
 
   private static final ObjectReader STRICT_JSON =
-      JsonBaseModel.getMapper()
-          .readerFor(Object.class)
-          .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+      JsonBaseModel.getMapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
   private MessageReader() {}
 
@@ -113,12 +116,68 @@ final class MessageReader {
     return json == NOT_JSON ? text : json;
   }
 
-  /** Reads {@code text} as strict JSON, or returns {@link #NOT_JSON} if it is not JSON. */
+  /**
+   * Reads {@code text} as strict JSON into new mutable maps and lists, or returns {@link #NOT_JSON}
+   * if it is not JSON. A whole number reads as a {@code Long}, or an exact {@code BigInteger} past
+   * the long range, and a number that is not finite makes the text not JSON.
+   */
   static @Nullable Object readJson(String text) {
+    JsonNode tree;
     try {
-      return STRICT_JSON.readValue(text);
+      tree = STRICT_JSON.readTree(text);
     } catch (JsonProcessingException e) {
       return NOT_JSON;
     }
+    // readTree reads blank text as a missing node instead of failing.
+    return tree.isMissingNode() ? NOT_JSON : plainValue(tree);
+  }
+
+  /** Returns whether {@code text} is a JSON object, also one {@link #readJson} rejects. */
+  static boolean isJsonObject(String text) {
+    try {
+      return STRICT_JSON.readTree(text).isObject();
+    } catch (JsonProcessingException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Returns {@code node} as plain Java values, building new maps and lists, or {@link #NOT_JSON} if
+   * it holds a number that is not finite.
+   */
+  private static @Nullable Object plainValue(JsonNode node) {
+    if (node.isObject()) {
+      Map<String, @Nullable Object> map = new LinkedHashMap<>();
+      for (Map.Entry<String, JsonNode> field : node.properties()) {
+        Object value = plainValue(field.getValue());
+        if (value == NOT_JSON) {
+          return NOT_JSON;
+        }
+        map.put(field.getKey(), value);
+      }
+      return map;
+    }
+    if (node.isArray()) {
+      List<@Nullable Object> list = new ArrayList<>(node.size());
+      for (JsonNode item : node) {
+        Object value = plainValue(item);
+        if (value == NOT_JSON) {
+          return NOT_JSON;
+        }
+        list.add(value);
+      }
+      return list;
+    }
+    if (node.isIntegralNumber()) {
+      return node.canConvertToLong() ? node.longValue() : node.bigIntegerValue();
+    }
+    if (node.isNumber()) {
+      double number = node.doubleValue();
+      return Double.isFinite(number) ? number : NOT_JSON;
+    }
+    if (node.isBoolean()) {
+      return node.booleanValue();
+    }
+    return node.isNull() ? null : node.asText();
   }
 }

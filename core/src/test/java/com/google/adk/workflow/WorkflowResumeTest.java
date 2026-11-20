@@ -339,7 +339,20 @@ public final class WorkflowResumeTest {
     ImmutableList<Event> events =
         session.turn(answer("ask_1", ImmutableMap.of("result", "{\"v\": 1}")));
 
-    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1));
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1L));
+  }
+
+  @Test
+  public void resume_textAnswerUnderResultHoldingAnInfiniteNumber_staysText() {
+    Node ask = longRunningAsk("ask", "ask_1");
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, ask), new Edge(ask, captureInput("reply"))));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("result", "1e400")));
+
+    // As in ADK Kotlin, a number that is not finite makes the text not JSON.
+    assertThat(replyInput(events)).isEqualTo("1e400");
   }
 
   @Test
@@ -970,6 +983,27 @@ public final class WorkflowResumeTest {
         .hasValue(
             ImmutableMap.of(
                 "chat", ImmutableMap.of("city", "Paris"), "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_messageOutputNodeWithAnOutputSchema_isRehydratedWithLongIntegers() {
+    Node chat = new MessageOutputNode("chat", "{\"age\": 42}", AGE_SCHEMA);
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, chat),
+                new Edge(START, ask),
+                new Edge(chat, join),
+                new Edge(ask, join)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    assertThat(outputEventAt(events, "wf@1/j@1").output())
+        .hasValue(
+            ImmutableMap.of("chat", ImmutableMap.of("age", 42L), "ask", ImmutableMap.of("v", 1)));
   }
 
   @Test

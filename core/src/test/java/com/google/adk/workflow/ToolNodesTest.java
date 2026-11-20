@@ -67,6 +67,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import java.math.BigInteger;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -134,7 +135,7 @@ public final class ToolNodesTest {
   public void runNode_jsonObjectText_parsesItIntoArguments() {
     Object output = run(FakeTool.echo("mock_tool"), "  {\"param_a\": 1, \"param_b\": \"value\"}  ");
 
-    assertThat(output).isEqualTo(ImmutableMap.of("param_a", 1, "param_b", "value"));
+    assertThat(output).isEqualTo(ImmutableMap.of("param_a", 1L, "param_b", "value"));
   }
 
   @Test
@@ -156,7 +157,27 @@ public final class ToolNodesTest {
                 Part.builder().text("reasoning").thought(true).build(), Part.fromText("{\"x\": 1}"))
             .build();
 
-    assertThat(run(FakeTool.echo("mock_tool"), content)).isEqualTo(ImmutableMap.of("x", 1));
+    Object output = run(FakeTool.echo("mock_tool"), content);
+
+    assertThat(output).isEqualTo(ImmutableMap.of("x", 1L));
+  }
+
+  @Test
+  public void runNode_jsonObjectTextWithAWholeNumberPastTheLongRange_keepsItExact() {
+    Object output = run(FakeTool.echo("mock_tool"), "{\"x\": 12345678901234567890}");
+
+    assertThat(output).isEqualTo(ImmutableMap.of("x", new BigInteger("12345678901234567890")));
+  }
+
+  @Test
+  public void runNode_toolWithOneParameter_failsOnJsonObjectTextWithAnInfiniteNumber() {
+    IllegalArgumentException thrown =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> run(FakeTool.echo("reader", "path"), "{\"x\": 1e400}"));
+
+    // As in ADK Kotlin, the object does not read, and it does not fill the parameter.
+    assertThat(thrown).hasMessageThat().contains("but got text that is not a JSON object");
   }
 
   @Test

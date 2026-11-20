@@ -61,6 +61,7 @@ import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.observers.TestObserver;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
+import java.math.BigInteger;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -686,16 +687,42 @@ public final class ParallelWorkersTest {
   @Test
   public void runNode_textContentWithJsonList_fansOutOverItsElements() {
     Run run =
-        run(ParallelWorkers.parallelNode(doubler()), Content.fromParts(Part.fromText("[1, 2, 3]")));
+        run(ParallelWorkers.parallelNode(echo()), Content.fromParts(Part.fromText("[1, 2, 3]")));
 
-    assertThat(run.output()).isEqualTo(ImmutableList.of(2, 4, 6));
+    assertThat(run.output()).isEqualTo(ImmutableList.of(1L, 2L, 3L));
   }
 
   @Test
   public void runNode_textContentWithJsonScalar_runsOnTheParsedValue() {
-    Run run = run(ParallelWorkers.parallelNode(doubler()), Content.fromParts(Part.fromText("5")));
+    Run run = run(ParallelWorkers.parallelNode(echo()), Content.fromParts(Part.fromText("5")));
 
-    assertThat(run.output()).isEqualTo(ImmutableList.of(10));
+    assertThat(run.output()).isEqualTo(ImmutableList.of(5L));
+  }
+
+  @Test
+  public void runNode_textContentWithWholeNumbers_readsThemAsLongOrExactBigInteger() {
+    Run run =
+        run(
+            ParallelWorkers.parallelNode(echo()),
+            Content.fromParts(Part.fromText("[1, 12345678901234567890]")));
+
+    assertThat(run.output())
+        .isEqualTo(ImmutableList.of(1L, new BigInteger("12345678901234567890")));
+  }
+
+  @Test
+  public void runNode_textWithAnInfiniteNumber_runsAsOneRawTextItem() {
+    Run run =
+        run(ParallelWorkers.parallelNode(echo()), Content.fromParts(Part.fromText("[1e400]")));
+
+    assertThat(run.output()).isEqualTo(ImmutableList.of("[1e400]"));
+  }
+
+  @Test
+  public void runNode_whitespaceOnlyText_runsAsOneRawTextItem() {
+    Run run = run(ParallelWorkers.parallelNode(echo()), Content.fromParts(Part.fromText("   ")));
+
+    assertThat(run.output()).isEqualTo(ImmutableList.of("   "));
   }
 
   @Test
@@ -722,9 +749,9 @@ public final class ParallelWorkersTest {
             Part.builder().text("Listing the numbers.").thought(true).build(),
             Part.fromText("[1, 2, 3]"));
 
-    Run run = run(ParallelWorkers.parallelNode(doubler()), message);
+    Run run = run(ParallelWorkers.parallelNode(echo()), message);
 
-    assertThat(run.output()).isEqualTo(ImmutableList.of(2, 4, 6));
+    assertThat(run.output()).isEqualTo(ImmutableList.of(1L, 2L, 3L));
   }
 
   @Test
@@ -744,7 +771,7 @@ public final class ParallelWorkersTest {
     Run run =
         run(ParallelWorkers.parallelNode(worker), Content.fromParts(Part.fromText("{\"a\":1}")));
 
-    assertThat(run.output()).isEqualTo(ImmutableList.of(ImmutableMap.of("a", 1)));
+    assertThat(run.output()).isEqualTo(ImmutableList.of(ImmutableMap.of("a", 1L)));
   }
 
   @Test

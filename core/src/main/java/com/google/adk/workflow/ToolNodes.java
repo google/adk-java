@@ -18,11 +18,8 @@ package com.google.adk.workflow;
 
 import static com.google.common.base.Strings.nullToEmpty;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectReader;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.Context;
 import com.google.adk.annotations.Experimental;
@@ -85,11 +82,6 @@ public final class ToolNodes {
   }
 
   private static final class ToolNode extends BaseNode {
-
-    private static final ObjectReader JSON_READER =
-        JsonBaseModel.getMapper()
-            .readerFor(Object.class)
-            .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
     private final BaseTool tool;
 
@@ -213,7 +205,8 @@ public final class ToolNodes {
         return properties;
       }
       String param = parameters.forOtherInput();
-      if (param == null) {
+      // As in ADK Kotlin, a JSON object that does not read, such as {"x": 1e400}, fails.
+      if (param == null || (input instanceof String text && MessageReader.isJsonObject(text))) {
         throw new IllegalArgumentException(
             String.format(
                 "The input to tool node '%s' must be a dictionary of tool arguments, an object that"
@@ -256,12 +249,8 @@ public final class ToolNodes {
       if (text.isEmpty()) {
         return null;
       }
-      try {
-        Object json = JSON_READER.readValue(text);
-        return json instanceof Map ? json : text;
-      } catch (JsonProcessingException e) {
-        return text;
-      }
+      Object json = MessageReader.readJson(text);
+      return json instanceof Map ? json : text;
     }
 
     private static void keepDeltas(Context context, ToolContext toolContext) {
