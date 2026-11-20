@@ -35,11 +35,9 @@ import java.time.InstantSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
-import org.springframework.context.ApplicationContextInitializer;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
@@ -184,9 +182,6 @@ public class AdkWebServer implements WebMvcConfigurer {
   /** Like {@link #main}, returning the context it starts. */
   @VisibleForTesting
   static ConfigurableApplicationContext run(String[] args) {
-    // Increase the default websocket buffer size to 10MB to accommodate live API messages.
-    System.setProperty(
-        "org.apache.tomcat.websocket.DEFAULT_BUFFER_SIZE", String.valueOf(10 * 1024 * 1024));
     return newApplication().run(args);
   }
 
@@ -217,23 +212,9 @@ public class AdkWebServer implements WebMvcConfigurer {
       String[] args, String loaderBeanName, Object loader) {
     // Disable CompiledAgentLoader by setting property to prevent its creation
     System.setProperty("adk.agents.loader", "static");
-    // Increase the default websocket buffer size to 10MB to accommodate live API messages.
-    System.setProperty(
-        "org.apache.tomcat.websocket.DEFAULT_BUFFER_SIZE", String.valueOf(10 * 1024 * 1024));
-
-    // Create Spring Application with custom initializer
     SpringApplication app = newApplication();
     app.addInitializers(
-        new ApplicationContextInitializer<ConfigurableApplicationContext>() {
-          @Override
-          public void initialize(ConfigurableApplicationContext context) {
-            // Register the loader bean before context refresh
-            DefaultListableBeanFactory beanFactory =
-                (DefaultListableBeanFactory) context.getBeanFactory();
-            beanFactory.registerSingleton(loaderBeanName, loader);
-          }
-        });
-
+        context -> context.getBeanFactory().registerSingleton(loaderBeanName, loader));
     return app.run(args);
   }
 
@@ -243,6 +224,9 @@ public class AdkWebServer implements WebMvcConfigurer {
    * it to every interface.
    */
   private static SpringApplication newApplication() {
+    // Increase the default websocket buffer size to 10MB to accommodate live API messages.
+    System.setProperty(
+        "org.apache.tomcat.websocket.DEFAULT_BUFFER_SIZE", String.valueOf(10 * 1024 * 1024));
     SpringApplication app = new SpringApplication(AdkWebServer.class);
     app.addInitializers(
         context -> {
