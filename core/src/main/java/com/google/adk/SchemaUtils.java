@@ -24,8 +24,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -157,7 +159,7 @@ public final class SchemaUtils {
   /**
    * Parses model text against {@code schema} as one JSON value, or returns the text itself when
    * that fails and the schema accepts a string. Blank text, and a JSON null the schema allows, give
-   * {@code null}.
+   * {@code null}. Omitted properties of a parsed value get their schema defaults.
    *
    * <p>This method is only for use by Agent Development Kit.
    *
@@ -172,7 +174,7 @@ public final class SchemaUtils {
       Object value = readStrictJson(output);
       reason = mismatch(value, schema);
       if (reason == null) {
-        return value;
+        return fillDefaults(value, schema);
       }
     } catch (JsonProcessingException e) {
       reason = "it is not JSON";
@@ -266,6 +268,86 @@ public final class SchemaUtils {
     Map<String, Object> outputMap = JsonBaseModel.getMapper().readValue(output, HashMap.class);
     validateMapOnSchema(outputMap, schema, false);
     return outputMap;
+  }
+
+  /**
+   * Returns a copy of {@code args} with the default of each property it omits, through nested
+   * objects, array items and the first {@code anyOf} alternative that matches. An explicit null
+   * keeps its value. Neither {@code args} nor the defaults are validated.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @SuppressWarnings("unchecked") // A map stays a map with String keys.
+  public static Map<String, Object> withDefaults(Map<String, Object> args, Schema schema) {
+    return (Map<String, Object>) fillDefaults(Preconditions.checkNotNull(args), schema);
+  }
+
+  /**
+   * Returns {@code value}, any JSON value, as {@link #withDefaults} fills it; null stays null.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  public static @Nullable Object valueWithDefaults(@Nullable Object value, Schema schema) {
+    return fillDefaults(value, schema);
+  }
+
+  private static @Nullable Object fillDefaults(@Nullable Object value, Schema schema) {
+    Optional<Map<String, Schema>> properties = schema.properties();
+    Optional<Schema> items = schema.items();
+    if (value instanceof Map<?, ?> map && properties.isPresent()) {
+      Map<String, Object> result = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        Schema property = properties.get().get(String.valueOf(entry.getKey()));
+        result.put(
+            String.valueOf(entry.getKey()),
+            property == null ? entry.getValue() : fillDefaults(entry.getValue(), property));
+      }
+      for (Map.Entry<String, Schema> property : properties.get().entrySet()) {
+        // An explicit null is a value, so only an absent key gets the default.
+        Optional<Object> fallback = property.getValue().default_();
+        if (fallback.isPresent() && !result.containsKey(property.getKey())) {
+          result.put(property.getKey(), copyDefault(fallback.get()));
+        }
+      }
+      return result;
+    }
+    if (value instanceof List<?> list && items.isPresent()) {
+      List<Object> result = new ArrayList<>();
+      for (Object item : list) {
+        result.add(fillDefaults(item, items.get()));
+      }
+      return result;
+    }
+    if ((value instanceof Map || value instanceof List)
+        && properties.isEmpty()
+        && items.isEmpty()) {
+      // The first alternative that validates the value decides its defaults.
+      for (Schema member : schema.anyOf().orElse(ImmutableList.of())) {
+        if (mismatch(value, member) == null) {
+          return fillDefaults(value, member);
+        }
+      }
+    }
+    return value;
+  }
+
+  /** Returns a copy of {@code value} whose maps and lists are new, so callers can change it. */
+  private static @Nullable Object copyDefault(@Nullable Object value) {
+    if (value instanceof Map<?, ?> map) {
+      Map<String, Object> copy = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        copy.put(String.valueOf(entry.getKey()), copyDefault(entry.getValue()));
+      }
+      return copy;
+    }
+    if (value instanceof List<?> list) {
+      List<Object> copy = new ArrayList<>();
+      for (Object item : list) {
+        copy.add(copyDefault(item));
+      }
+      return copy;
+    }
+    return value;
   }
 
   private static @Nullable String mismatch(@Nullable Object value, Schema schema) {

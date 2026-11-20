@@ -173,9 +173,10 @@ public class AgentTool extends BaseTool {
     final Content content;
     if (agentInputSchema.isPresent()) {
       SchemaUtils.validateMapOnSchema(args, agentInputSchema.get(), true);
+      Map<String, Object> input = SchemaUtils.withDefaults(args, agentInputSchema.get());
       try {
         content =
-            Content.fromParts(Part.fromText(JsonBaseModel.getMapper().writeValueAsString(args)));
+            Content.fromParts(Part.fromText(JsonBaseModel.getMapper().writeValueAsString(input)));
       } catch (JsonProcessingException e) {
         return Single.error(
             new RuntimeException("Error serializing tool arguments to JSON: " + args, e));
