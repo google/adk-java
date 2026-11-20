@@ -24,12 +24,15 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.events.Event;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.workflow.NodeInfo;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.HashMultiset;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multiset;
 import com.google.common.collect.SetMultimap;
+import com.google.common.collect.Sets;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -46,7 +49,8 @@ import org.jspecify.annotations.Nullable;
  * Decides how a resumable flow's next step continues: carry on to the model, stop because a call is
  * still unanswered, or run calls a previous run never executed.
  *
- * <p>Ports Python ADK's resume decision. Of the sub-branch cases Python recognizes, only a user's
+ * <p>Ports Python ADK's resume decision, except that a step does not wait for calls that failed
+ * workflow node attempts left unanswered. Of the sub-branch cases Python recognizes, only a user's
  * answer on the branch a single-turn agent tool opened is handled, as in ADK Kotlin.
  */
 final class StepResume {
@@ -100,6 +104,25 @@ final class StepResume {
     }
     ImmutableList<Event> events =
         context.events(/* currentInvocation= */ true, /* currentBranch= */ true);
+    Decision decision = decideFromEvents(context, tools, hasAgentTools, events);
+    if (decision.action != Action.PAUSE || context.nodePath().isEmpty()) {
+      return decision;
+    }
+    // Exclude failed attempts only when they would make the step pause.
+    ImmutableList<Event> withoutFailed =
+        withoutFailedAttempts(
+            context.events(/* currentInvocation= */ true, /* currentBranch= */ false), events);
+    return withoutFailed.size() == events.size()
+        ? decision
+        : decideFromEvents(context, tools, hasAgentTools, withoutFailed);
+  }
+
+  /** Decides how the next step resumes from the branch's {@code events}. */
+  private static Decision decideFromEvents(
+      InvocationContext context,
+      Map<String, BaseTool> tools,
+      boolean hasAgentTools,
+      List<Event> events) {
     if (hasAgentTools) {
       Optional<Event> subBranchCall = callThatOpenedBranchOfLatestAnswer(context, events);
       if (subBranchCall.isPresent()) {
@@ -126,7 +149,39 @@ final class StepResume {
     return CONTINUE;
   }
 
+  /**
+   * Returns {@code branchEvents} without the events of failed workflow node attempts. Each node
+   * failure in {@code invocationEvents} removes the earlier events of that node and the nodes below
+   * it, because retrying the node runs them again.
+   */
+  @VisibleForTesting
+  static ImmutableList<Event> withoutFailedAttempts(
+      List<Event> invocationEvents, List<Event> branchEvents) {
+    Set<String> failedPaths = new HashSet<>();
+    Set<Event> failedAttemptEvents = Sets.newIdentityHashSet();
+    for (int i = invocationEvents.size() - 1; i >= 0; i--) {
+      Event event = invocationEvents.get(i);
+      String path = event.nodeInfo().map(NodeInfo::path).orElse("");
+      boolean inFailedAttempt =
+          failedPaths.stream().anyMatch(failed -> isSameOrBelow(path, failed));
+      // An error without calls is a node failure, so error responses calling tools are kept.
+      boolean nodeFailure =
+          !path.isEmpty() && event.errorCode().isPresent() && event.functionCalls().isEmpty();
+      if (inFailedAttempt) {
+        failedAttemptEvents.add(event);
+      } else if (nodeFailure) {
+        failedPaths.add(path);
+      }
+    }
+    return branchEvents.stream()
+        .filter(event -> !failedAttemptEvents.contains(event))
+        .collect(toImmutableList());
+  }
 
+  /** Returns whether {@code path} is the node path {@code ancestor} or a path below it. */
+  private static boolean isSameOrBelow(String path, String ancestor) {
+    return path.equals(ancestor) || path.startsWith(ancestor + "/");
+  }
 
   /**
    * Returns the agent's call event to replay when a user's answer came back on the {@code

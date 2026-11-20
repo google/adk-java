@@ -26,10 +26,12 @@ import com.google.adk.events.Event;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.workflow.NodeInfo;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
@@ -228,6 +230,80 @@ public final class StepResumeTest {
     assertThat(decision.action).isEqualTo(StepResume.Action.CONTINUE);
   }
 
+  @Test
+  public void withoutFailedAttempts_failureOfTheNode_dropsItsEarlierEvents() {
+    Event failedAttempt = nodeEvent("wf/worker", callPart("x", "c1")).build();
+    Event failure =
+        nodeEvent("wf/worker").errorCode(new FinishReason("IllegalStateException")).build();
+    Event retry = nodeEvent("wf/worker", Part.fromText("retrying")).build();
+    ImmutableList<Event> history = ImmutableList.of(failedAttempt, failure, retry);
+
+    ImmutableList<Event> events = StepResume.withoutFailedAttempts(history, history);
+
+    assertThat(events).containsExactly(failure, retry).inOrder();
+  }
+
+  @Test
+  public void withoutFailedAttempts_modelErrorResponseWithCalls_keepsEveryEvent() {
+    ImmutableList<Event> history =
+        ImmutableList.of(
+            nodeEvent("wf/worker", Part.fromText("calling")).build(),
+            nodeEvent("wf/worker", callPart("y", "c2"))
+                .errorCode(new FinishReason(FinishReason.Known.MAX_TOKENS))
+                .build());
+
+    ImmutableList<Event> events = StepResume.withoutFailedAttempts(history, history);
+
+    assertThat(events).isEqualTo(history);
+  }
+
+  @Test
+  public void withoutFailedAttempts_failureOfAnotherNode_dropsEarlierEventsOfThatNodeAndBelow() {
+    Event ownCall = nodeEvent("wf/worker", callPart("x", "c1")).build();
+    Event otherCall = nodeEvent("wf/other", callPart("y", "c2")).build();
+    Event innerCall = nodeEvent("wf/other/inner", callPart("z", "c3")).build();
+    Event otherFailure =
+        nodeEvent("wf/other").errorCode(new FinishReason("IllegalStateException")).build();
+    Event ownText = nodeEvent("wf/worker", Part.fromText("still waiting")).build();
+    ImmutableList<Event> history =
+        ImmutableList.of(ownCall, otherCall, innerCall, otherFailure, ownText);
+
+    ImmutableList<Event> events = StepResume.withoutFailedAttempts(history, history);
+
+    assertThat(events).containsExactly(ownCall, otherFailure, ownText).inOrder();
+  }
+
+  @Test
+  public void withoutFailedAttempts_failureOfAnEnclosingNodeOnAnotherBranch_dropsEarlierEvents() {
+    Event failedAttempt =
+        nodeEvent("wf/inner/worker", callPart("x", "c1")).branch("worker@1").build();
+    Event enclosingFailure =
+        nodeEvent("wf/inner").errorCode(new FinishReason("NodeTimeoutException")).build();
+    Event retry =
+        nodeEvent("wf/inner/worker", Part.fromText("retrying")).branch("worker@1").build();
+
+    ImmutableList<Event> events =
+        StepResume.withoutFailedAttempts(
+            ImmutableList.of(failedAttempt, enclosingFailure, retry),
+            ImmutableList.of(failedAttempt, retry));
+
+    assertThat(events).containsExactly(retry);
+  }
+
+  @Test
+  public void withoutFailedAttempts_failureOfANodeWhosePathIsAStringPrefix_keepsEveryEvent() {
+    ImmutableList<Event> history =
+        ImmutableList.of(
+            nodeEvent("wf@1/worker@10", callPart("x", "c1")).build(),
+            nodeEvent("wf@1/worker@1")
+                .errorCode(new FinishReason("IllegalStateException"))
+                .build());
+
+    ImmutableList<Event> events = StepResume.withoutFailedAttempts(history, history);
+
+    assertThat(events).isEqualTo(history);
+  }
+
   private static LlmAgent coordinatorWithSingleTurnWorker() {
     return LlmAgent.builder()
         .name("coordinator")
@@ -305,6 +381,10 @@ public final class StepResumeTest {
                 .parts(ImmutableList.copyOf(parts))
                 .build())
         .build();
+  }
+
+  private static Event.Builder nodeEvent(String path, Part... parts) {
+    return event(AGENT, parts).toBuilder().nodeInfo(NodeInfo.builder().path(path).build());
   }
 
   private static FunctionCall call(String name, @Nullable String id) {
