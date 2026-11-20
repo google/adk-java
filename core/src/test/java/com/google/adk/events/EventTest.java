@@ -28,8 +28,11 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.LiveServerGoAway;
 import com.google.genai.types.Part;
 import com.google.genai.types.Transcription;
+import com.google.genai.types.VoiceActivity;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -109,6 +112,68 @@ public final class EventTest {
     assertThat(EVENT.timestamp()).isEqualTo(123456789L);
     assertThat(EVENT.actions()).isEqualTo(EVENT_ACTIONS);
     assertThat(EVENT.modelVersion()).hasValue("model_version");
+  }
+
+  @Test
+  public void event_liveControlFields_roundTripAndCopy_preservePayloads() {
+    LiveServerGoAway goAway = LiveServerGoAway.builder().timeLeft(Duration.ofMillis(30500)).build();
+    VoiceActivity voiceActivity =
+        VoiceActivity.builder()
+            .voiceActivityType("ACTIVITY_END")
+            .audioOffset(Duration.ofMillis(1250))
+            .build();
+    Event event = EVENT.toBuilder().goAway(goAway).voiceActivity(voiceActivity).build();
+
+    Event restored = Event.fromJson(event.toJson());
+    assertThat(restored).isEqualTo(event);
+    assertThat(restored.goAway()).hasValue(goAway);
+    assertThat(restored.voiceActivity()).hasValue(voiceActivity);
+    Event copied = event.toBuilder().build();
+    assertThat(copied).isEqualTo(event);
+    assertThat(copied.hashCode()).isEqualTo(event.hashCode());
+    assertThat(copied.toBuilder().goAway(null).voiceActivity(null).build()).isEqualTo(EVENT);
+  }
+
+  @Test
+  public void event_liveControlFields_defaultAndNull_areAbsent() {
+    for (String json : ImmutableList.of("{}", "{\"goAway\":null,\"voiceActivity\":null}")) {
+      Event event = Event.fromJson(json);
+      assertThat(event.goAway()).isEmpty();
+      assertThat(event.voiceActivity()).isEmpty();
+      assertThat(event.toJson()).doesNotContain("\"goAway\"");
+      assertThat(event.toJson()).doesNotContain("\"voiceActivity\"");
+
+      event.setGoAway(LiveServerGoAway.builder().build());
+      event.setVoiceActivity(VoiceActivity.builder().build());
+      assertThat(event.goAway()).isPresent();
+      assertThat(event.voiceActivity()).isPresent();
+      event.setGoAway(null);
+      event.setVoiceActivity(null);
+      assertThat(event.goAway()).isEmpty();
+      assertThat(event.voiceActivity()).isEmpty();
+    }
+  }
+
+  @Test
+  public void event_equals_distinguishesLiveControlFields() {
+    assertThat(EVENT.toBuilder().goAway(LiveServerGoAway.builder().build()).build())
+        .isNotEqualTo(EVENT);
+    assertThat(EVENT.toBuilder().voiceActivity(VoiceActivity.builder().build()).build())
+        .isNotEqualTo(EVENT);
+  }
+
+  @Test
+  public void event_finalResponse_liveNotifications_areNotFinalAnswers() {
+    assertThat(Event.builder().goAway(LiveServerGoAway.builder().build()).build().finalResponse())
+        .isFalse();
+    for (String type : ImmutableList.of("ACTIVITY_START", "ACTIVITY_END")) {
+      assertThat(
+              Event.builder()
+                  .voiceActivity(VoiceActivity.builder().voiceActivityType(type).build())
+                  .build()
+                  .finalResponse())
+          .isFalse();
+    }
   }
 
   @Test

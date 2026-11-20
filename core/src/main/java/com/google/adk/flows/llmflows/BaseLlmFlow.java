@@ -776,6 +776,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
             || updatedResponse.usageMetadata().isEmpty())
         && updatedResponse.inputTranscription().isEmpty()
         && updatedResponse.outputTranscription().isEmpty()
+        && updatedResponse.goAway().isEmpty()
+        && updatedResponse.voiceActivity().isEmpty()
         && updatedResponse.groundingMetadata().isEmpty()) {
       return processorEvents;
     }
@@ -931,6 +933,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
             .modelVersion(llmResponse.modelVersion().orElse(null))
             .inputTranscription(llmResponse.inputTranscription().orElse(null))
             .outputTranscription(llmResponse.outputTranscription().orElse(null))
+            .goAway(llmResponse.goAway().orElse(null))
+            .voiceActivity(llmResponse.voiceActivity().orElse(null))
             .cacheMetadata(llmResponse.cacheMetadata().orElse(null));
 
     Event event = eventBuilder.build();

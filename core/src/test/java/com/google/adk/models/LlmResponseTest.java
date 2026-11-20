@@ -29,8 +29,11 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.LiveServerGoAway;
 import com.google.genai.types.Part;
 import com.google.genai.types.Transcription;
+import com.google.genai.types.VoiceActivity;
+import java.time.Duration;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -48,6 +51,46 @@ public final class LlmResponseTest {
 
   private Content createSampleContent(String text) {
     return Content.builder().parts(ImmutableList.of(Part.fromText(text))).build();
+  }
+
+  @Test
+  public void liveControlFields_roundTripAndCopy_preservePayloads() throws JsonProcessingException {
+    LiveServerGoAway goAway = LiveServerGoAway.builder().timeLeft(Duration.ofMillis(30500)).build();
+    VoiceActivity voiceActivity =
+        VoiceActivity.builder()
+            .voiceActivityType("ACTIVITY_START")
+            .audioOffset(Duration.ofMillis(1250))
+            .build();
+    LlmResponse response =
+        LlmResponse.builder().goAway(goAway).voiceActivity(voiceActivity).build();
+
+    String json = response.toJson();
+    JsonNode node = objectMapper.readTree(json);
+    assertThat(node.has("goAway")).isTrue();
+    assertThat(node.get("goAway").has("timeLeft")).isTrue();
+    assertThat(node.get("voiceActivity").get("voiceActivityType").asText())
+        .isEqualTo("ACTIVITY_START");
+    assertThat(node.has("errorCode")).isFalse();
+    LlmResponse restored = LlmResponse.fromJsonString(json, LlmResponse.class);
+    assertThat(restored).isEqualTo(response);
+    assertThat(restored.goAway()).hasValue(goAway);
+    assertThat(restored.voiceActivity()).hasValue(voiceActivity);
+    assertThat(response.toBuilder().build()).isEqualTo(response);
+    assertThat(response.toBuilder().goAway(null).voiceActivity(null).build())
+        .isEqualTo(LlmResponse.builder().build());
+  }
+
+  @Test
+  public void liveControlFields_missingOrNull_remainOptional() throws JsonProcessingException {
+    for (String json : ImmutableList.of("{}", "{\"goAway\":null,\"voiceActivity\":null}")) {
+      LlmResponse response = LlmResponse.fromJsonString(json, LlmResponse.class);
+
+      assertThat(response.goAway()).isEmpty();
+      assertThat(response.voiceActivity()).isEmpty();
+      JsonNode node = objectMapper.readTree(response.toJson());
+      assertThat(node.has("goAway")).isFalse();
+      assertThat(node.has("voiceActivity")).isFalse();
+    }
   }
 
   private Content createSampleFunctionCallContent(String functionName) {

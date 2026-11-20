@@ -57,8 +57,10 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.LiveServerGoAway;
 import com.google.genai.types.Part;
 import com.google.genai.types.Transcription;
+import com.google.genai.types.VoiceActivity;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
@@ -1185,6 +1187,37 @@ public final class BaseLlmFlowTest {
     Event event = getOnlyElement(events);
     assertThat(event.inputTranscription()).hasValue(inputTranscription);
     assertThat(event.outputTranscription()).isEmpty();
+  }
+
+  @Test
+  public void postprocess_onlyLiveControlFields_returnsEventsWithoutContent() {
+    for (LlmResponse response :
+        ImmutableList.of(
+            LlmResponse.builder().goAway(LiveServerGoAway.builder().build()).build(),
+            LlmResponse.builder()
+                .voiceActivity(VoiceActivity.builder().voiceActivityType("ACTIVITY_START").build())
+                .build())) {
+      InvocationContext context = createInvocationContext(createTestAgent(createTestLlm(response)));
+      Event baseEvent =
+          Event.builder()
+              .invocationId(context.invocationId())
+              .author(context.agent().name())
+              .build();
+
+      List<Event> events =
+          createBaseLlmFlowWithoutProcessors()
+              .postprocess(
+                  context, baseEvent, LlmRequest.builder().build(), response, Context.current())
+              .toList()
+              .blockingGet();
+
+      Event event = getOnlyElement(events);
+      assertThat(event.goAway()).isEqualTo(response.goAway());
+      assertThat(event.voiceActivity()).isEqualTo(response.voiceActivity());
+      assertThat(event.content()).isEmpty();
+      assertThat(event.errorCode()).isEmpty();
+      assertThat(event.finalResponse()).isFalse();
+    }
   }
 
   @Test
