@@ -46,16 +46,19 @@ import com.fasterxml.jackson.annotation.JsonIdentityReference;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonSetter;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.annotation.JsonUnwrapped;
 import com.fasterxml.jackson.annotation.JsonValue;
+import com.fasterxml.jackson.annotation.Nulls;
 import com.fasterxml.jackson.annotation.ObjectIdGenerators;
 import com.fasterxml.jackson.annotation.OptBoolean;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.databind.util.StdConverter;
 import com.google.adk.agents.Context;
@@ -459,6 +462,96 @@ public final class FunctionNodeTest {
 
   @JsonFormat(shape = JsonFormat.Shape.ARRAY)
   record Pair(int x, int y) {}
+
+  /** Written as its ordinal wherever it appears, as its numeric shape asks. */
+  @JsonFormat(shape = JsonFormat.Shape.NUMBER)
+  enum Rank {
+    LOW,
+    HIGH
+  }
+
+  /** Each field is written as a number, through the numeric shape on its type or on itself. */
+  record Voucher(
+      Rank rank,
+      @JsonFormat(shape = JsonFormat.Shape.NUMBER) Status status,
+      @JsonFormat(shape = JsonFormat.Shape.NUMBER) boolean open,
+      @JsonFormat(shape = JsonFormat.Shape.NUMBER) Boolean paid) {}
+
+  /** An ARRAY shape makes Jackson write the enum as its ordinal but the boolean as a boolean. */
+  record Listed(
+      @JsonFormat(shape = JsonFormat.Shape.ARRAY) Status status,
+      @JsonFormat(shape = JsonFormat.Shape.ARRAY) boolean lit) {}
+
+  /** Each field is written as a string. */
+  record Quoted(
+      @JsonFormat(shape = JsonFormat.Shape.STRING) int count,
+      @JsonFormat(shape = JsonFormat.Shape.STRING) long id,
+      @JsonFormat(shape = JsonFormat.Shape.STRING) double price,
+      @JsonFormat(shape = JsonFormat.Shape.STRING) boolean paid) {}
+
+  /** Jackson writes a char as text even under a numeric shape. */
+  record Initials(
+      @JsonFormat(shape = JsonFormat.Shape.NUMBER) char first,
+      @JsonFormat(shape = JsonFormat.Shape.NUMBER) Character last) {}
+
+  /** Written as its {@code @JsonValue} string. */
+  enum Answer {
+    YES("y"),
+    NO("n");
+
+    private final String code;
+
+    Answer(String code) {
+      this.code = code;
+    }
+
+    @JsonValue
+    String code() {
+      return code;
+    }
+  }
+
+  static final class Shuffled extends StdConverter<Enum<?>, Integer> {
+    private static final ImmutableMap<Enum<?>, Integer> CODES =
+        ImmutableMap.<Enum<?>, Integer>of(
+            Coded.A, 0, Coded.B, 2, Coded.C, 1, Coded.D, 3, Rank.LOW, 0, Rank.HIGH, 2);
+
+    @Override
+    public Integer convert(Enum<?> value) {
+      return CODES.get(value);
+    }
+  }
+
+  /** Written as ordinals 0, 2, 1, 3: only the first and last write their own index. */
+  @JsonSerialize(converter = Shuffled.class)
+  enum Coded {
+    A,
+    B,
+    C,
+    D
+  }
+
+  /** A field whose own converter writes {@link Rank#HIGH} as 2, not as its ordinal. */
+  record Flipped(@JsonSerialize(converter = Shuffled.class) Rank rank) {}
+
+  /** Its converter takes an Integer, so Jackson fails to write it. */
+  @JsonSerialize(converter = NumberToText.class)
+  enum Unwritable {
+    ONE
+  }
+
+  /** Written with a padded name, which it reads back. */
+  enum Padded {
+    @JsonProperty(" a")
+    A
+  }
+
+  /** Holds an array in a field, since a record component should not be an array. */
+  static final class Counts {
+    @JsonSetter(nulls = Nulls.AS_EMPTY, contentNulls = Nulls.SKIP)
+    @JsonFormat(with = JsonFormat.Feature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
+    public int[] values;
+  }
 
   /** A polymorphic base type with a property of its own. */
   @JsonTypeInfo(use = JsonTypeInfo.Id.NAME)
@@ -2752,6 +2845,35 @@ public final class FunctionNodeTest {
     // Assert
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/increment@1")).isEqualTo(2);
+  }
+
+  @Test
+  public void build_untypedEnumOfAWholeNumberInExponentFormIntoAnIntegerPort_buildsAndRuns() {
+    // Arrange: an integer port reads "1e2" as 100.
+    FunctionNode<Integer, Integer> increment =
+        FunctionNodes.of("increment", Integer.class, Integer.class, (ctx, n) -> n + 1);
+
+    // Act
+    RunResult result = run(chain(untypedEnumNode("1e2"), increment));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/increment@1")).isEqualTo(101);
+  }
+
+  @Test
+  public void build_untypedEnumOfAFractionIntoAnIntegerPort_fails() {
+    // Arrange
+    FunctionNode<Content, String> half = untypedEnumNode("2.5");
+    FunctionNode<Integer, Integer> increment =
+        FunctionNodes.of("increment", Integer.class, Integer.class, (ctx, n) -> n + 1);
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(half, increment));
+
+    // Assert
+    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge constant -> increment.");
   }
 
   @Test
@@ -5412,10 +5534,12 @@ public final class FunctionNodeTest {
 
     // Act
     RunResult unknown = runOn(chain(status), "\"FOO\"");
+    RunResult padded = runOn(chain(status), " SHIPPED");
     RunResult quotedPadded = runOn(chain(status), "\" SHIPPED\"");
 
     // Assert
     assertThat(unknown.errorMessage("NodeInputValidationException")).isEqualTo(error);
+    assertThat(padded.errorMessage("NodeInputValidationException")).isEqualTo(error);
     assertThat(quotedPadded.errorMessage("NodeInputValidationException")).isEqualTo(error);
   }
 
@@ -5471,6 +5595,279 @@ public final class FunctionNodeTest {
             "validation error: input of node 'describe' does not match "
                 + Order.class.getName()
                 + ".");
+  }
+
+  @Test
+  public void of_portsFedScalars_readOnlyTheJsonTypeAQuotedLiteralOrAWholeNumber() {
+    // Arrange
+    record Reading(int count, double ratio, boolean flag) {}
+    record Tally(List<Integer> counts, Map<String, Boolean> flags) {}
+    record Blank(@JsonSetter(nulls = Nulls.AS_EMPTY) int n) {}
+    record Keyed(Map<Integer, String> byId) {}
+    ImmutableList<Case> cases =
+        ImmutableList.of(
+            new Case("3", int.class, "Integer:3"),
+            new Case(3.0, int.class, "Integer:3"),
+            new Case("3.0", int.class, "Integer:3"),
+            new Case("1e2", int.class, "Integer:100"),
+            new Case(new BigDecimal("3.000"), int.class, "Integer:3"),
+            new Case("003", int.class, "fails"),
+            new Case("+3", int.class, "fails"),
+            new Case(" 3", int.class, "fails"),
+            new Case("1_000", int.class, "fails"),
+            new Case(3.5, int.class, "fails"),
+            new Case("1e999", int.class, "fails"),
+            new Case(3_000_000_000L, int.class, "fails"),
+            new Case(true, int.class, "fails"),
+            // As in ADK Kotlin, a fraction reads as a double first.
+            new Case("2.9999999999999999999", int.class, "Integer:3"),
+            new Case("1e-400", int.class, "Integer:0"),
+            new Case(new BigDecimal("3.0000000000000000001"), int.class, "Integer:3"),
+            new Case("9007199254740993.0", long.class, "Long:9007199254740992"),
+            // A long reads a BigInteger exactly, and nothing past its range.
+            new Case(new BigInteger("9007199254740993"), long.class, "Long:9007199254740993"),
+            new Case(new BigInteger("9223372036854775808"), long.class, "fails"),
+            new Case((double) Long.MAX_VALUE, long.class, "fails"),
+            new Case("300", short.class, "Short:300"),
+            new Case(70000, short.class, "fails"),
+            new Case(200, byte.class, "fails"),
+            new Case("1.5", Double.class, "Double:1.5"),
+            new Case("3", Double.class, "Double:3.0"),
+            new Case(3, Double.class, "Double:3.0"),
+            new Case("NaN", Double.class, "fails"),
+            new Case("Infinity", Double.class, "fails"),
+            new Case("1e999", Double.class, "fails"),
+            new Case(true, Double.class, "fails"),
+            new Case("1.5", float.class, "Float:1.5"),
+            new Case(1e39, float.class, "fails"),
+            new Case("true", boolean.class, "Boolean:true"),
+            new Case("false", boolean.class, "Boolean:false"),
+            new Case(1, boolean.class, "fails"),
+            new Case("TRUE", boolean.class, "fails"),
+            new Case("yes", boolean.class, "fails"),
+            // A char reads one character of text, not a code point or the text null.
+            new Case("A", char.class, "Character:A"),
+            new Case(65, char.class, "fails"),
+            new Case("AB", Character.class, "fails"),
+            new Case("null", Character.class, "fails"),
+            new Case(3, String.class, "fails"),
+            // A BigInteger reads a whole number.
+            new Case(3.0, BigInteger.class, "BigInteger:3"),
+            // Records, lists and maps read each field, element and value the same way.
+            new Case(
+                ImmutableMap.of("count", "1e2", "ratio", "1.5", "flag", "true"),
+                Reading.class,
+                "Reading:Reading[count=100, ratio=1.5, flag=true]"),
+            new Case(
+                ImmutableMap.of("count", "003", "ratio", 1, "flag", true), Reading.class, "fails"),
+            new Case(
+                ImmutableMap.of("count", 3, "ratio", "NaN", "flag", true), Reading.class, "fails"),
+            new Case(ImmutableMap.of("count", 3, "ratio", 1, "flag", 1), Reading.class, "fails"),
+            new Case(
+                JsonNodeFactory.instance.objectNode().putNull("n"),
+                Blank.class,
+                "Blank:Blank[n=0]"),
+            new Case(
+                ImmutableMap.of(
+                    "counts",
+                    ImmutableList.of("3", 3.0, "1e2"),
+                    "flags",
+                    ImmutableMap.of("a", "true")),
+                Tally.class,
+                "Tally:Tally[counts=[3, 3, 100], flags={a=true}]"),
+            new Case(ImmutableMap.of("counts", ImmutableList.of("+3")), Tally.class, "fails"),
+            new Case(ImmutableMap.of("flags", ImmutableMap.of("a", "yes")), Tally.class, "fails"),
+            // Map keys, which JSON writes as text, read as values of their type do.
+            new Case(
+                ImmutableMap.of("byId", ImmutableMap.of("3.0", "a")),
+                Keyed.class,
+                "Keyed:Keyed[byId={3=a}]"),
+            new Case(ImmutableMap.of("byId", ImmutableMap.of("003", "a")), Keyed.class, "fails"));
+
+    // Act
+    ImmutableMap<String, Object> actual = readAll(cases);
+
+    // Assert
+    assertThat(actual).containsExactlyEntriesIn(expected(cases)).inOrder();
+  }
+
+  @Test
+  public void of_enumPortsFedNumbers_readOnlyTheNumbersJacksonWritesForThem() {
+    // Arrange
+    ImmutableList<Case> cases =
+        ImmutableList.of(
+            new Case("SHIPPED", Status.class, "Status:SHIPPED"),
+            new Case(" SHIPPED", Status.class, "fails"),
+            new Case("SHIPPED\u0001", Status.class, "fails"),
+            new Case(0, Status.class, "fails"),
+            new Case("1", Status.class, "fails"),
+            // Level reads its JsonValue; Rank reads an int or long ordinal.
+            new Case(2, Level.class, "Level:HIGH"),
+            new Case(1L, Rank.class, "Rank:HIGH"),
+            new Case(2, Rank.class, "fails"),
+            new Case(-1, Rank.class, "fails"),
+            new Case(1.0, Rank.class, "fails"),
+            new Case(BigInteger.ZERO, Rank.class, "fails"),
+            // Coded and Flipped read no number; Unwritable reads names only.
+            new Case(0, Coded.class, "fails"),
+            new Case(1, Coded.class, "fails"),
+            new Case(2, Coded.class, "fails"),
+            new Case(3, Coded.class, "fails"),
+            new Case(ImmutableMap.of("rank", 0), Flipped.class, "fails"),
+            new Case(0, Unwritable.class, "fails"),
+            new Case("ONE", Unwritable.class, "Unwritable:ONE"));
+
+    // Act
+    ImmutableMap<String, Object> actual = readAll(cases);
+
+    // Assert
+    assertThat(actual).containsExactlyEntriesIn(expected(cases)).inOrder();
+  }
+
+  @Test
+  public void of_genaiPortsFedScalars_readThemAsOtherPortsDo() {
+    // Arrange
+    FunctionNode<Part, String> thought =
+        FunctionNodes.of(
+            "thought", Part.class, String.class, (ctx, p) -> "thought " + p.thought().orElse(null));
+    FunctionNode<Content, String> role =
+        FunctionNodes.of(
+            "role", Content.class, String.class, (ctx, c) -> "role " + c.role().orElse(null));
+
+    // Act
+    Object quoted = readWith(ImmutableMap.of("thought", "true"), thought);
+    Object upperCase = readWith(ImmutableMap.of("thought", "TRUE"), thought);
+    Object number = readWith(ImmutableMap.of("thought", 1), thought);
+    Object numberAsText = readWith(ImmutableMap.of("role", 3), role);
+
+    // Assert
+    assertThat(quoted).isEqualTo("thought true");
+    assertThat(upperCase).isEqualTo("fails");
+    assertThat(number).isEqualTo("fails");
+    assertThat(numberAsText).isEqualTo("fails");
+  }
+
+  @Test
+  public void of_genaiPortsFedNullForAPrimitiveSetter_readTheDefault() {
+    // Arrange: genai binds Part.Builder.thought(boolean), unlike a record port, where null fails.
+    FunctionNode<Part, String> thought =
+        FunctionNodes.of(
+            "thought", Part.class, String.class, (ctx, p) -> "thought " + p.thought().orElse(null));
+    FunctionNode<Content, String> role =
+        FunctionNodes.of(
+            "role", Content.class, String.class, (ctx, c) -> "role " + c.role().orElse(null));
+
+    // Act
+    Object nullThought =
+        readWith(
+            JsonNodeFactory.instance.objectNode().put("text", "hi").putNull("thought"), thought);
+    Object nullThoughtInPart =
+        readWith(
+            ImmutableMap.of(
+                "role",
+                "user",
+                "parts",
+                ImmutableList.of(JsonNodeFactory.instance.objectNode().putNull("thought"))),
+            role);
+
+    // Assert
+    assertThat(nullThought).isEqualTo("thought false");
+    assertThat(nullThoughtInPart).isEqualTo("role user");
+  }
+
+  @Test
+  public void of_primitiveArrayPortsFedScalars_readEachElementAsItsTypeDoes() {
+    // Arrange
+    FunctionNode<int[], String> ints =
+        FunctionNodes.of("ints", int[].class, String.class, (ctx, in) -> Arrays.toString(in));
+    FunctionNode<boolean[], String> flags =
+        FunctionNodes.of("flags", boolean[].class, String.class, (ctx, in) -> Arrays.toString(in));
+    FunctionNode<Counts, String> counts =
+        FunctionNodes.of(
+            "counts", Counts.class, String.class, (ctx, in) -> Arrays.toString(in.values));
+
+    // Act
+    Object literals = readWith(ImmutableList.of("3", 3.0, "1e2"), ints);
+    Object paddedNumber = readWith(ImmutableList.of("003"), ints);
+    Object nullElement = readWith(Arrays.asList(1, null), ints);
+    Object booleans = readWith(ImmutableList.of("true", false), flags);
+    Object numberAsBoolean = readWith(ImmutableList.of(1), flags);
+    Object fieldElement = readWith(ImmutableMap.of("values", ImmutableList.of(" 4")), counts);
+    Object nullField = readWith(JsonNodeFactory.instance.objectNode().putNull("values"), counts);
+    Object skippedElement = readWith(ImmutableMap.of("values", Arrays.asList(1, null, 2)), counts);
+    Object singleValue = readWith(ImmutableMap.of("values", 5), counts);
+
+    // Assert
+    assertThat(literals).isEqualTo("[3, 3, 100]");
+    assertThat(paddedNumber).isEqualTo("fails");
+    assertThat(nullElement).isEqualTo("fails");
+    assertThat(booleans).isEqualTo("[true, false]");
+    assertThat(numberAsBoolean).isEqualTo("fails");
+    assertThat(fieldElement).isEqualTo("fails");
+    assertThat(nullField).isEqualTo("[]");
+    assertThat(skippedElement).isEqualTo("[1, 2]");
+    assertThat(singleValue).isEqualTo("[5]");
+  }
+
+  @Test
+  public void of_recordWithUntypedFields_keepsTheNumberTypesItIsFed() {
+    // Arrange
+    record Loose(Object value, Map<String, Object> extra) {}
+    BigInteger big = new BigInteger("123456789012345678901234567890");
+    FunctionNode<Loose, String> describe =
+        FunctionNodes.of(
+            "n",
+            Loose.class,
+            String.class,
+            (ctx, l) -> l.value().getClass().getSimpleName() + " " + l.extra().get("big"));
+
+    // Act
+    Object output =
+        readWith(ImmutableMap.of("value", 3, "extra", ImmutableMap.of("big", big)), describe);
+
+    // Assert
+    assertThat(output).isEqualTo("Integer " + big);
+  }
+
+  @Test
+  public void of_jacksonAnnotatedValues_roundTripToASuccessorTypedTheSame() {
+    // Arrange: each value and the JSON form its typed node writes.
+    record Written(Object value, Object json) {
+      String key() {
+        return value.getClass().getSimpleName() + ":" + value;
+      }
+    }
+    ImmutableList<Written> roundTrips =
+        ImmutableList.of(
+            // Jackson writes a number: under a numeric shape, or ARRAY on an enum.
+            new Written(Rank.HIGH, 1),
+            new Written(
+                new Voucher(Rank.HIGH, Status.SHIPPED, true, false),
+                ImmutableMap.of("rank", 1, "status", 1, "open", 1, "paid", 0)),
+            new Written(
+                new Listed(Status.SHIPPED, true), ImmutableMap.of("status", 1, "lit", true)),
+            // Jackson writes the @JsonValue, so LOW's 1, which is HIGH's ordinal, reads as LOW.
+            new Written(Level.LOW, 1),
+            new Written(Answer.NO, "n"),
+            new Written(Padded.A, " a"),
+            // Jackson writes text: STRING on scalars, and a char even under NUMBER.
+            new Written(
+                new Quoted(3, 9007199254740993L, 1.5, true),
+                ImmutableMap.of(
+                    "count", "3", "id", "9007199254740993", "price", "1.5", "paid", "true")),
+            new Written(new Initials('A', 'B'), ImmutableMap.of("first", "A", "last", "B")));
+
+    // Act
+    ImmutableMap<String, Object> actual =
+        roundTrips.stream().collect(toImmutableMap(Written::key, row -> roundTrip(row.value())));
+
+    // Assert
+    assertThat(actual)
+        .containsExactlyEntriesIn(
+            roundTrips.stream()
+                .collect(
+                    toImmutableMap(Written::key, row -> ImmutableList.of(row.json(), row.key()))))
+        .inOrder();
   }
 
   @Test
@@ -6611,6 +7008,60 @@ public final class FunctionNodeTest {
   private static Schema object(ImmutableMap<String, Schema> properties, String... required) {
     Schema.Builder object = Schema.builder().type(Type.Known.OBJECT).properties(properties);
     return (required.length == 0 ? object : object.required(required)).build();
+  }
+
+  /**
+   * Outputs {@code value} from a node typed as its class into a successor typed the same, and
+   * returns what the node wrote and what the successor read as {@code "Class:value"}, or {@code
+   * "fails"} when the successor rejects it.
+   */
+  private static <T> Object roundTrip(T value) {
+    @SuppressWarnings("unchecked") // The class of a value is its type.
+    Class<T> type = (Class<T>) value.getClass();
+    FunctionNode<Content, T> write =
+        FunctionNodes.of("write", Content.class, type, (ctx, m) -> value);
+    RunResult result = run(chain(write, describing(type)));
+    return result.error() != null
+        ? failure(result)
+        : ImmutableList.of(result.outputAt("wf@1/write@1"), result.outputAt("wf@1/read@1"));
+  }
+
+  /** An input, the port class it goes to, and what {@link #readWith} returns for them. */
+  private record Case(Object input, Class<?> port, String reads) {
+    /** The input, with a string in quotes, and the port, as a table key. */
+    String key() {
+      return (input instanceof String ? "\"" + input + "\"" : String.valueOf(input))
+          + " -> "
+          + port.getSimpleName();
+    }
+  }
+
+  /** Maps each case's key to what {@link #readWith} returns; a repeated key throws. */
+  private static ImmutableMap<String, Object> readAll(ImmutableList<Case> cases) {
+    return cases.stream()
+        .collect(toImmutableMap(Case::key, c -> readWith(c.input(), describing(c.port()))));
+  }
+
+  /** Maps each case's key to what it says {@link #readWith} returns. */
+  private static ImmutableMap<String, Object> expected(ImmutableList<Case> cases) {
+    return cases.stream().collect(toImmutableMap(Case::key, Case::reads));
+  }
+
+  /** Feeds {@code value} to {@code node} and returns its output, or "fails". */
+  private static @Nullable Object readWith(Object value, Node node) {
+    RunResult result = run(chain(emitter("make", value), node));
+    return result.error() != null ? failure(result) : result.outputAt("wf@1/" + node.name() + "@1");
+  }
+
+  /** Returns "fails" for a run whose port rejected its input, and any other error as it is. */
+  private static Object failure(RunResult result) {
+    return result.error() instanceof NodeInputValidationException ? "fails" : result.error();
+  }
+
+  /** Returns a node named {@code read} that outputs its input as {@code "Class:value"}. */
+  private static <T> FunctionNode<T, String> describing(Class<T> type) {
+    return FunctionNodes.of(
+        "read", type, String.class, (ctx, in) -> in.getClass().getSimpleName() + ":" + in);
   }
 
   /** Returns a model message with a thought part before its {@code answer}. */

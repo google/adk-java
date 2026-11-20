@@ -21,6 +21,7 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.BeanDescription;
+import com.fasterxml.jackson.databind.BeanProperty;
 import com.fasterxml.jackson.databind.DeserializationConfig;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -31,10 +32,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.JsonSerializer;
 import com.fasterxml.jackson.databind.KeyDeserializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.databind.cfg.CoercionAction;
 import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
+import com.fasterxml.jackson.databind.cfg.MutableCoercionConfig;
 import com.fasterxml.jackson.databind.deser.AbstractDeserializer;
 import com.fasterxml.jackson.databind.deser.BeanDeserializerBase;
 import com.fasterxml.jackson.databind.deser.BeanDeserializerBuilder;
@@ -43,6 +47,7 @@ import com.fasterxml.jackson.databind.deser.DefaultDeserializationContext;
 import com.fasterxml.jackson.databind.deser.ValueInstantiator;
 import com.fasterxml.jackson.databind.deser.impl.UnsupportedTypeDeserializer;
 import com.fasterxml.jackson.databind.deser.std.DelegatingDeserializer;
+import com.fasterxml.jackson.databind.deser.std.EnumDeserializer;
 import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
 import com.fasterxml.jackson.databind.deser.std.StdKeyDeserializer;
 import com.fasterxml.jackson.databind.introspect.Annotated;
@@ -58,11 +63,14 @@ import com.fasterxml.jackson.databind.ser.std.BeanSerializerBase;
 import com.fasterxml.jackson.databind.ser.std.StdKeySerializers;
 import com.fasterxml.jackson.databind.ser.std.StdSerializer;
 import com.fasterxml.jackson.databind.type.LogicalType;
+import com.fasterxml.jackson.databind.util.TokenBuffer;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.google.adk.events.Event;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
+import com.google.common.collect.ImmutableList;
+import com.google.common.primitives.Primitives;
 import com.google.genai.JsonSerializable;
 import com.google.genai.types.Content;
 import com.google.genai.types.Schema;
@@ -92,16 +100,18 @@ final class PortCodec<T> {
 
   /**
    * One mapper for every port: unknown properties are ignored, null fields are written, {@code
-   * java.time} values travel as ISO-8601 strings, and genai types as genai writes them. A whole
-   * number reads a float only when it has no fraction, while a null primitive, an empty string as a
-   * number, boolean, enum or date, a number or boolean as text, and a missing {@link
-   * RequiredProperties} property fail.
+   * java.time} values travel as ISO-8601 strings, and genai types as genai writes them. Numbers,
+   * booleans and chars, also inside genai types, read as {@link PortScalars} describes, and any
+   * other whole-number type reads a float only when it has no fraction. It rejects a null
+   * primitive, an empty string as a number, boolean, enum or date, a number as an enum not written
+   * as one, a number or boolean as text, and a missing {@link RequiredProperties} property.
    */
   static final ObjectMapper MAPPER =
       JsonMapper.builder()
           .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
           .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
           .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+          .enable(DeserializationFeature.FAIL_ON_NUMBERS_FOR_ENUMS)
           .withCoercionConfigDefaults(
               config -> config.setCoercion(CoercionInputShape.EmptyString, CoercionAction.Fail))
           // A Locale or URI writes some values, such as Locale.ROOT, as an empty string.
@@ -109,19 +119,17 @@ final class PortCodec<T> {
               LogicalType.OtherScalar,
               config ->
                   config.setCoercion(CoercionInputShape.EmptyString, CoercionAction.TryConvert))
-          .withCoercionConfig(
-              LogicalType.Textual,
-              config ->
-                  config
-                      .setCoercion(CoercionInputShape.Integer, CoercionAction.Fail)
-                      .setCoercion(CoercionInputShape.Float, CoercionAction.Fail)
-                      .setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail))
+          .withCoercionConfig(LogicalType.Textual, PortCodec::rejectScalarsAsText)
           .addModule(new Jdk8Module())
           .addModule(new JavaTimeModule())
+          .addModule(PortScalars.module())
           .addModule(portModule())
           .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
           .disable(SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS)
           .build();
+
+  /** Genai's own reader of the form genai writes, with the port rules for scalars. */
+  private static final ObjectReader GENAI_READER = genaiReader();
 
   /** The port's type, with a primitive boxed. */
   private final JavaType type;
@@ -520,7 +528,7 @@ final class PortCodec<T> {
       // Jackson's and genai's messages can quote the value, so no cause.
       throw doesNotMatch(what);
     }
-    // A message's JSON null, or "null" read as a Character, is not a value.
+    // A message's JSON null is not a value.
     if (converted == null && fromMessage) {
       throw doesNotMatch(what);
     }
@@ -704,10 +712,29 @@ final class PortCodec<T> {
               DeserializationConfig config,
               BeanDescription beanDesc,
               JsonDeserializer<?> deserializer) {
+            if (Primitives.wrap(beanDesc.getBeanClass()) == Boolean.class) {
+              return new IndexedValueDeserializer(
+                  deserializer, ImmutableList.of(false, true), /* readsIndex= */ false);
+            }
             // Number also reports Integer, but takes any number, fractions included.
             return deserializer.logicalType() == LogicalType.Integer
                     && beanDesc.getBeanClass() != Number.class
                 ? new WholeNumberDeserializer(deserializer)
+                : deserializer;
+          }
+
+          @Override
+          public JsonDeserializer<?> modifyEnumDeserializer(
+              DeserializationConfig config,
+              JavaType type,
+              BeanDescription beanDesc,
+              JsonDeserializer<?> deserializer) {
+            // A JsonCreator enum keeps its own reader.
+            return deserializer instanceof EnumDeserializer
+                ? new IndexedValueDeserializer(
+                    deserializer,
+                    ImmutableList.copyOf(type.getRawClass().getEnumConstants()),
+                    /* readsIndex= */ false)
                 : deserializer;
           }
 
@@ -737,7 +764,21 @@ final class PortCodec<T> {
     }
   }
 
-  /** Reads a genai value with genai's own mapper, the reader of the form it writes. */
+  private static ObjectReader genaiReader() {
+    ObjectMapper mapper =
+        JsonSerializable.objectMapper().copy().registerModule(PortScalars.module());
+    rejectScalarsAsText(mapper.coercionConfigFor(LogicalType.Textual));
+    return mapper.reader();
+  }
+
+  private static void rejectScalarsAsText(MutableCoercionConfig config) {
+    config
+        .setCoercion(CoercionInputShape.Integer, CoercionAction.Fail)
+        .setCoercion(CoercionInputShape.Float, CoercionAction.Fail)
+        .setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail);
+  }
+
+  /** Reads a genai value with {@link #GENAI_READER}. */
   private static final class GenaiDeserializer extends StdDeserializer<Object> {
     GenaiDeserializer(Class<?> type) {
       super(type);
@@ -745,7 +786,7 @@ final class PortCodec<T> {
 
     @Override
     public Object deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
-      return JsonSerializable.objectMapper().treeToValue(ctxt.readTree(p), handledType());
+      return GENAI_READER.treeToValue(ctxt.readTree(p), handledType());
     }
   }
 
@@ -778,6 +819,84 @@ final class PortCodec<T> {
         return ctxt.handleWeirdNumberValue(handledType(), number, "too many digits");
       }
       return ctxt.readTreeAsValue(BigIntegerNode.valueOf(whole.toBigIntegerExact()), handledType());
+    }
+  }
+
+  /**
+   * Reads like its delegate but rejects text padded with whitespace. Where Jackson writes each of
+   * {@code values} as its own index, it also reads an index n as {@code values.get(n)}. Jackson
+   * reads only the instance {@link #createContextual} returns, which decides {@code readsIndex}.
+   */
+  private static final class IndexedValueDeserializer extends DelegatingDeserializer {
+    private final ImmutableList<?> values;
+    private final boolean readsIndex;
+
+    IndexedValueDeserializer(
+        JsonDeserializer<?> delegate, ImmutableList<?> values, boolean readsIndex) {
+      super(delegate);
+      this.values = values;
+      this.readsIndex = readsIndex;
+    }
+
+    @Override
+    protected JsonDeserializer<?> newDelegatingInstance(JsonDeserializer<?> newDelegatee) {
+      return new IndexedValueDeserializer(newDelegatee, values, readsIndex);
+    }
+
+    @Override
+    public JsonDeserializer<?> createContextual(
+        DeserializationContext ctxt, @Nullable BeanProperty property) throws JsonMappingException {
+      JsonDeserializer<?> delegate =
+          ctxt.handleSecondaryContextualization(
+              _delegatee, property, ctxt.constructType(handledType()));
+      return new IndexedValueDeserializer(delegate, values, writesIndexes(property));
+    }
+
+    @Override
+    public Object deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+      if (readsIndex
+          && PortScalars.scalarValue(p) instanceof Long n
+          && n >= 0
+          && n < values.size()) {
+        return values.get(n.intValue());
+      }
+      String text = p.hasToken(JsonToken.VALUE_STRING) ? p.getText() : null;
+      Object value = super.deserialize(p, ctxt);
+      // Jackson's enum reader trims a name it does not find; keep only names the type writes.
+      if (text != null
+          && value != null
+          && !text.equals(text.trim())
+          && !text.equals(MAPPER.valueToTree(value).asText())) {
+        return ctxt.handleWeirdStringValue(handledType(), text, "not a name it writes");
+      }
+      return value;
+    }
+
+    /**
+     * Whether Jackson writes each of {@code values} as its own index in {@code property}, or as a
+     * top-level value when {@code property} is null. A field with its own {@code JsonSerialize}, or
+     * a serializer that fails here, counts as not writing them.
+     */
+    private boolean writesIndexes(@Nullable BeanProperty property) {
+      if (property != null && property.getAnnotation(JsonSerialize.class) != null) {
+        return false;
+      }
+      SerializerProvider provider = MAPPER.getSerializerProviderInstance();
+      try {
+        JsonSerializer<Object> serializer = provider.findValueSerializer(handledType(), property);
+        for (int i = 0; i < values.size(); i++) {
+          try (TokenBuffer tokens = new TokenBuffer(MAPPER, /* hasNativeIds= */ false)) {
+            serializer.serialize(values.get(i), tokens, provider);
+            JsonParser written = tokens.asParserOnFirstToken();
+            if (!written.hasToken(JsonToken.VALUE_NUMBER_INT) || written.getLongValue() != i) {
+              return false;
+            }
+          }
+        }
+        return true;
+      } catch (IOException | RuntimeException e) {
+        return false;
+      }
     }
   }
 }

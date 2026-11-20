@@ -162,8 +162,8 @@ public final class SchemaFitTest {
   }
 
   @Test
-  public void fits_untypedEnumOfNumberText_isAnIntegerOnlyAsPlainIntegerTextThatFitsALong() {
-    // Arrange: an integer port reads neither "1.0" nor "1e2", so they fit only a number.
+  public void fits_untypedEnumOfNumberText_isAnIntegerOnlyAsAWholeNumberThatFitsALong() {
+    // Arrange: an integer port reads "1.0" and "1e2" as 1 and 100, but not "2.5" or 1e19.
     Schema maxLong = untypedEnum("9223372036854775807");
     Schema pastMaxLong = untypedEnum("9223372036854775808");
 
@@ -172,8 +172,10 @@ public final class SchemaFitTest {
     assertThat(fits(untypedEnum("-1", "0", "-0"), INTEGER)).isTrue();
     assertThat(fits(pastMaxLong, INTEGER)).isFalse();
     assertThat(fits(pastMaxLong, NUMBER)).isTrue();
-    assertThat(fits(untypedEnum("1.0"), INTEGER)).isFalse();
-    assertThat(fits(untypedEnum("1e2"), INTEGER)).isFalse();
+    assertThat(fits(untypedEnum("1.0", "1e2", "1E+2", "-0.0"), INTEGER)).isTrue();
+    assertThat(fits(untypedEnum("2.5"), INTEGER)).isFalse();
+    assertThat(fits(untypedEnum("1e-2"), INTEGER)).isFalse();
+    assertThat(fits(untypedEnum("1e19"), INTEGER)).isFalse();
     assertThat(fits(untypedEnum("1.5", "0.5", "1.0", "1e-2", "1e2", "1E+2"), NUMBER)).isTrue();
   }
 

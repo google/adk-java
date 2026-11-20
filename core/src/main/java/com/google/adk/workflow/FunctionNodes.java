@@ -27,7 +27,17 @@ import org.jspecify.annotations.Nullable;
 /**
  * Creates {@link FunctionNode}s with a type per port, as a {@code Class} or, for a generic type
  * such as {@code List<Order>}, a {@code TypeReference}, read and written as {@link FunctionNode}
- * describes. A node's body asks the user for input with {@link #requestInput}.
+ * describes. Port values also follow these rules:
+ *
+ * <ul>
+ *   <li>A primitive or boxed number or boolean, also in a primitive array other than {@code byte[]}
+ *       (base64) or as a map key, accepts only its own JSON type or the same value quoted ({@code
+ *       "3"}). An integer also accepts a whole number such as {@code 3.0}, and a char only one
+ *       character of text.
+ *   <li>An enum or boolean reads a number only where Jackson writes it as one.
+ * </ul>
+ *
+ * <p>A node's body asks the user for input with {@link #requestInput}.
  */
 @Experimental
 public final class FunctionNodes {

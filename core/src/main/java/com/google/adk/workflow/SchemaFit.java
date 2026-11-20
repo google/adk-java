@@ -198,9 +198,9 @@ final class SchemaFit {
           case OBJECT -> Type.Known.OBJECT;
           case ARRAY -> Type.Known.ARRAY;
           case BOOLEAN -> Type.Known.BOOLEAN;
-          // An integer port does not read "1.0" or "1e2".
+          // A whole number such as "1e2" is an integer, as integer ports read it.
           case NUMBER ->
-              literal.isIntegralNumber() && literal.canConvertToLong()
+              PortScalars.integerLiteral(literal.numberValue()) != null
                   ? Type.Known.INTEGER
                   : Type.Known.NUMBER;
           default -> Type.Known.STRING;
