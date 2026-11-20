@@ -38,6 +38,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
@@ -46,6 +47,7 @@ import com.google.adk.events.EventActions;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.plugins.Plugin;
+import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
@@ -899,7 +901,7 @@ public final class WorkflowResumeTest {
   }
 
   @Test
-  public void resume_messageOutputNode_isRehydratedToItsText() {
+  public void resume_messageOutputNode_isRehydratedToItsMessage() {
     Node chat = new MessageOutputNode("chat", "agent said hi", /* schema= */ null);
     Node ask = longRunningAsk("ask", "ask_1");
     JoinNode join = JoinNode.builder().name("j").build();
@@ -914,8 +916,212 @@ public final class WorkflowResumeTest {
 
     ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
 
+    // The successor gets the message it got live, not the message's text.
     assertThat(outputEventAt(events, "wf@1/j@1").output())
-        .hasValue(ImmutableMap.of("chat", "agent said hi", "ask", ImmutableMap.of("v", 1)));
+        .hasValue(
+            ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_replayedMessageOutput_isResentAsAMessageForTheNextResume() {
+    Node chat = new MessageOutputNode("chat", "agent said hi", /* schema= */ null);
+    Node first = longRunningAsk("first", "ask_1");
+    Node second = longRunningAsk("second", "ask_2");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, chat),
+                new Edge(START, first),
+                new Edge(START, second),
+                new Edge(chat, join),
+                new Edge(first, join),
+                new Edge(second, join)));
+    session.advance(go());
+
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+    ImmutableList<Event> last = session.turn(answer("ask_2", ImmutableMap.of("v", 2)));
+
+    // The message goes out again as the output, marked as a message, not as content.
+    Event resent = outputEventAt(resumed, "wf@1/chat@1");
+    assertThat(resent.content()).isEmpty();
+    assertThat(resent.nodeInfo().orElseThrow().messageAsOutput()).isTrue();
+    assertThat(outputEventAt(last, "wf@1/j@1").output())
+        .hasValue(
+            ImmutableMap.of(
+                "chat",
+                modelText("agent said hi"),
+                "first",
+                ImmutableMap.of("v", 1),
+                "second",
+                ImmutableMap.of("v", 2)));
+  }
+
+  @Test
+  public void resume_nodeOutputtingAMessage_isRehydratedToTheMessage() {
+    Node chat = emitter("chat", modelText("agent said hi"));
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, chat),
+                new Edge(START, ask),
+                new Edge(chat, join),
+                new Edge(ask, join)));
+
+    ImmutableList<Event> first = session.turn(go());
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    // Marked as a message, the output reads back as one from a stored session too.
+    assertThat(outputEventAt(first, "wf@1/chat@1").nodeInfo().orElseThrow().messageAsOutput())
+        .isTrue();
+    assertThat(outputEventAt(events, "wf@1/j@1").output())
+        .hasValue(
+            ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_childWorkflowEndingInAMessageNode_outputsTheMessage() {
+    // The workflow's schema is not checked at run time, so its output is the message itself.
+    Workflow inner =
+        Workflow.builder()
+            .name("inner")
+            .outputSchema(AGE_SCHEMA)
+            .edges(
+                new Edge(START, new MessageOutputNode("chat", "{\"age\": 3}", /* schema= */ null)))
+            .build();
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, inner),
+                new Edge(START, ask),
+                new Edge(inner, join),
+                new Edge(ask, join)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    assertThat(outputEventAt(events, "wf@1/j@1").output())
+        .hasValue(
+            ImmutableMap.of("inner", modelText("{\"age\": 3}"), "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_callerDelegatingToANodeOutputtingAMessage_isRehydratedToTheMessage() {
+    Node chat = emitter("chat", modelText("hi"));
+    Node caller =
+        dispatcher(
+            "caller",
+            (ctx, input) -> ctx.runNode(chat, null, USE_AS_OUTPUT).ignoreElement().toFlowable());
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, caller),
+                new Edge(START, ask),
+                new Edge(caller, join),
+                new Edge(ask, join)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    assertThat(outputEventAt(events, "wf@1/j@1").output())
+        .hasValue(ImmutableMap.of("caller", modelText("hi"), "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_callerDelegatingToASingleTurnAgent_isRehydratedToTheAgentsText() {
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .mode(AgentMode.SINGLE_TURN)
+            .model(TestLlm.create(TestUtils.createTextLlmResponse("agent said hi")))
+            .build();
+    Node caller =
+        dispatcher(
+            "caller",
+            (ctx, input) -> ctx.runNode(agent, null, USE_AS_OUTPUT).ignoreElement().toFlowable());
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, caller),
+                new Edge(START, ask),
+                new Edge(caller, join),
+                new Edge(ask, join)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    // Live, the caller output the agent's text, so the replay gives the text too.
+    assertThat(outputEventAt(events, "wf@1/j@1").output())
+        .hasValue(ImmutableMap.of("caller", "agent said hi", "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_customAgentMessageOutput_isRehydratedToItsMessage() {
+    Node agent =
+        new TestBaseAgent(
+            "agent",
+            "description",
+            () ->
+                Flowable.just(
+                    newEvent()
+                        .author("agent")
+                        .content(modelText("agent said hi"))
+                        .nodeInfo(NodeInfo.builder().messageAsOutput(true).build())
+                        .build()),
+            /* subAgents= */ null,
+            /* beforeAgentCallbacks= */ null,
+            /* afterAgentCallbacks= */ null);
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, agent),
+                new Edge(START, ask),
+                new Edge(agent, join),
+                new Edge(ask, join)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    // Only an LlmAgent outputs its text; any other agent gives the message it output.
+    assertThat(outputEventAt(events, "wf@1/j@1").output())
+        .hasValue(
+            ImmutableMap.of("agent", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_singleTurnAgentWithoutAnOutputSchema_isRehydratedToItsText() {
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .mode(AgentMode.SINGLE_TURN)
+            .model(TestLlm.create(TestUtils.createTextLlmResponse("agent said hi")))
+            .build();
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, agent),
+                new Edge(START, ask),
+                new Edge(agent, join),
+                new Edge(ask, join)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    // Live, an agent's output is its text, so the replay gives the text too.
+    assertThat(outputEventAt(events, "wf@1/j@1").output())
+        .hasValue(ImmutableMap.of("agent", "agent said hi", "ask", ImmutableMap.of("v", 1)));
   }
 
   @Test

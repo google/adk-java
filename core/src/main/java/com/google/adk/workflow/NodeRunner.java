@@ -34,6 +34,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
+import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
@@ -770,6 +771,9 @@ public final class NodeRunner {
       String author = nodeState.eventAuthor();
       NodeInfo nodeInfo = event.nodeInfo().orElseGet(() -> NodeInfo.builder().build());
       boolean carriesOutput = event.output().isPresent() || isMessageAsOutput(event);
+      // Marked, so that a stored session reads the output back as a message, not as a map.
+      boolean messageInOutput =
+          event.content().isEmpty() && event.output().orElse(null) instanceof Content;
       return event.toBuilder()
           .author(author.isEmpty() ? node.name() : author)
           .invocationId(eventContext.invocationId())
@@ -779,6 +783,7 @@ public final class NodeRunner {
               nodeInfo.toBuilder()
                   .path(nodeState.nodePath())
                   .outputFor(carriesOutput ? nodeState.outputFor() : nodeInfo.outputFor())
+                  .messageAsOutput(nodeInfo.messageAsOutput() || messageInOutput)
                   .build())
           .build();
     }

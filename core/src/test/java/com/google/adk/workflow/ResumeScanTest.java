@@ -204,6 +204,61 @@ public final class ResumeScanTest {
   }
 
   @Test
+  public void scan_messageInTheOutputFieldOfAStoredEvent_isReadBackAsTheMessage() {
+    Event resent =
+        nodeEvent("wf@1/chat@1")
+            .output(modelText("hi"))
+            .nodeInfo(NodeInfo.builder().path("wf@1/chat@1").messageAsOutput(true).build())
+            .build();
+    Event stored = Event.fromJson(resent.toJson());
+
+    RecoveredNode recovered =
+        ResumeScan.scan(ImmutableList.of(stored), "wf@1", "inv").get("chat@1");
+
+    assertThat(stored.output().orElseThrow()).isInstanceOf(Map.class);
+    assertThat(recovered.output).isEqualTo(modelText("hi"));
+  }
+
+  @Test
+  public void scan_eventMarkedAsAMessageWithAPlainOutput_keepsTheOutput() {
+    Event event =
+        nodeEvent("wf@1/chat@1")
+            .output("hi")
+            .nodeInfo(NodeInfo.builder().path("wf@1/chat@1").messageAsOutput(true).build())
+            .build();
+
+    RecoveredNode recovered = ResumeScan.scan(ImmutableList.of(event), "wf@1", "inv").get("chat@1");
+
+    assertThat(recovered.output).isEqualTo("hi");
+  }
+
+  @Test
+  public void scan_eventMarkedAsAMessageWithAMapOutput_keepsTheMap() {
+    Event event =
+        nodeEvent("wf@1/chat@1")
+            .output(ImmutableMap.of("v", 1))
+            .nodeInfo(NodeInfo.builder().path("wf@1/chat@1").messageAsOutput(true).build())
+            .build();
+
+    RecoveredNode recovered = ResumeScan.scan(ImmutableList.of(event), "wf@1", "inv").get("chat@1");
+
+    assertThat(recovered.output).isEqualTo(ImmutableMap.of("v", 1));
+  }
+
+  @Test
+  public void scan_eventMarkedAsAMessageWithAMapThatIsNotAMessage_keepsTheMap() {
+    Event event =
+        nodeEvent("wf@1/chat@1")
+            .output(ImmutableMap.of("parts", "x"))
+            .nodeInfo(NodeInfo.builder().path("wf@1/chat@1").messageAsOutput(true).build())
+            .build();
+
+    RecoveredNode recovered = ResumeScan.scan(ImmutableList.of(event), "wf@1", "inv").get("chat@1");
+
+    assertThat(recovered.output).isEqualTo(ImmutableMap.of("parts", "x"));
+  }
+
+  @Test
   public void scan_partialEvent_isIgnored() {
     ImmutableList<Event> events =
         ImmutableList.of(
@@ -418,7 +473,9 @@ public final class ResumeScanTest {
 
     Object output =
         ResumeScan.processRehydratedOutput(
-            new MessageOutputNode("chat", "", schema), modelText("{\"town\": \"Paris\"}"));
+            new MessageOutputNode("chat", "", schema),
+            modelText("{\"town\": \"Paris\"}"),
+            /* delegated= */ false);
 
     assertThat(output).isEqualTo(ImmutableMap.of("town", "Paris"));
   }
@@ -432,11 +489,11 @@ public final class ResumeScanTest {
     IllegalArgumentException notJson =
         assertThrows(
             IllegalArgumentException.class,
-            () -> ResumeScan.processRehydratedOutput(node, notJsonText));
+            () -> ResumeScan.processRehydratedOutput(node, notJsonText, /* delegated= */ false));
     IllegalArgumentException bareWord =
         assertThrows(
             IllegalArgumentException.class,
-            () -> ResumeScan.processRehydratedOutput(node, bareWordText));
+            () -> ResumeScan.processRehydratedOutput(node, bareWordText, /* delegated= */ false));
 
     assertThat(notJson)
         .hasMessageThat()
@@ -450,16 +507,31 @@ public final class ResumeScanTest {
   public void processRehydratedOutput_blankText_isNoOutput() {
     Object output =
         ResumeScan.processRehydratedOutput(
-            new MessageOutputNode("chat", "", COUNT_SCHEMA), modelText("  "));
+            new MessageOutputNode("chat", "", COUNT_SCHEMA),
+            modelText("  "),
+            /* delegated= */ false);
 
     assertThat(output).isNull();
+  }
+
+  @Test
+  public void processRehydratedOutput_blankTextWithoutSchema_keepsTheMessage() {
+    Content blank = modelText("  ");
+
+    Object output =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", /* schema= */ null), blank, /* delegated= */ false);
+
+    assertThat(output).isEqualTo(blank);
   }
 
   @Test
   public void processRehydratedOutput_jsonNullForAnObjectSchema_isNoOutput() {
     Object output =
         ResumeScan.processRehydratedOutput(
-            new MessageOutputNode("chat", "", AGE_SCHEMA), modelText("null"));
+            new MessageOutputNode("chat", "", AGE_SCHEMA),
+            modelText("null"),
+            /* delegated= */ false);
 
     assertThat(output).isNull();
   }
@@ -468,7 +540,10 @@ public final class ResumeScanTest {
   public void processRehydratedOutput_stringSchema_keepsTheText() {
     Node node = new MessageOutputNode("chat", "", Schema.builder().type(Type.Known.STRING).build());
 
-    assertThat(ResumeScan.processRehydratedOutput(node, modelText("42"))).isEqualTo("42");
+    Object output =
+        ResumeScan.processRehydratedOutput(node, modelText("42"), /* delegated= */ false);
+
+    assertThat(output).isEqualTo("42");
   }
 
   @Test

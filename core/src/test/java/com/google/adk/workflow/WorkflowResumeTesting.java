@@ -284,7 +284,7 @@ final class WorkflowResumeTesting {
     }
   }
 
-  /** A node whose model-style message is its output, as an agent node's can be. */
+  /** A node whose model-style message is its output. */
   record MessageOutputNode(String name, String text, @Nullable Schema schema) implements Node {
 
     @Override

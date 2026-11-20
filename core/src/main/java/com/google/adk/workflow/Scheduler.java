@@ -31,6 +31,7 @@ import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.genai.types.Content;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.disposables.Disposable;
@@ -347,7 +348,9 @@ final class Scheduler {
 
   /**
    * On a resumable invocation, re-emits the output of a node replayed from history on the node's
-   * branch, without the paths that the output counts for.
+   * branch, without the paths that the output counts for. A replayed message is marked as one, so a
+   * later resume reads it back as a message; sent as content, it would appear twice in a later
+   * agent's history.
    */
   private void reemitReplayedOutput(Context childContext) {
     Optional<Object> output = childContext.requireNodeState().output();
@@ -359,7 +362,10 @@ final class Scheduler {
             workflowEvent(childContext.invocationContext().branch().orElse(null))
                 .output(output.get())
                 .nodeInfo(
-                    NodeInfo.builder().path(childContext.requireNodeState().nodePath()).build()));
+                    NodeInfo.builder()
+                        .path(childContext.requireNodeState().nodePath())
+                        .messageAsOutput(output.get() instanceof Content)
+                        .build()));
   }
 
   /** Returns the start of an event that the workflow itself emits on {@code branch}. */

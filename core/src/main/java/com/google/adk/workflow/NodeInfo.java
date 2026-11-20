@@ -60,7 +60,8 @@ public abstract class NodeInfo {
 
   /**
    * Returns {@code true} if this event's content is the node's output, so no separate output event
-   * follows.
+   * follows. On an event without content, it marks the output as a message, which a stored session
+   * holds as its JSON form.
    */
   @JsonProperty("messageAsOutput")
   @JsonInclude(JsonInclude.Include.NON_DEFAULT)
