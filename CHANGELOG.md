@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.16.0](https://github.com/google/adk-java/compare/v1.15.0...v1.16.0) (2026-11-20)
+
+
+### Features
+
+* **dev:** refresh the bundled Development UI to adk-web 1.0.7 ([cb0c9b0](https://github.com/google/adk-java/commit/cb0c9b08f33de9a6cd2bb0dae6c082ba9c5e6a2c))
+* **dev:** serve the development endpoints under /dev/apps ([6b1fba6](https://github.com/google/adk-java/commit/6b1fba60fb54a8bd121013e3f887cb5d68f97472))
+* **tokt:** map RunConfig toolExecutionMode across the Kotlin engine interop ([c7d7685](https://github.com/google/adk-java/commit/c7d7685950c7edc1e959ae4aeaf01b759b83df03))
+* **workflow:** add isolation scopes for workflow nodes ([524312e](https://github.com/google/adk-java/commit/524312ebf3fe38f2b879dd6174e57eab099acbce))
+* **workflow:** add the CHAT agent mode ([d2eb12f](https://github.com/google/adk-java/commit/d2eb12f8aa1fcbb4eb1a3ce227ab8ba7e9ee19de))
+* **workflow:** add the TASK agent mode ([43d5bfa](https://github.com/google/adk-java/commit/43d5bfab67b50991893f7e47a9743f85c0b296f1))
+* **workflow:** call SINGLE_TURN sub-agents as tools ([55673d2](https://github.com/google/adk-java/commit/55673d290315a9e8c7aa26f93c37f9763a327c6d))
+* **workflow:** delegate tasks to TASK sub-agents ([f4c3d02](https://github.com/google/adk-java/commit/f4c3d026e95ece5b5ff05e52684152af636cd0a4))
+* **workflow:** keep each agent's history to its isolation scope ([8eb4d8f](https://github.com/google/adk-java/commit/8eb4d8f75fefd6d97cc6e38bd1ab37a34b156083))
+* **workflow:** read a user message on typed FunctionNode ports ([7873fab](https://github.com/google/adk-java/commit/7873fabf11202657d072559973f55e4753090505))
+* **workflow:** read numbers, booleans, chars and enums strictly in FunctionNode ports ([3cabda8](https://github.com/google/adk-java/commit/3cabda8909206451a8066bf482ed01d7bd1ea78b))
+* **workflow:** read OptionalInt, OptionalLong and OptionalDouble fields like their primitives ([677e87a](https://github.com/google/adk-java/commit/677e87a62fbb4278908e4e7510d0beebb4a92c8a))
+* **workflow:** reject unknown keys in genai and event FunctionNode ports ([4b6a0e0](https://github.com/google/adk-java/commit/4b6a0e08bae9c6d0b4be32655fe2db38d585867e))
+
+
+### Bug Fixes
+
+* **dev:** end a failed /run_sse stream with an error event ([3aee8ad](https://github.com/google/adk-java/commit/3aee8ad14868172d319f8f8b8547b323122cc29f))
+* **flows:** keep one event id across the chunks of a streamed reply ([0a1b0ac](https://github.com/google/adk-java/commit/0a1b0ac39cae4840979dc122db62a7547ae00a66))
+* **workflow:** keep a node's message output a message after a resume ([8dbdaac](https://github.com/google/adk-java/commit/8dbdaac7f5be0c23f9f0fed04bce93bd1de8df43))
+* **workflow:** read numbers in a message's JSON as ADK Kotlin does ([86296cb](https://github.com/google/adk-java/commit/86296cb02d10fd5be6d5256592018345e047ee50))
+
+
+### Reverts
+
+* Revert MCP SDK version update from 2.1.0 back to 2.0.0 ([dde4b23](https://github.com/google/adk-java/commit/dde4b23de69b3ffb16393217b195bb0b056c4bb8))
+
+
+### Documentation
+
+* **examples:** add samples that call single-turn sub-agents as tools ([e8d177e](https://github.com/google/adk-java/commit/e8d177e9df13d7151166aeb2f52d92096379ae1b))
+* **examples:** ask for human input from function nodes ([7b545e1](https://github.com/google/adk-java/commit/7b545e1634e07be2fc0f11877942a508b20f1c75))
+* **examples:** send messages from function nodes with emit ([80075e5](https://github.com/google/adk-java/commit/80075e50f0993af2f5791702972bfc8aee2245b2))
+* **examples:** use function nodes for state, route and gate steps ([26ed2c3](https://github.com/google/adk-java/commit/26ed2c30c31df8170224833cf80f937d3271c59f))
+
 ## [1.15.0](https://github.com/google/adk-java/compare/v1.14.0...v1.15.0) (2026-11-18)
 
 
