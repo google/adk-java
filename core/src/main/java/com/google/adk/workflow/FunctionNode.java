@@ -158,11 +158,12 @@ public final class FunctionNode<I, O> extends BaseNode {
    * Returns the schema that describes the input port: the one set on the builder or, if none, one
    * inferred from the input type, where an {@code Object}, {@code Void} or other type with no fixed
    * JSON shape infers none. An edge into an inferred record or POJO fails at build if the
-   * producer's output schema lists a key the type does not, while a builder schema checks only the
-   * keys it lists and requires. On a {@code Content} port a builder schema describes the message
-   * text, and an edge is checked against the {@code Content} schema instead. On an {@code Event} or
-   * genai port, or a list, map or array of them, a builder schema does not let the port take keys
-   * its type lacks.
+   * producer's output schema lists a key the type neither reads nor writes, so a key the type
+   * writes under another name than it reads passes and reads as null, while a builder schema checks
+   * only the keys it lists and requires. On a {@code Content} port a builder schema describes the
+   * message text, and an edge is checked against the {@code Content} schema instead. On an {@code
+   * Event} or genai port, or a list, map or array of them, a builder schema does not let the port
+   * take keys its type lacks.
    */
   @Override
   public Optional<Schema> inputSchema() {

@@ -703,6 +703,39 @@ public final class FunctionNodeTest {
     }
   }
 
+  /** A record that holds an {@link Invoice}, so it writes a nested total it never reads. */
+  record InvoiceLine(String label, Invoice invoice) {}
+
+  /** A record whose {@code total} collides with {@link Invoice}'s derived total, as a string. */
+  record Quote(String id, int quantity, String total) {}
+
+  /** A class that writes its label under another name than the one its setter reads. */
+  static final class Slip {
+    private @Nullable String text;
+
+    public @Nullable String getLabel() {
+      return text;
+    }
+
+    public void setLable(String label) {
+      this.text = label;
+    }
+  }
+
+  /** A class that writes a count but reads nothing, as it has no setter or creator. */
+  static final class Tally {
+    private int n = 3;
+
+    public int getCount() {
+      return n;
+    }
+  }
+
+  /** A record that holds a {@link Tally}, so it writes a nested count it never reads. */
+  record TallyLine(String id, Tally tally) {}
+
+  record Customer(@Nullable String email) {}
+
   record Creds(String user, String password) {}
 
   /** A class with a property it only reads, by a setter. */
@@ -2805,8 +2838,10 @@ public final class FunctionNodeTest {
                 + full.outputSchema().get().toJson()
                 + " does not fit input schema "
                 + basic.inputSchema().get().toJson()
-                + ". It was inferred from the port's type and takes no other keys; set inputSchema"
-                + " on the builder or read the objects as Maps to accept them.");
+                + ". The port's type, which the input schema was inferred from, does not read these"
+                + " keys: note. To accept them, set inputSchema on the builder or read the objects"
+                + " as Maps; if a derived getter of full's output writes one, mark it"
+                + " @JsonIgnore.");
   }
 
   @Test
@@ -2855,7 +2890,7 @@ public final class FunctionNodeTest {
     // Assert
     assertThat(error)
         .hasMessageThat()
-        .endsWith("set inputSchema on the builder or read the objects as Maps to accept them.");
+        .contains("does not read these keys: note. To accept them, set inputSchema");
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/maps@1")).isEqualTo("rush");
   }
@@ -2984,7 +3019,7 @@ public final class FunctionNodeTest {
 
     // Assert: the keys are not the cause, so the message suggests no way to accept them.
     assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge reply -> shout.");
-    assertThat(error).hasMessageThat().doesNotContain("takes no other keys");
+    assertThat(error).hasMessageThat().doesNotContain("does not read");
   }
 
   @Test
@@ -3104,6 +3139,168 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void build_sameTypeThatWritesKeysItNeverReads_buildsAndRuns() {
+    // Arrange: Invoice writes a total it derives, Login a read-only role, and InvoiceLine a nested
+    // total.
+    FunctionNode<Content, Invoice> invoice =
+        FunctionNodes.of("invoice", Content.class, Invoice.class, (ctx, m) -> new Invoice("a1", 2));
+    FunctionNode<Invoice, String> bill =
+        FunctionNodes.of(
+            "bill", Invoice.class, String.class, (ctx, i) -> i.id() + "=" + i.getTotal());
+    FunctionNode<Content, Login> signIn =
+        FunctionNodes.of(
+            "sign_in", Content.class, Login.class, (ctx, m) -> new Login("ann", "pw", "admin"));
+    FunctionNode<Login, String> check =
+        FunctionNodes.of("check", Login.class, String.class, (ctx, l) -> l.user() + ":" + l.role());
+    FunctionNode<Content, InvoiceLine> line =
+        FunctionNodes.of(
+            "line",
+            Content.class,
+            InvoiceLine.class,
+            (ctx, m) -> new InvoiceLine("l1", new Invoice("a1", 2)));
+    FunctionNode<InvoiceLine, String> label =
+        FunctionNodes.of("label", InvoiceLine.class, String.class, (ctx, l) -> l.label());
+
+    // Act
+    RunResult billed = run(chain(invoice, bill));
+    RunResult signedIn = run(chain(signIn, check));
+    RunResult labeled = run(chain(line, label));
+
+    // Assert: all run, and the successor reads no written-only key.
+    billed.assertCompleted();
+    signedIn.assertCompleted();
+    labeled.assertCompleted();
+    assertThat(billed.outputAt("wf@1/bill@1")).isEqualTo("a1=20");
+    assertThat(signedIn.outputAt("wf@1/check@1")).isEqualTo("ann:null");
+    assertThat(labeled.outputAt("wf@1/label@1")).isEqualTo("l1");
+  }
+
+  @Test
+  public void build_keyTheTargetOnlyWritesWithAnotherType_fails() {
+    // Arrange: Invoice writes total as an integer it never reads, and Quote writes it as a string.
+    FunctionNode<Content, Quote> quote =
+        FunctionNodes.of("quote", Content.class, Quote.class, (ctx, m) -> new Quote("a1", 2, "x"));
+    FunctionNode<Invoice, String> invoice =
+        FunctionNodes.of("invoice", Invoice.class, String.class, (ctx, i) -> i.id());
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(quote, invoice));
+
+    // Assert: the type of total is the cause, so the message suggests no way to accept a key.
+    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge quote -> invoice.");
+    assertThat(error).hasMessageThat().doesNotContain("does not read");
+  }
+
+  @Test
+  public void build_sameTypeThatWritesAKeyUnderAnotherNameThanItReads_buildsAndReadsNull() {
+    // Arrange: Slip writes label but its setter reads lable.
+    FunctionNode<Content, Slip> slip =
+        FunctionNodes.of(
+            "slip",
+            Content.class,
+            Slip.class,
+            (ctx, m) -> {
+              Slip written = new Slip();
+              written.setLable("x");
+              return written;
+            });
+    FunctionNode<Slip, String> title =
+        FunctionNodes.of(
+            "title", Slip.class, String.class, (ctx, s) -> String.valueOf(s.getLabel()));
+
+    // Act
+    RunResult result = run(chain(slip, title));
+
+    // Assert: the build cannot tell this from a derived key, so the successor reads null.
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/title@1")).isEqualTo("null");
+  }
+
+  @Test
+  public void build_sameTypeThatReadsNothing_buildsAndReadsItsDefault() {
+    // Arrange: Tally reads none of the keys it writes, alone or nested in TallyLine.
+    FunctionNode<Content, Tally> tally =
+        FunctionNodes.of(
+            "tally",
+            Content.class,
+            Tally.class,
+            (ctx, m) -> {
+              Tally written = new Tally();
+              written.n = 7;
+              return written;
+            });
+    FunctionNode<Tally, Integer> count =
+        FunctionNodes.of("count", Tally.class, Integer.class, (ctx, t) -> t.getCount());
+    FunctionNode<Content, TallyLine> line =
+        FunctionNodes.of(
+            "line", Content.class, TallyLine.class, (ctx, m) -> new TallyLine("t1", new Tally()));
+    FunctionNode<TallyLine, String> id =
+        FunctionNodes.of("id", TallyLine.class, String.class, (ctx, t) -> t.id());
+
+    // Act
+    RunResult counted = run(chain(tally, count));
+    RunResult identified = run(chain(line, id));
+
+    // Assert: as in ADK Python, the successor gets a default Tally, not the written count.
+    counted.assertCompleted();
+    identified.assertCompleted();
+    assertThat(counted.outputAt("wf@1/count@1")).isEqualTo(3);
+    assertThat(identified.outputAt("wf@1/id@1")).isEqualTo("t1");
+  }
+
+  @Test
+  public void build_typeIntoATypeThatReadsNothing_failsNamingTheKeyAndTheFixes() {
+    // Arrange: Tally takes only the count it writes, so a key no Tally writes still fails.
+    FunctionNode<Content, Order> order =
+        FunctionNodes.of("order", Content.class, Order.class, (ctx, m) -> new Order("a1", 2));
+    FunctionNode<Tally, Integer> count =
+        FunctionNodes.of("count", Tally.class, Integer.class, (ctx, t) -> t.getCount());
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(order, count));
+
+    // Assert
+    assertThat(error).hasMessageThat().contains("does not read these keys: id, quantity.");
+  }
+
+  @Test
+  public void build_builderSchemaIntoAClosedRecord_namesTheKeysOfEachBranchListedOrRequired() {
+    // Arrange: the union requires pager, one branch requires fax and lists no properties, and
+    // the other lists phone.
+    Schema output =
+        Schema.builder()
+            .anyOf(
+                ImmutableList.of(
+                    Schema.builder()
+                        .type(Type.Known.OBJECT)
+                        .required(ImmutableList.of("fax"))
+                        .build(),
+                    object(ImmutableMap.of("phone", STRING))))
+            .required(ImmutableList.of("pager"))
+            .build();
+    FunctionNode<Content, Object> contact =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("contact")
+            .outputSchema(output)
+            .body((ctx, m) -> ImmutableMap.of())
+            .build();
+    FunctionNode<Customer, String> customer =
+        FunctionNodes.of(
+            "customer", Customer.class, String.class, (ctx, c) -> String.valueOf(c.email()));
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(contact, customer));
+
+    // Assert
+    assertThat(error)
+        .hasMessageThat()
+        .contains("does not read these keys: fax, phone, pager. To accept them");
+  }
+
+  @Test
   public void build_contentIntoASchemaWithAnOptionalRole_buildsAndRuns() {
     // Arrange: a Content omits an unset role rather than writing null.
     FunctionNode<Content, Content> model =
@@ -3145,7 +3342,7 @@ public final class FunctionNodeTest {
   }
 
   @Test
-  public void schemas_propertiesOnlyReadOrOnlyWritten_appearOnlyInThatPortsSchema() {
+  public void schemas_keysOnlyReadOrOnlyWritten_areLeftOutOfOutputOrOptionalOnInput() {
     // Act
     Optional<Schema> notepadIn = inputSchema(Notepad.class);
     Optional<Schema> notepadOut = outputSchema(Notepad.class);
@@ -3157,11 +3354,17 @@ public final class FunctionNodeTest {
     // Assert: Jackson leaves a field or setter property it does not read at its default.
     assertThat(notepadIn).hasValue(object(ImmutableMap.of("id", STRING, "note", STRING)));
     assertThat(notepadOut).hasValue(object(ImmutableMap.of("id", STRING), "id"));
-    assertThat(invoiceIn).hasValue(ORDER);
+    assertThat(invoiceIn)
+        .hasValue(
+            object(
+                ImmutableMap.of("id", STRING, "quantity", INTEGER, "total", INTEGER),
+                "id",
+                "quantity"));
     assertThat(invoiceOut.orElseThrow().required())
         .hasValue(ImmutableList.of("id", "quantity", "total"));
     assertThat(loginIn)
-        .hasValue(object(ImmutableMap.of("user", STRING, "password", STRING), "user"));
+        .hasValue(
+            object(ImmutableMap.of("user", STRING, "password", STRING, "role", STRING), "user"));
     assertThat(loginOut)
         .hasValue(object(ImmutableMap.of("user", STRING, "role", STRING), "user", "role"));
   }
