@@ -25,6 +25,7 @@ import com.google.adk.kt.models.LlmRequest as KtLlmRequest
 import com.google.adk.kt.models.LlmResponse as KtLlmResponse
 import com.google.adk.kt.models.RealtimeInput as KtRealtimeInput
 import com.google.adk.kt.runners.InMemoryRunner as KtInMemoryRunner
+import com.google.adk.kt.sessions.SessionKey as KtSessionKey
 import com.google.adk.kt.types.AutomaticActivityDetection as KtAutomaticActivityDetection
 import com.google.adk.kt.types.Blob as KtBlob
 import com.google.adk.kt.types.Content as KtContent
@@ -37,26 +38,42 @@ import com.google.adk.kt.types.Part as KtPart
 import com.google.adk.kt.types.RealtimeInputConfig as KtRealtimeInputConfig
 import com.google.adk.models.BaseLlm as JavaBaseLlm
 import com.google.adk.models.BaseLlmConnection as JavaBaseLlmConnection
+import com.google.adk.models.Gemini as JavaGemini
+import com.google.adk.models.GeminiLiveTransport as JavaGeminiLiveTransport
 import com.google.adk.models.LlmRequest as JavaLlmRequest
 import com.google.adk.models.LlmResponse as JavaLlmResponse
 import com.google.adk.tokt.JavaAdkToKt
 import com.google.adk.tools.BaseTool as JavaBaseTool
 import com.google.adk.tools.ToolContext as JavaToolContext
 import com.google.errorprone.annotations.CanIgnoreReturnValue
+import com.google.genai.Client as GenaiClient
 import com.google.genai.types.Blob as GenaiBlob
 import com.google.genai.types.Content as GenaiContent
 import com.google.genai.types.FunctionCall as GenaiFunctionCall
 import com.google.genai.types.FunctionDeclaration as GenaiFunctionDeclaration
+import com.google.genai.types.LiveConnectConfig as GenaiLiveConnectConfig
+import com.google.genai.types.LiveSendClientContentParameters as GenaiLiveSendClientContentParameters
+import com.google.genai.types.LiveSendRealtimeInputParameters as GenaiLiveSendRealtimeInputParameters
+import com.google.genai.types.LiveSendToolResponseParameters as GenaiLiveSendToolResponseParameters
+import com.google.genai.types.LiveServerContent as GenaiLiveServerContent
+import com.google.genai.types.LiveServerMessage as GenaiLiveServerMessage
 import com.google.genai.types.Modality as GenaiModality
 import com.google.genai.types.Part as GenaiPart
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Single
+import io.reactivex.rxjava3.plugins.RxJavaPlugins
 import io.reactivex.rxjava3.processors.PublishProcessor
 import java.util.Optional
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.function.Consumer
 import kotlin.jvm.optionals.getOrNull
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -67,8 +84,11 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
@@ -77,10 +97,14 @@ import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Tests [JavaLlmConnectionToKt], the live connection [JavaAdkToKt.asKtModel] opens. */
+private val testContext = ThreadLocal<String?>()
+
 class JavaLlmConnectionToKtTest {
 
   @Test
@@ -365,6 +389,51 @@ class JavaLlmConnectionToKtTest {
   }
 
   @Test
+  fun ktRunnerRunLive_javaGeminiStreamedText_isStoredOnce(): Unit = runBlocking {
+    // The real ADK Java Gemini and its live connection, over a scripted in-process transport.
+    val transport = ScriptedLiveTransport()
+    val gemini =
+      object : JavaGemini("gemini-live-test", GenaiClient.builder().apiKey("unused").build()) {
+        override fun connectLiveTransport(
+          modelName: String,
+          config: GenaiLiveConnectConfig,
+        ): CompletableFuture<JavaGeminiLiveTransport> = CompletableFuture.completedFuture(transport)
+      }
+    val runner =
+      KtInMemoryRunner(
+        agent = KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(gemini)),
+        appName = "app",
+      )
+    val queue = KtLiveRequestQueue()
+    val events = async { runner.runLive("u", "s", queue).toList() }
+    try {
+      queue.sendContent(KtContent.fromText("user", "hi"))
+      withTimeout(10.seconds) { while (transport.clientContents.isEmpty()) delay(10.milliseconds) }
+      for (chunk in listOf("Hel", "lo ", "world")) {
+        transport.serve(modelText(chunk), turnComplete = false)
+      }
+      transport.serve(content = null, turnComplete = true)
+    } finally {
+      queue.close()
+    }
+    val emitted = withTimeout(10.seconds) { events.await() }
+
+    fun text(event: com.google.adk.kt.events.Event) =
+      event.content?.parts.orEmpty().mapNotNull { it.text }.joinToString("")
+    assertEquals(
+      listOf("Hel", "lo ", "world"),
+      emitted.filter { it.partial }.map(::text),
+      "each chunk should stream once",
+    )
+    val stored = runner.sessionService.getSession(KtSessionKey("app", "u", "s"))!!.events
+    assertEquals(
+      listOf("Hello world"),
+      stored.filter { it.author == "a" }.map(::text).filter { it.isNotEmpty() },
+      "the session should hold the model text once, in full",
+    )
+  }
+
+  @Test
   fun ktRunnerRunLive_answersAJavaModelsMidTurnFunctionCall(): Unit = runBlocking {
     // ADK Java's Gemini calls a tool mid-turn; the Kotlin loop must answer it within the turn.
     val javaLlm = FakeJavaLiveLlm()
@@ -410,11 +479,319 @@ class JavaLlmConnectionToKtTest {
     )
   }
 
+  @Test
+  fun javaLiveConnection_closeSessionFromACancelledCaller_stillClosesJava(): Unit = runBlocking {
+    // closeSession typically runs in a finally, so often in a caller that is already cancelled.
+    val release = CountDownLatch(1)
+    val java = FakeJavaLlmConnection(CopyOnWriteArrayList(), closeGate = release)
+    val connection = JavaLlmConnectionToKt(java, Dispatchers.IO)
+    try {
+      val caller =
+        launch(start = CoroutineStart.UNDISPATCHED) {
+          cancel()
+          connection.closeSession()
+        }
+      withTimeout(10.seconds) { while (java.closes.get() == 0) delay(10.milliseconds) }
+
+      assertFalse(caller.isCompleted, "closeSession should wait for the Java close")
+      release.countDown()
+      withTimeout(10.seconds) { caller.join() }
+      assertEquals(1, java.closes.get())
+    } finally {
+      release.countDown()
+    }
+  }
+
+  @Test
+  fun javaLiveConnection_closeThatBlocks_returnsAfterTheCloseTimeoutAndEndsCollectors(): Unit =
+    runBlocking {
+      // A Java close may block, and closeSession runs where nothing else can bound it.
+      val release = CountDownLatch(1)
+      val java = FakeJavaLlmConnection(CopyOnWriteArrayList(), closeGate = release)
+      val connection = JavaLlmConnectionToKt(java, Dispatchers.IO, closeTimeout = 200.milliseconds)
+      try {
+        val collector = async(start = CoroutineStart.UNDISPATCHED) { connection.receive().toList() }
+        val closing = async { connection.closeSession() }
+
+        // Only the wait is bounded here: closeSession itself cannot be cancelled.
+        val closed = withTimeoutOrNull(5.seconds) { closing.await() }
+
+        assertNotNull(closed, "closeSession still blocked on the Java close")
+        assertEquals(emptyList(), withTimeout(5.seconds) { collector.await() })
+        // The close runs on its own thread, so it may not have started yet.
+        withTimeout(5.seconds) { while (java.closes.get() == 0) delay(10.milliseconds) }
+        assertEquals(1, java.closes.get())
+      } finally {
+        release.countDown()
+      }
+    }
+
+  @Test
+  fun javaLiveConnection_closeQueuedPastTheTimeout_stillClosesJava(): Unit = runBlocking {
+    // A blocking Java send can hold the dispatcher's only thread past the close timeout.
+    val executor = Executors.newSingleThreadExecutor()
+    val busy = CountDownLatch(1)
+    try {
+      executor.execute { busy.await() }
+      val java = FakeJavaLlmConnection(CopyOnWriteArrayList())
+      val connection =
+        JavaLlmConnectionToKt(
+          java,
+          executor.asCoroutineDispatcher(),
+          closeTimeout = 100.milliseconds,
+        )
+
+      val closing = async { connection.closeSession() }
+      assertNotNull(withTimeoutOrNull(5.seconds) { closing.await() }, "closeSession waited")
+      busy.countDown()
+
+      withTimeout(5.seconds) { while (java.closes.get() == 0) delay(10.milliseconds) }
+      assertEquals(1, java.closes.get())
+    } finally {
+      busy.countDown()
+      executor.shutdown()
+    }
+  }
+
+  @Test
+  fun javaLiveConnection_closeFailure_isRethrownByCloseSession(): Unit = runBlocking {
+    val javaLlm = FakeJavaLiveLlm(closeFailure = IllegalStateException("close failed"))
+    val connection = JavaAdkToKt.asKtModel(javaLlm).connect(KtLlmRequest())
+
+    val failure = assertFailsWith<IllegalStateException> { connection.closeSession() }
+
+    assertEquals("close failed", failure.message)
+  }
+
+  @Test
+  fun javaLiveConnection_sendTheJavaSessionNeverCompletes_stillCancels(): Unit = runBlocking {
+    // A dead ADK Java session never completes a send, and cancelling the run must still return.
+    val neverSent = CompletableFuture<Void?>()
+    val javaLlm = FakeJavaLiveLlm(pendingSend = neverSent)
+    val connection = JavaAdkToKt.asKtModel(javaLlm).connect(KtLlmRequest())
+    try {
+      val send =
+        launch(Dispatchers.Default) {
+          connection.sendContent(KtContent(role = "user", parts = listOf(KtPart(text = "hi"))))
+        }
+      val sendStarted = javaLlm.awaitConnection().sendStarted
+      val started = runInterruptible(Dispatchers.IO) { sendStarted.await(5, TimeUnit.SECONDS) }
+
+      send.cancel()
+      val returned = withTimeoutOrNull(5.seconds) { send.join() } != null
+
+      assertTrue(started, "the send should reach the Java connection")
+      assertTrue(returned, "cancelling the send should return")
+    } finally {
+      neverSent.complete(null)
+      withContext(NonCancellable) { connection.closeSession() }
+    }
+  }
+
+  @Test
+  fun javaLiveConnection_sendFailingAfterItsCallerGaveUp_reportsNothingToRxJava(): Unit =
+    runBlocking {
+      // Closing a Java session fails its pending sends, often after their callers were cancelled.
+      val errors = CopyOnWriteArrayList<Throwable>()
+      RxJavaPlugins.setErrorHandler { errors += it }
+      val executor = Executors.newSingleThreadExecutor()
+      val pending = CompletableFuture<Void?>()
+      try {
+        val java = FakeJavaLlmConnection(CopyOnWriteArrayList(), pendingSend = pending)
+        val connection = JavaLlmConnectionToKt(java, executor.asCoroutineDispatcher())
+        val send = launch {
+          connection.sendContent(KtContent(role = "user", parts = listOf(KtPart(text = "hi"))))
+        }
+        assertTrue(runInterruptible(Dispatchers.IO) { java.sendStarted.await(5, TimeUnit.SECONDS) })
+
+        send.cancel()
+        withTimeout(5.seconds) { send.join() }
+        pending.completeExceptionally(IllegalStateException("session closed"))
+        // The executor's only thread runs this once the failed send has finished.
+        runInterruptible(Dispatchers.IO) { executor.submit {}.get() }
+
+        assertEquals(emptyList(), errors.map { it.javaClass.simpleName })
+      } finally {
+        pending.complete(null)
+        RxJavaPlugins.setErrorHandler(null)
+        executor.shutdown()
+      }
+    }
+
+  @Test
+  fun javaLiveConnection_sendsAndClose_runWithTheCallersContextElements(): Unit = runBlocking {
+    // A ThreadLocal context element stands in for tracing and MDC context.
+    val java = FakeJavaLlmConnection(CopyOnWriteArrayList())
+    java.onClose = { java.contextValues += testContext.get() }
+    val connection = JavaLlmConnectionToKt(java, Dispatchers.IO)
+
+    withContext(testContext.asContextElement("run-1")) {
+      connection.sendContent(KtContent(role = "user", parts = listOf(KtPart(text = "hi"))))
+      connection.closeSession()
+    }
+
+    assertEquals(listOf("run-1", "run-1"), java.contextValues.toList())
+  }
+
+  @Test
+  fun javaLiveConnection_sendOnARejectingDispatcher_throwsTheRejection(): Unit = runBlocking {
+    val executor = Executors.newSingleThreadExecutor().also { it.shutdown() }
+    val connection =
+      JavaLlmConnectionToKt(
+        FakeJavaLlmConnection(CopyOnWriteArrayList()),
+        executor.asCoroutineDispatcher(),
+      )
+
+    withTimeout(5.seconds) {
+      assertFailsWith<RejectedExecutionException> {
+        connection.sendContent(KtContent(role = "user", parts = listOf(KtPart(text = "hi"))))
+      }
+    }
+  }
+
+  @Test
+  fun javaLiveConnection_sendThatThrowsSynchronously_rethrowsTheFailure(): Unit = runBlocking {
+    // A Java send may throw instead of returning a failed Completable.
+    val java =
+      FakeJavaLlmConnection(CopyOnWriteArrayList(), sendFailure = IllegalStateException("rejected"))
+    val connection = JavaLlmConnectionToKt(java, Dispatchers.IO)
+    try {
+      val failure =
+        withTimeout(5.seconds) {
+          assertFailsWith<IllegalStateException> {
+            connection.sendContent(KtContent(role = "user", parts = listOf(KtPart(text = "hi"))))
+          }
+        }
+
+      assertEquals("rejected", failure.message)
+    } finally {
+      withContext(NonCancellable) { connection.closeSession() }
+    }
+  }
+
+  @Test
+  fun javaLiveConnection_sendCancelledBeforeItStarts_neverReachesJava(): Unit = runBlocking {
+    val hi = KtContent(role = "user", parts = listOf(KtPart(text = "hi")))
+    // A caller cancelled before it sends, on a dispatcher that would run the send at once.
+    val idle = FakeJavaLlmConnection(CopyOnWriteArrayList())
+    val inline = JavaLlmConnectionToKt(idle, Executor { it.run() }.asCoroutineDispatcher())
+    launch(start = CoroutineStart.UNDISPATCHED) {
+      cancel()
+      inline.sendContent(hi)
+    }
+    assertEquals(emptyList(), idle.contents)
+
+    // A caller cancelled while its send waits for a busy dispatcher.
+    val executor = Executors.newSingleThreadExecutor()
+    val busy = CountDownLatch(1)
+    try {
+      val java = FakeJavaLlmConnection(CopyOnWriteArrayList())
+      val connection = JavaLlmConnectionToKt(java, executor.asCoroutineDispatcher())
+      executor.execute { busy.await() }
+      val queued = launch(start = CoroutineStart.UNDISPATCHED) { connection.sendContent(hi) }
+      queued.cancel()
+      withTimeout(5.seconds) { queued.join() }
+      busy.countDown()
+      // The executor's only thread runs this once the queued send's task has run.
+      runInterruptible(Dispatchers.IO) { executor.submit {}.get() }
+
+      assertEquals(emptyList(), java.contents)
+    } finally {
+      busy.countDown()
+      executor.shutdown()
+    }
+  }
+
+  @Test
+  fun asKtModelConnect_lateCloseFailure_leavesTheCallerCancelled(): Unit = runBlocking {
+    // A failing close is suppressed onto the cancellation rather than replacing it.
+    val gate = CountDownLatch(1)
+    val javaLlm =
+      FakeJavaLiveLlm(connectGate = gate, closeFailure = IllegalStateException("close failed"))
+
+    var failure: CancellationException? = null
+    val caller = launch {
+      failure =
+        assertFailsWith<CancellationException> {
+          JavaAdkToKt.asKtModel(javaLlm).connect(KtLlmRequest())
+        }
+    }
+    try {
+      withTimeout(10.seconds) { while (javaLlm.connectRequests.isEmpty()) delay(10.milliseconds) }
+      caller.cancel()
+    } finally {
+      gate.countDown()
+    }
+    withTimeout(10.seconds) { caller.join() }
+
+    assertContains(assertNotNull(failure).suppressedExceptions.map { it.message }, "close failed")
+    assertEquals(1, javaLlm.connections.single().closes.get())
+  }
+
+  @Test
+  fun asKtModelConnect_adapterFailingAfterTheJavaConnect_closesTheJavaConnection(): Unit =
+    runBlocking {
+      val javaLlm = FakeJavaLiveLlm(receiveFailure = IllegalStateException("no stream"))
+
+      val failure =
+        assertFailsWith<IllegalStateException> {
+          JavaAdkToKt.asKtModel(javaLlm).connect(KtLlmRequest())
+        }
+
+      assertEquals("no stream", failure.message)
+      assertEquals(1, javaLlm.connections.single().closes.get())
+    }
+
+  @Test
+  fun asKtModelConnect_adapterAndCloseBothFail_keepsTheAdapterFailure(): Unit = runBlocking {
+    val javaLlm =
+      FakeJavaLiveLlm(
+        receiveFailure = IllegalStateException("no stream"),
+        closeFailure = IllegalStateException("close failed"),
+      )
+
+    val failure =
+      assertFailsWith<IllegalStateException> {
+        JavaAdkToKt.asKtModel(javaLlm).connect(KtLlmRequest())
+      }
+
+    assertEquals("no stream", failure.message)
+    // Stack-trace recovery (kotlinx debug mode) may rethrow a copy whose cause is the original.
+    val suppressed =
+      generateSequence<Throwable>(failure) { it.cause }.flatMap { it.suppressed.asSequence() }
+    assertContains(suppressed.map { it.message }.toList(), "close failed")
+  }
+
+  @Test
+  fun asKtModelConnect_callerCancelledDuringTheJavaConnect_closesTheLateConnection(): Unit =
+    runBlocking {
+      // The Java connect is never interrupted; what it opens after its caller gave up is closed.
+      val gate = CountDownLatch(1)
+      val javaLlm = FakeJavaLiveLlm(connectGate = gate)
+      val caller = launch {
+        val unused = JavaAdkToKt.asKtModel(javaLlm).connect(KtLlmRequest())
+      }
+      try {
+        withTimeout(10.seconds) { while (javaLlm.connectRequests.isEmpty()) delay(10.milliseconds) }
+        caller.cancel()
+      } finally {
+        gate.countDown()
+      }
+      withTimeout(10.seconds) { caller.join() }
+
+      assertEquals(1, javaLlm.connections.single().closes.get())
+    }
+
   /**
    * A Java model whose live connections are [FakeJavaLlmConnection]s. It records each connect
-   * request and the thread of every Java call.
+   * request and the thread of every Java call; a [connectGate] holds connect until released.
    */
-  private class FakeJavaLiveLlm : JavaBaseLlm("java-live-model") {
+  private class FakeJavaLiveLlm(
+    private val connectGate: CountDownLatch? = null,
+    private val closeFailure: Throwable? = null,
+    private val receiveFailure: Throwable? = null,
+    private val pendingSend: CompletableFuture<Void?>? = null,
+  ) : JavaBaseLlm("java-live-model") {
     val connectRequests = CopyOnWriteArrayList<JavaLlmRequest>()
     val connections = CopyOnWriteArrayList<FakeJavaLlmConnection>()
     val threads = CopyOnWriteArrayList<String>()
@@ -428,7 +805,14 @@ class JavaLlmConnectionToKtTest {
     override fun connect(llmRequest: JavaLlmRequest): JavaBaseLlmConnection {
       connectRequests += llmRequest
       threads += Thread.currentThread().name
-      return FakeJavaLlmConnection(threads).also { connections += it }
+      connectGate?.await()
+      return FakeJavaLlmConnection(
+          threads,
+          closeFailure = closeFailure,
+          receiveFailure = receiveFailure,
+          pendingSend = pendingSend,
+        )
+        .also { connections += it }
     }
 
     suspend fun awaitConnection(): FakeJavaLlmConnection =
@@ -443,14 +827,24 @@ class JavaLlmConnectionToKtTest {
    * as `GeminiLlmConnection` does. It records what it is sent, and closing it does not end its
    * stream unless [onClose] does.
    */
-  private class FakeJavaLlmConnection(private val threads: MutableList<String>) :
-    JavaBaseLlmConnection {
+  private class FakeJavaLlmConnection(
+    private val threads: MutableList<String>,
+    private val closeFailure: Throwable? = null,
+    private val receiveFailure: Throwable? = null,
+    private val closeGate: CountDownLatch? = null,
+    private val pendingSend: CompletableFuture<Void?>? = null,
+    private val sendFailure: Throwable? = null,
+  ) : JavaBaseLlmConnection {
+    /** Counted down once a send backed by [pendingSend] starts blocking. */
+    val sendStarted = CountDownLatch(1)
+
     val responses: PublishProcessor<JavaLlmResponse> = PublishProcessor.create()
     val history = CopyOnWriteArrayList<List<GenaiContent>>()
     val contents = CopyOnWriteArrayList<GenaiContent>()
     val partials = CopyOnWriteArrayList<Boolean>()
     val blobs = CopyOnWriteArrayList<GenaiBlob>()
     val closes = AtomicInteger()
+    val contextValues = CopyOnWriteArrayList<String?>()
     @Volatile var onClose: () -> Unit = {}
 
     override fun sendHistory(history: List<GenaiContent>): Completable = record {
@@ -460,19 +854,35 @@ class JavaLlmConnectionToKtTest {
     override fun sendContent(content: GenaiContent): Completable =
       sendContent(content, partial = false)
 
-    override fun sendContent(content: GenaiContent, partial: Boolean): Completable = record {
-      contents += content
-      partials += partial
-    }
+    // Models `GeminiLlmConnection`'s fromFuture sends: a pending send blocks its subscriber.
+    override fun sendContent(content: GenaiContent, partial: Boolean): Completable =
+      when {
+        sendFailure != null -> throw sendFailure
+        pendingSend == null ->
+          record {
+            contents += content
+            partials += partial
+          }
+        else ->
+          Completable.fromAction {
+            sendStarted.countDown()
+            pendingSend.get()
+          }
+      }
 
     override fun sendRealtime(blob: GenaiBlob): Completable = record { blobs += blob }
 
-    override fun receive(): Flowable<JavaLlmResponse> = responses
+    override fun receive(): Flowable<JavaLlmResponse> {
+      if (receiveFailure != null) throw receiveFailure
+      return responses
+    }
 
     override fun close() {
       threads += Thread.currentThread().name
       closes.incrementAndGet()
       onClose()
+      closeGate?.await()
+      if (closeFailure != null) throw closeFailure
     }
 
     override fun close(throwable: Throwable) = close()
@@ -486,8 +896,47 @@ class JavaLlmConnectionToKtTest {
 
     private fun record(action: () -> Unit): Completable = Completable.fromAction {
       threads += Thread.currentThread().name
+      contextValues += testContext.get()
       action()
     }
+  }
+
+  /** A [JavaGeminiLiveTransport] whose server messages the test sends with [serve]. */
+  private class ScriptedLiveTransport : JavaGeminiLiveTransport {
+    val clientContents = CopyOnWriteArrayList<GenaiLiveSendClientContentParameters>()
+    @Volatile private var onMessage: Consumer<GenaiLiveServerMessage>? = null
+
+    fun serve(content: GenaiContent?, turnComplete: Boolean) {
+      val serverContent = GenaiLiveServerContent.builder().turnComplete(turnComplete)
+      if (content != null) serverContent.modelTurn(content)
+      checkNotNull(onMessage) { "not receiving yet" }
+        .accept(GenaiLiveServerMessage.builder().serverContent(serverContent.build()).build())
+    }
+
+    override fun sendClientContent(
+      params: GenaiLiveSendClientContentParameters
+    ): CompletableFuture<Void> {
+      clientContents += params
+      return CompletableFuture.completedFuture(null)
+    }
+
+    override fun sendRealtimeInput(
+      params: GenaiLiveSendRealtimeInputParameters
+    ): CompletableFuture<Void> = CompletableFuture.completedFuture(null)
+
+    override fun sendToolResponse(
+      params: GenaiLiveSendToolResponseParameters
+    ): CompletableFuture<Void> = CompletableFuture.completedFuture(null)
+
+    override fun receive(
+      onMessage: Consumer<GenaiLiveServerMessage>,
+      onStreamEnd: Runnable,
+    ): CompletableFuture<Void> {
+      this.onMessage = onMessage
+      return CompletableFuture.completedFuture(null)
+    }
+
+    override fun close(): CompletableFuture<Void> = CompletableFuture.completedFuture(null)
   }
 
   /** A Java tool that echoes its `text` argument. */
