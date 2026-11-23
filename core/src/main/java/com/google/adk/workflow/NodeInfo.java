@@ -59,9 +59,11 @@ public abstract class NodeInfo {
   public abstract ImmutableList<String> outputFor();
 
   /**
-   * Returns {@code true} if this event's content is the node's output, so no separate output event
-   * follows. On an event without content, it marks the output as a message, which a stored session
-   * holds as its JSON form.
+   * Returns {@code true} if this event's output is a message: its content when the event has no
+   * output field, or its output field when that holds a {@link com.google.genai.types.Content},
+   * which a stored session holds as its JSON form. On a final event with content and a non-message
+   * output, the live run uses that output while the emitted event drops the output field so resume
+   * reads the content instead.
    */
   @JsonProperty("messageAsOutput")
   @JsonInclude(JsonInclude.Include.NON_DEFAULT)

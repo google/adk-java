@@ -504,7 +504,7 @@ final class ResumeScan {
         if (eventOutput == null) {
           eventOutput = event.content().orElse(null);
           fromContent = eventOutput != null;
-        } else if (event.content().isEmpty()) {
+        } else {
           eventOutput = asMessage(eventOutput);
         }
       }

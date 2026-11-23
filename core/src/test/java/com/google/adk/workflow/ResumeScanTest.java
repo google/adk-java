@@ -220,6 +220,38 @@ public final class ResumeScanTest {
   }
 
   @Test
+  public void scan_eventWithContentAndMessageInOutputField_isReadBackAsTheMessage() {
+    Event emitted =
+        nodeEvent("wf@1/chat@1")
+            .content(modelText("working"))
+            .output(modelText("hi"))
+            .nodeInfo(NodeInfo.builder().path("wf@1/chat@1").messageAsOutput(true).build())
+            .build();
+    Event stored = Event.fromJson(emitted.toJson());
+
+    RecoveredNode recovered =
+        ResumeScan.scan(ImmutableList.of(stored), "wf@1", "inv").get("chat@1");
+
+    assertThat(stored.output().orElseThrow()).isInstanceOf(Map.class);
+    assertThat(recovered.output).isEqualTo(modelText("hi"));
+  }
+
+  @Test
+  public void scan_unmarkedMessageShapedMapOutput_keepsTheMap() {
+    ImmutableMap<String, Object> map =
+        ImmutableMap.of("role", "model", "parts", ImmutableList.of(ImmutableMap.of("text", "hi")));
+    Event event =
+        nodeEvent("wf@1/chat@1")
+            .output(map)
+            .nodeInfo(NodeInfo.builder().path("wf@1/chat@1").build())
+            .build();
+
+    RecoveredNode recovered = ResumeScan.scan(ImmutableList.of(event), "wf@1", "inv").get("chat@1");
+
+    assertThat(recovered.output).isEqualTo(map);
+  }
+
+  @Test
   public void scan_eventMarkedAsAMessageWithAPlainOutput_keepsTheOutput() {
     Event event =
         nodeEvent("wf@1/chat@1")

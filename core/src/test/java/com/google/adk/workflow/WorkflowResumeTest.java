@@ -34,6 +34,7 @@ import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
+import static com.google.adk.workflow.WorkflowResumeTesting.requestAnswer;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
@@ -54,6 +55,7 @@ import com.google.adk.testing.TestUtils;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.adk.workflow.WorkflowResumeTesting.FailedTurn;
+import com.google.adk.workflow.WorkflowResumeTesting.JsonSessionService;
 import com.google.adk.workflow.WorkflowResumeTesting.MessageOutputNode;
 import com.google.adk.workflow.WorkflowResumeTesting.WaitingNode;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
@@ -83,6 +85,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -978,6 +981,128 @@ public final class WorkflowResumeTest {
         .isTrue();
     assertThat(outputEventAt(events, "wf@1/j@1").output())
         .hasValue(
+            ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1)));
+  }
+
+  record Profile(String id, int age) {}
+
+  // Captures the live value a successor gets before JsonSessionService serializes JoinNode's map.
+  private static Node recordInput(AtomicReference<@Nullable Object> received) {
+    return new TestNode(
+        "rec",
+        (ctx, input) -> {
+          received.set(input);
+          return Flowable.just("done");
+        });
+  }
+
+  @Test
+  public void resume_eventWithContentAndMessageOutputFromJsonStore_replaysTheMessage() {
+    Node chat =
+        new TestNode(
+            "chat",
+            (ctx, input) ->
+                Flowable.just(
+                    newEvent()
+                        .content(modelText("working"))
+                        .output(modelText("agent said hi"))
+                        .build()));
+    Node first = longRunningAsk("first", "ask_1");
+    Node second = longRunningAsk("second", "ask_2");
+    JoinNode join = JoinNode.builder().name("j").build();
+    AtomicReference<@Nullable Object> received = new AtomicReference<>();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, chat),
+                new Edge(START, first),
+                new Edge(START, second),
+                new Edge(chat, join),
+                new Edge(first, join),
+                new Edge(second, join),
+                new Edge(join, recordInput(received))),
+            new JsonSessionService());
+
+    ImmutableList<Event> live = session.turn(go());
+    session.advance(answer("ask_1", ImmutableMap.of("v", 1)));
+    session.advance(answer("ask_2", ImmutableMap.of("v", 2)));
+
+    assertThat(outputEventAt(live, "wf@1/chat@1").nodeInfo().orElseThrow().messageAsOutput())
+        .isTrue();
+    assertThat(received.get())
+        .isEqualTo(
+            ImmutableMap.of(
+                "chat",
+                modelText("agent said hi"),
+                "first",
+                ImmutableMap.of("v", 1),
+                "second",
+                ImmutableMap.of("v", 2)));
+  }
+
+  @Test
+  public void
+      resume_eventWithContentAndMessageOutputIntoTypedNodeFromJsonStore_readsTheMessageAsJson() {
+    Node chat =
+        new TestNode(
+            "chat",
+            (ctx, input) ->
+                Flowable.just(
+                    newEvent()
+                        .content(modelText("working"))
+                        .output(modelText("{\"id\": \"u1\", \"age\": 3}"))
+                        .build()));
+    FunctionNode<Profile, String> describe =
+        FunctionNodes.builder(Profile.class, String.class)
+            .name("describe")
+            .requireConfirmation(true)
+            .body((ctx, profile) -> profile.id() + ":" + profile.age())
+            .build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(new Edge(START, chat), new Edge(chat, describe)), new JsonSessionService());
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(
+            requestAnswer(
+                "wf_tool_confirmation:wf@1/describe@1", ImmutableMap.of("confirmed", true)));
+
+    assertThat(outputEventAt(events, "wf@1/describe@1").output()).hasValue("u1:3");
+  }
+
+  @Test
+  public void resume_preMarkedEventWithContentAndMessageOutputFromJsonStore_keepsTheOutput() {
+    Node chat =
+        new TestNode(
+            "chat",
+            (ctx, input) ->
+                Flowable.just(
+                    newEvent()
+                        .content(modelText("working"))
+                        .output(modelText("agent said hi"))
+                        .nodeInfo(NodeInfo.builder().messageAsOutput(true).build())
+                        .build()));
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    AtomicReference<@Nullable Object> received = new AtomicReference<>();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, chat),
+                new Edge(START, ask),
+                new Edge(chat, join),
+                new Edge(ask, join),
+                new Edge(join, recordInput(received))),
+            new JsonSessionService());
+
+    ImmutableList<Event> live = session.turn(go());
+    session.advance(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    assertThat(outputEventAt(live, "wf@1/chat@1").nodeInfo().orElseThrow().messageAsOutput())
+        .isTrue();
+    assertThat(received.get())
+        .isEqualTo(
             ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1)));
   }
 

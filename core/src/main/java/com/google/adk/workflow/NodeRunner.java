@@ -772,8 +772,7 @@ public final class NodeRunner {
       NodeInfo nodeInfo = event.nodeInfo().orElseGet(() -> NodeInfo.builder().build());
       boolean carriesOutput = event.output().isPresent() || isMessageAsOutput(event);
       // Marked, so that a stored session reads the output back as a message, not as a map.
-      boolean messageInOutput =
-          event.content().isEmpty() && event.output().orElse(null) instanceof Content;
+      boolean messageInOutput = event.output().orElse(null) instanceof Content;
       return event.toBuilder()
           .author(author.isEmpty() ? node.name() : author)
           .invocationId(eventContext.invocationId())
@@ -873,10 +872,15 @@ public final class NodeRunner {
     return Completable.timer(0, NANOSECONDS, scheduler);
   }
 
-  /** Returns whether {@code event} is a final event whose content is the node's output. */
+  /**
+   * Returns whether {@code event} is a final event whose content is the node's output. An event
+   * whose output field already holds a {@link Content} carries its message in {@code output}, not
+   * in {@code content}.
+   */
   private static boolean isMessageAsOutput(Event event) {
     return !event.partial().orElse(false)
         && event.content().isPresent()
+        && !(event.output().orElse(null) instanceof Content)
         && event.nodeInfo().map(NodeInfo::messageAsOutput).orElse(false);
   }
 

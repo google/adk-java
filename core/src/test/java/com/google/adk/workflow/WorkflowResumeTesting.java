@@ -28,6 +28,12 @@ import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.runner.Runner;
+import com.google.adk.sessions.BaseSessionService;
+import com.google.adk.sessions.GetSessionConfig;
+import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.ListEventsResponse;
+import com.google.adk.sessions.ListSessionsResponse;
+import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestNode;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -39,7 +45,10 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.functions.Predicate;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -47,6 +56,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import org.jspecify.annotations.Nullable;
@@ -194,12 +204,21 @@ final class WorkflowResumeTesting {
       this(root, /* resumable= */ true);
     }
 
+    WorkflowSession(Node root, BaseSessionService sessionService) {
+      this(root, /* resumable= */ true, sessionService);
+    }
+
     WorkflowSession(Node root, boolean resumable, Plugin... plugins) {
+      this(root, resumable, new InMemorySessionService(), plugins);
+    }
+
+    private WorkflowSession(
+        Node root, boolean resumable, BaseSessionService sessionService, Plugin... plugins) {
       App.Builder app = App.builder().name(APP).rootNode(root).plugins(plugins);
       if (resumable) {
         app.resumabilityConfig(ResumabilityConfig.builder().resumable(true).build());
       }
-      this.runner = Runner.builder().app(app.build()).build();
+      this.runner = Runner.builder().app(app.build()).sessionService(sessionService).build();
       this.sessionId = runner.sessionService().createSession(APP, USER).blockingGet().id();
     }
 
@@ -313,6 +332,49 @@ final class WorkflowResumeTesting {
               .content(modelText(text))
               .nodeInfo(NodeInfo.builder().messageAsOutput(true).build())
               .build());
+    }
+  }
+
+  /** Keeps each non-partial event as its JSON form, as a persistent session store does. */
+  static final class JsonSessionService implements BaseSessionService {
+    private final InMemorySessionService delegate = new InMemorySessionService();
+
+    @Override
+    public Single<Event> appendEvent(Session session, Event event) {
+      Event stored = event.partial().orElse(false) ? event : Event.fromJson(event.toJson());
+      return delegate.appendEvent(session, stored);
+    }
+
+    // BaseSessionService's only abstract createSession overload is deprecated.
+    @SuppressWarnings("deprecation")
+    @Override
+    public Single<Session> createSession(
+        String appName,
+        String userId,
+        @Nullable ConcurrentMap<String, Object> state,
+        @Nullable String sessionId) {
+      return delegate.createSession(appName, userId, state, sessionId);
+    }
+
+    @Override
+    public Maybe<Session> getSession(
+        String appName, String userId, String sessionId, Optional<GetSessionConfig> config) {
+      return delegate.getSession(appName, userId, sessionId, config);
+    }
+
+    @Override
+    public Single<ListSessionsResponse> listSessions(String appName, String userId) {
+      return delegate.listSessions(appName, userId);
+    }
+
+    @Override
+    public Completable deleteSession(String appName, String userId, String sessionId) {
+      return delegate.deleteSession(appName, userId, sessionId);
+    }
+
+    @Override
+    public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
+      return delegate.listEvents(appName, userId, sessionId);
     }
   }
 }
