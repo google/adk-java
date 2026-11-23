@@ -23,6 +23,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.stream.Collectors.joining;
 import static org.junit.Assert.assertThrows;
@@ -42,6 +43,7 @@ import com.google.adk.plugins.BasePlugin;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.sessions.State;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
@@ -64,10 +66,15 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -175,6 +182,176 @@ public final class RunnerRootNodeTest {
     assertThat(event.output()).hasValue("echoed");
     assertThat(getLast(saved.immutableEvents()).id()).isEqualTo(event.id());
     assertThat(saved.state()).containsEntry("durable", "saved");
+  }
+
+  @Test
+  public void runAsync_nodeRoot_writesThroughStateViewsOrClearThrowAndChangeNothing() {
+    Node node =
+        new TestNode(
+            "solo",
+            (context, input) -> {
+              State state = context.state();
+              Set<Map.Entry<String, Object>> entries = state.entrySet();
+              Set<String> keySet = state.keySet();
+              Collection<Object> values = state.values();
+              Iterator<Map.Entry<String, Object>> entryIterator = entries.iterator();
+              Map.Entry<String, Object> entry = entryIterator.next();
+              Iterator<String> keys = keySet.iterator();
+              keys.next();
+              Iterator<Object> valueIterator = values.iterator();
+              valueIterator.next();
+              assertThrows(UnsupportedOperationException.class, () -> entry.setValue(2));
+              assertThrows(UnsupportedOperationException.class, entryIterator::remove);
+              assertThrows(
+                  UnsupportedOperationException.class, () -> entries.add(Map.entry("other", 2)));
+              assertThrows(
+                  UnsupportedOperationException.class, () -> entries.addAll(ImmutableList.of()));
+              assertThrows(
+                  UnsupportedOperationException.class,
+                  () -> entries.remove(Map.entry("absent", 1)));
+              assertThrows(
+                  UnsupportedOperationException.class, () -> entries.removeAll(ImmutableList.of()));
+              assertThrows(
+                  UnsupportedOperationException.class,
+                  () -> entries.retainAll(ImmutableList.of(Map.entry("count", 1))));
+              assertThrows(UnsupportedOperationException.class, () -> entries.removeIf(e -> false));
+              assertThrows(UnsupportedOperationException.class, () -> keySet.remove("count"));
+              assertThrows(UnsupportedOperationException.class, () -> keySet.remove("absent"));
+              assertThrows(
+                  UnsupportedOperationException.class, () -> keySet.addAll(ImmutableList.of()));
+              assertThrows(
+                  UnsupportedOperationException.class, () -> keySet.removeAll(ImmutableList.of()));
+              assertThrows(
+                  UnsupportedOperationException.class,
+                  () -> keySet.retainAll(ImmutableList.of("count")));
+              assertThrows(UnsupportedOperationException.class, () -> keySet.removeIf(k -> false));
+              assertThrows(UnsupportedOperationException.class, keys::remove);
+              assertThrows(UnsupportedOperationException.class, valueIterator::remove);
+              assertThrows(UnsupportedOperationException.class, () -> values.remove("absent"));
+              assertThrows(
+                  UnsupportedOperationException.class, () -> values.addAll(ImmutableList.of()));
+              assertThrows(
+                  UnsupportedOperationException.class, () -> values.removeAll(ImmutableList.of()));
+              assertThrows(
+                  UnsupportedOperationException.class, () -> values.retainAll(ImmutableList.of(1)));
+              assertThrows(UnsupportedOperationException.class, () -> values.removeIf(v -> false));
+              assertThat(assertThrows(UnsupportedOperationException.class, entries::clear))
+                  .hasMessageThat()
+                  .contains("State.remove");
+              assertThat(assertThrows(UnsupportedOperationException.class, keySet::clear))
+                  .hasMessageThat()
+                  .contains("State.remove");
+              assertThat(assertThrows(UnsupportedOperationException.class, values::clear))
+                  .hasMessageThat()
+                  .contains("State.remove");
+              assertThat(assertThrows(UnsupportedOperationException.class, state::clear))
+                  .hasMessageThat()
+                  .contains("State.remove");
+              return Flowable.just("done");
+            });
+    Runner runner = runner(node);
+    Session session = newSession(runner, ImmutableMap.of("count", 1));
+
+    List<Event> events =
+        runner.runAsync(USER_ID, session.id(), USER_MESSAGE).toList().blockingGet();
+
+    assertThat(getOnlyElement(events).actions().stateDelta()).isEmpty();
+    assertThat(reload(runner, session).state()).containsExactly("count", 1);
+  }
+
+  @Test
+  public void runAsync_nodeRoot_emptyStateClearAndViewClearThrow() {
+    Node node =
+        new TestNode(
+            "solo",
+            (context, input) -> {
+              State state = context.state();
+              assertThrows(UnsupportedOperationException.class, state::clear);
+              assertThrows(UnsupportedOperationException.class, () -> state.entrySet().clear());
+              assertThrows(UnsupportedOperationException.class, () -> state.keySet().clear());
+              assertThrows(UnsupportedOperationException.class, () -> state.values().clear());
+              return Flowable.just("done");
+            });
+    Runner runner = runner(node);
+    Session session = newSession(runner);
+
+    List<Event> events =
+        runner.runAsync(USER_ID, session.id(), USER_MESSAGE).toList().blockingGet();
+
+    assertThat(getOnlyElement(events).actions().stateDelta()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_nodeRoot_stateEqualsAnotherStateOfTheSessionBothWays() {
+    AtomicReference<State> nodeState = new AtomicReference<>();
+    AtomicReference<State> callbackState = new AtomicReference<>();
+    Node node =
+        new TestNode(
+            "solo",
+            (context, input) -> {
+              nodeState.set(context.state());
+              callbackState.set(
+                  new CallbackContext(context.invocationContext(), /* eventActions= */ null)
+                      .state());
+              return Flowable.just("done");
+            });
+    Runner runner = runner(node);
+    Session session = newSession(runner, ImmutableMap.of("count", 1));
+
+    runner.runAsync(USER_ID, session.id(), USER_MESSAGE).blockingSubscribe();
+
+    // Truth's isEqualTo falls back to comparing entries, so these call equals directly.
+    assertWithMessage("node equals callback")
+        .that(nodeState.get().equals(callbackState.get()))
+        .isTrue();
+    assertWithMessage("callback equals node")
+        .that(callbackState.get().equals(nodeState.get()))
+        .isTrue();
+    assertThat(nodeState.get().hashCode()).isEqualTo(callbackState.get().hashCode());
+  }
+
+  @Test
+  public void runAsync_nodeRoot_writesThroughStateMethodsReachTheEventAndSession() {
+    Node node =
+        new TestNode(
+            "solo",
+            (context, input) -> {
+              State state = context.state();
+              // replaceAll iterates the read-only entrySet and writes through replace.
+              state.replaceAll((key, value) -> key.equals("count") ? 2 : value);
+              state.remove("gone");
+              state.put("put", 1);
+              state.putAll(ImmutableMap.of("putAll", 1));
+              state.putIfAbsent("putIfAbsent", 1);
+              state.compute("compute", (key, value) -> 1);
+              state.merge("merge", 1, (oldValue, value) -> value);
+              return Flowable.just("done");
+            });
+    Runner runner = runner(node);
+    Session session = newSession(runner, ImmutableMap.of("count", 1, "gone", 1));
+
+    List<Event> events =
+        runner.runAsync(USER_ID, session.id(), USER_MESSAGE).toList().blockingGet();
+
+    assertThat(getOnlyElement(events).actions().stateDelta())
+        .containsExactly(
+            "count",
+            2,
+            "gone",
+            State.REMOVED,
+            "put",
+            1,
+            "putAll",
+            1,
+            "putIfAbsent",
+            1,
+            "compute",
+            1,
+            "merge",
+            1);
+    assertThat(reload(runner, session).state())
+        .containsExactly(
+            "count", 2, "put", 1, "putAll", 1, "putIfAbsent", 1, "compute", 1, "merge", 1);
   }
 
   @Test
@@ -870,6 +1047,13 @@ public final class RunnerRootNodeTest {
 
   private static Session newSession(Runner runner) {
     return runner.sessionService().createSession(APP_NAME, USER_ID).blockingGet();
+  }
+
+  private static Session newSession(Runner runner, Map<String, Object> state) {
+    return runner
+        .sessionService()
+        .createSession(APP_NAME, USER_ID, state, /* sessionId= */ null)
+        .blockingGet();
   }
 
   private static Session reload(Runner runner, Session session) {

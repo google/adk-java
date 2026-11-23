@@ -23,8 +23,10 @@ import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
 import static org.junit.Assert.assertThrows;
 
+import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.memory.SearchMemoryResponse;
@@ -36,12 +38,16 @@ import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.RunNodeConfig;
+import com.google.adk.workflow.ToolNodes;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -179,6 +185,50 @@ public final class ContextTest {
   }
 
   @Test
+  public void state_outsideAWorkflowNode_viewWritesChangeTheStateAndRecordDelta() {
+    InvocationContext invocationContext = newInvocationContext();
+    invocationContext.session().state().putAll(ImmutableMap.of("a", 1, "b", 2));
+    CallbackContext context = new CallbackContext(invocationContext, /* eventActions= */ null);
+
+    context.state().keySet().remove("a");
+    context.state().entrySet().iterator().next().setValue(3);
+
+    assertThat(context.state()).containsExactly("b", 3);
+    assertThat(context.eventActions().stateDelta()).containsExactly("a", State.REMOVED, "b", 3);
+  }
+
+  @Test
+  public void state_outsideAWorkflowNode_clearEmptiesTheStateAndRecordsDelta() {
+    InvocationContext invocationContext = newInvocationContext();
+    invocationContext.session().state().put("a", 1);
+    CallbackContext context = new CallbackContext(invocationContext, /* eventActions= */ null);
+
+    context.state().clear();
+
+    assertThat(context.state()).isEmpty();
+    assertThat(context.eventActions().stateDelta()).containsExactly("a", State.REMOVED);
+  }
+
+  @Test
+  public void state_outsideAWorkflowNode_equalsSessionStateBothWays() {
+    InvocationContext invocationContext = newInvocationContext();
+    invocationContext.session().state().put("a", 1);
+    State contextState = new CallbackContext(invocationContext, /* eventActions= */ null).state();
+    Map<String, Object> sessionState = invocationContext.session().state();
+    State differentState = new State(ImmutableMap.of("a", 2));
+
+    assertWithMessage("context equals session").that(contextState.equals(sessionState)).isTrue();
+    assertWithMessage("session equals context").that(sessionState.equals(contextState)).isTrue();
+    assertThat(contextState.hashCode()).isEqualTo(sessionState.hashCode());
+    assertWithMessage("context equals different state")
+        .that(contextState.equals(differentState))
+        .isFalse();
+    assertWithMessage("different state equals context")
+        .that(differentState.equals(contextState))
+        .isFalse();
+  }
+
+  @Test
   public void runAsync_agentCallbackTakingContext_persistsItsStateWrite() {
     LlmAgent agent =
         createTestAgentBuilder(createTestLlm(createTextLlmResponse("done")))
@@ -190,10 +240,52 @@ public final class ContextTest {
     assertThat(session.state()).containsEntry("before_agent", agent.name());
   }
 
+  @Test
+  public void runAsync_agentCallbackWritingThroughViews_recordsDeltaInEmittedEvent() {
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("done")))
+            .beforeAgentCallback(ContextTest::mutateStateThroughViews)
+            .build();
+    Runner runner = Runner.builder().agent(agent).appName("test_app").build();
+
+    RunOutcome outcome = runOnce(runner, ImmutableMap.of("drop", 1, "bump", 2, "keep", 3), "hi");
+
+    assertThat(outcome.combinedDelta()).containsExactly("drop", State.REMOVED, "bump", 20);
+    assertThat(outcome.savedSession().state()).containsExactly("bump", 20, "keep", 3);
+  }
+
+  @Test
+  public void runAsync_toolNodeClearingAndRemovingThroughViews_recordsDeltaInNodeEvent() {
+    Node toolNode = ToolNodes.asNode(FunctionTool.create(ContextTest.class, "clearAndRemoveState"));
+    Runner runner =
+        Runner.builder().app(App.builder().name("test_app").rootNode(toolNode).build()).build();
+
+    RunOutcome outcome = runOnce(runner, ImmutableMap.of("a", 1, "b", 2), "{}");
+
+    assertThat(outcome.combinedDelta()).containsExactly("a", State.REMOVED, "b", State.REMOVED);
+    assertThat(outcome.savedSession().state()).isEmpty();
+  }
+
   // FunctionTool needs a public method; it injects the context by the parameter name toolContext.
   public static ImmutableMap<String, Object> rememberColor(String color, Context toolContext) {
     toolContext.state().put("color", color);
     return ImmutableMap.of("functionCallId", toolContext.functionCallId().orElse(""));
+  }
+
+  public static ImmutableMap<String, Object> clearAndRemoveState(Context toolContext) {
+    toolContext.state().keySet().remove("a");
+    toolContext.state().clear();
+    return ImmutableMap.of("ok", true);
+  }
+
+  private static Maybe<Content> mutateStateThroughViews(Context context) {
+    context.state().keySet().remove("drop");
+    for (Map.Entry<String, Object> entry : context.state().entrySet()) {
+      if (entry.getKey().equals("bump")) {
+        entry.setValue(20);
+      }
+    }
+    return Maybe.empty();
   }
 
   private static Maybe<Content> recordAgentName(Context context) {
@@ -207,15 +299,32 @@ public final class ContextTest {
 
   private static Session runOnce(LlmAgent agent) {
     Runner runner = Runner.builder().agent(agent).appName("test_app").build();
-    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
-    runner
-        .runAsync("user", session.id(), Content.fromParts(Part.fromText("hi")))
-        .blockingSubscribe();
-    return runner
-        .sessionService()
-        .getSession(runner.appName(), "user", session.id(), Optional.empty())
-        .blockingGet();
+    return runOnce(runner, ImmutableMap.of(), "hi").savedSession();
   }
+
+  private static RunOutcome runOnce(
+      Runner runner, Map<String, Object> initialState, String messageText) {
+    Session session =
+        runner
+            .sessionService()
+            .createSession(runner.appName(), "user", initialState, /* sessionId= */ null)
+            .blockingGet();
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText(messageText)))
+            .toList()
+            .blockingGet();
+    Map<String, Object> combinedDelta = new LinkedHashMap<>();
+    events.forEach(event -> combinedDelta.putAll(event.actions().stateDelta()));
+    Session saved =
+        runner
+            .sessionService()
+            .getSession(runner.appName(), "user", session.id(), Optional.empty())
+            .blockingGet();
+    return new RunOutcome(combinedDelta, saved);
+  }
+
+  private record RunOutcome(Map<String, Object> combinedDelta, Session savedSession) {}
 
   /** A subclass in the style of code written before Context existed. */
   private static final class LegacyCallbackContext extends CallbackContext {

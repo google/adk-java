@@ -17,17 +17,33 @@
 package com.google.adk.sessions;
 
 import com.fasterxml.jackson.annotation.JsonValue;
+import com.google.common.collect.ForwardingMapEntry;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterators;
+import java.util.AbstractCollection;
+import java.util.AbstractSet;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 
-/** A {@link State} object that also keeps track of the changes to the state. */
+/**
+ * Session state that records each write, including writes through {@link #entrySet()}, {@link
+ * #keySet()}, {@link #values()} and {@link #clear()}, in a delta. In the {@link
+ * com.google.adk.agents.Context#state()} of a workflow node, those views are read-only and {@link
+ * #clear()} throws {@link UnsupportedOperationException}.
+ */
 @SuppressWarnings("ShouldNotSubclass")
 public final class State implements ConcurrentMap<String, Object> {
 
@@ -67,9 +83,20 @@ public final class State implements ConcurrentMap<String, Object> {
     return concurrentMap;
   }
 
+  /**
+   * Clears the backing map and records a {@link #REMOVED} delta entry for each removed key,
+   * including merged {@link #APP_PREFIX} and {@link #USER_PREFIX} keys (which deletes them across
+   * sessions).
+   *
+   * @throws UnsupportedOperationException if this state belongs to a workflow node's context
+   */
   @Override
   public void clear() {
+    List<String> keys = new ArrayList<>(state.keySet());
     state.clear();
+    for (String key : keys) {
+      delta.put(key, REMOVED);
+    }
   }
 
   @Override
@@ -82,9 +109,13 @@ public final class State implements ConcurrentMap<String, Object> {
     return state.containsValue(value);
   }
 
+  /**
+   * Returns the entries view, recording writes and removals in the delta; read-only in a workflow
+   * node.
+   */
   @Override
   public Set<Entry<String, Object>> entrySet() {
-    return state.entrySet();
+    return new EntrySetView();
   }
 
   @Override
@@ -95,7 +126,8 @@ public final class State implements ConcurrentMap<String, Object> {
     if (!(o instanceof State other)) {
       return false;
     }
-    return state.equals(other.state);
+    // Compares entries, matching hashCode(): the backing map may be a State or a wrapper.
+    return state.entrySet().equals(other.state.entrySet());
   }
 
   @Override
@@ -105,7 +137,7 @@ public final class State implements ConcurrentMap<String, Object> {
 
   @Override
   public int hashCode() {
-    return state.hashCode();
+    return state.entrySet().hashCode();
   }
 
   @Override
@@ -113,9 +145,10 @@ public final class State implements ConcurrentMap<String, Object> {
     return state.isEmpty();
   }
 
+  /** Returns the key set view, recording removals in the delta; read-only in a workflow node. */
   @Override
   public Set<String> keySet() {
-    return state.keySet();
+    return new KeySetView();
   }
 
   @Override
@@ -180,13 +213,253 @@ public final class State implements ConcurrentMap<String, Object> {
     return state.size();
   }
 
+  /** Returns the values view, recording removals in the delta; read-only in a workflow node. */
   @Override
   public Collection<Object> values() {
-    return state.values();
+    return new ValuesView();
   }
 
   public boolean hasDelta() {
     return !delta.isEmpty();
+  }
+
+  private static void checkViewWritable(Collection<?> backingView) {
+    // removeAll of an empty collection changes nothing, but a read-only view throws.
+    var unused = backingView.removeAll(ImmutableList.of());
+  }
+
+  private final class EntrySetView extends AbstractSet<Entry<String, Object>> {
+    @Override
+    public Iterator<Entry<String, Object>> iterator() {
+      Iterator<Entry<String, Object>> delegate = state.entrySet().iterator();
+      return new Iterator<>() {
+        private @Nullable String lastKey;
+
+        @Override
+        public boolean hasNext() {
+          return delegate.hasNext();
+        }
+
+        @Override
+        public Entry<String, Object> next() {
+          Entry<String, Object> entry = delegate.next();
+          lastKey = entry.getKey();
+          return new TrackingEntry(entry);
+        }
+
+        @Override
+        public void remove() {
+          delegate.remove();
+          String key = Objects.requireNonNull(lastKey);
+          lastKey = null;
+          // After delegate (which throws on a node's read-only view); syncs detached views (tokt).
+          var unused = state.remove(key);
+          delta.put(key, REMOVED);
+        }
+      };
+    }
+
+    @Override
+    public Spliterator<Entry<String, Object>> spliterator() {
+      return Spliterators.spliteratorUnknownSize(
+          iterator(), Spliterator.CONCURRENT | Spliterator.DISTINCT | Spliterator.NONNULL);
+    }
+
+    @Override
+    public int size() {
+      return state.size();
+    }
+
+    @Override
+    public boolean contains(Object o) {
+      return state.entrySet().contains(o);
+    }
+
+    @Override
+    public boolean add(Entry<String, Object> entry) {
+      checkViewWritable(state.entrySet());
+      return State.this.put(entry.getKey(), entry.getValue()) == null;
+    }
+
+    @Override
+    public boolean addAll(Collection<? extends Entry<String, Object>> c) {
+      checkViewWritable(state.entrySet());
+      return super.addAll(c);
+    }
+
+    @Override
+    public boolean remove(Object o) {
+      checkViewWritable(state.entrySet());
+      if (!(o instanceof Entry<?, ?> entry)) {
+        return false;
+      }
+      Object key = entry.getKey();
+      Object value = entry.getValue();
+      if (key == null || value == null) {
+        return false;
+      }
+      return State.this.remove(key, value);
+    }
+
+    @Override
+    public boolean removeAll(Collection<?> c) {
+      checkViewWritable(state.entrySet());
+      return super.removeAll(c);
+    }
+
+    @Override
+    public boolean retainAll(Collection<?> c) {
+      checkViewWritable(state.entrySet());
+      return super.retainAll(c);
+    }
+
+    @Override
+    public boolean removeIf(Predicate<? super Entry<String, Object>> filter) {
+      checkViewWritable(state.entrySet());
+      return super.removeIf(filter);
+    }
+
+    @Override
+    public void clear() {
+      State.this.clear();
+    }
+  }
+
+  private final class TrackingEntry extends ForwardingMapEntry<String, Object> {
+    private final Entry<String, Object> delegate;
+
+    TrackingEntry(Entry<String, Object> delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    protected Entry<String, Object> delegate() {
+      return delegate;
+    }
+
+    @Override
+    public Object setValue(Object value) {
+      Object oldValue = delegate.setValue(value);
+      // After delegate (which throws on a node's read-only view); syncs detached views (tokt).
+      var unused = state.put(delegate.getKey(), value);
+      delta.put(delegate.getKey(), value);
+      return oldValue;
+    }
+  }
+
+  private final class KeySetView extends AbstractSet<String> {
+    @Override
+    public Iterator<String> iterator() {
+      return Iterators.transform(entrySet().iterator(), Entry::getKey);
+    }
+
+    @Override
+    public Spliterator<String> spliterator() {
+      return Spliterators.spliteratorUnknownSize(
+          iterator(), Spliterator.CONCURRENT | Spliterator.DISTINCT | Spliterator.NONNULL);
+    }
+
+    @Override
+    public int size() {
+      return state.size();
+    }
+
+    @Override
+    public boolean contains(Object o) {
+      return state.containsKey(o);
+    }
+
+    @Override
+    public boolean addAll(Collection<? extends String> c) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean remove(Object o) {
+      checkViewWritable(state.keySet());
+      return State.this.remove(o) != null;
+    }
+
+    @Override
+    public boolean removeAll(Collection<?> c) {
+      checkViewWritable(state.keySet());
+      return super.removeAll(c);
+    }
+
+    @Override
+    public boolean retainAll(Collection<?> c) {
+      checkViewWritable(state.keySet());
+      return super.retainAll(c);
+    }
+
+    @Override
+    public boolean removeIf(Predicate<? super String> filter) {
+      checkViewWritable(state.keySet());
+      return super.removeIf(filter);
+    }
+
+    @Override
+    public void clear() {
+      State.this.clear();
+    }
+  }
+
+  // Checks state.entrySet() since ValuesView mutates via it and CHM values().removeAll scans O(N).
+  private final class ValuesView extends AbstractCollection<Object> {
+    @Override
+    public Iterator<Object> iterator() {
+      return Iterators.transform(entrySet().iterator(), Entry::getValue);
+    }
+
+    @Override
+    public Spliterator<Object> spliterator() {
+      return Spliterators.spliteratorUnknownSize(
+          iterator(), Spliterator.CONCURRENT | Spliterator.NONNULL);
+    }
+
+    @Override
+    public int size() {
+      return state.size();
+    }
+
+    @Override
+    public boolean contains(Object o) {
+      return state.containsValue(o);
+    }
+
+    @Override
+    public boolean addAll(Collection<?> c) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean remove(Object o) {
+      checkViewWritable(state.entrySet());
+      return super.remove(o);
+    }
+
+    @Override
+    public boolean removeAll(Collection<?> c) {
+      checkViewWritable(state.entrySet());
+      return super.removeAll(c);
+    }
+
+    @Override
+    public boolean retainAll(Collection<?> c) {
+      checkViewWritable(state.entrySet());
+      return super.retainAll(c);
+    }
+
+    @Override
+    public boolean removeIf(Predicate<? super Object> filter) {
+      checkViewWritable(state.entrySet());
+      return super.removeIf(filter);
+    }
+
+    @Override
+    public void clear() {
+      State.this.clear();
+    }
   }
 
   private static final class RemovedSentinel {
