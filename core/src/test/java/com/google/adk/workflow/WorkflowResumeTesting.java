@@ -41,6 +41,7 @@ import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.functions.Predicate;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -168,6 +169,19 @@ final class WorkflowResumeTesting {
         .content(callContent(LONG_RUNNING_CALL, interruptId))
         .longRunningToolIds(ImmutableSet.of(interruptId))
         .build();
+  }
+
+  /** Returns a retry policy of {@code maxAttempts} attempts that never waits between them. */
+  static RetryConfig instantRetry(int maxAttempts) {
+    return RetryConfig.builder()
+        .maxAttempts(maxAttempts)
+        .initialDelay(Duration.ZERO)
+        .jitter(0)
+        .build();
+  }
+
+  static NodeConfig retrying(int maxAttempts) {
+    return NodeConfig.builder().retryConfig(instantRetry(maxAttempts)).build();
   }
 
   /** A runner over an app rooted on a node, driven a turn at a time on one session. */

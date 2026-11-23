@@ -46,8 +46,10 @@ import org.jspecify.annotations.Nullable;
  * Decides how a resumable flow's next step continues: carry on to the model, stop because a call is
  * still unanswered, or run calls a previous run never executed.
  *
- * <p>Ports Python ADK's resume decision. Of the sub-branch cases Python recognizes, only a user's
- * answer on the branch a single-turn agent tool opened is handled, as in ADK Kotlin.
+ * <p>Ports Python ADK's resume decision, except that inside a workflow node a step waits for an
+ * unanswered call (other than a delegation) only if that call is on an event that paused the
+ * invocation, as in ADK Kotlin. Of the sub-branch cases Python recognizes, only a user's answer on
+ * the branch a single-turn agent tool opened is handled, as in ADK Kotlin.
  */
 final class StepResume {
 
@@ -220,7 +222,8 @@ final class StepResume {
             && answers.stream()
                 .noneMatch(response -> response.name().map(callNames::contains).orElse(false));
     if (lroUnanswered || callUnanswered) {
-      return PAUSE;
+      // Match ADK Kotlin: in a workflow node, wait only if the last event paused the invocation.
+      return pausedByLast || context.nodePath().isEmpty() ? PAUSE : CONTINUE;
     }
     if (needsCallReplay(callNames, answers)) {
       Event unexecuted = unexecutedCalls(callEvent, events.subList(callIdx + 1, events.size()));

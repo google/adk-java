@@ -21,18 +21,26 @@ import static com.google.common.truth.Truth.assertThat;
 import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.apps.App;
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
+import com.google.adk.runner.Runner;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.workflow.Edge;
+import com.google.adk.workflow.Start;
+import com.google.adk.workflow.Workflow;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -228,6 +236,87 @@ public final class StepResumeTest {
     assertThat(decision.action).isEqualTo(StepResume.Action.CONTINUE);
   }
 
+  @Test
+  public void decide_outsideAWorkflow_pausesOnAnUnansweredCallFollowedByText() {
+    StepResume.Decision decision =
+        decideOver(
+            ImmutableList.of(
+                event(USER, Part.fromText("go")),
+                event(AGENT, callPart("x", "c1")),
+                event(AGENT, Part.fromText("Still working."))));
+
+    assertThat(decision.action).isEqualTo(StepResume.Action.PAUSE);
+  }
+
+  @Test
+  public void decide_inAWorkflowNode_pausesOnAnOpenApprovalAfterAnotherAgentsSafetyError() {
+    Event approval =
+        event(AGENT, callPart("approve", "p1")).toBuilder()
+            .branch("both." + AGENT)
+            .longRunningToolIds(ImmutableSet.of("p1"))
+            .build();
+    // Use the agent's own branch so the step sees it and the approval is no longer last.
+    Event safetyError =
+        Event.builder()
+            .id(Event.generateEventId())
+            .invocationId(INVOCATION)
+            .author(OTHER_AGENT)
+            .branch("both." + AGENT)
+            .errorCode(new FinishReason(FinishReason.Known.SAFETY))
+            .build();
+    InvocationContext context =
+        inWorkflowNode(
+            ImmutableList.of(event(USER, Part.fromText("go")), approval, safetyError),
+            "both." + AGENT);
+
+    StepResume.Decision decision = StepResume.decide(context, ImmutableMap.of());
+
+    assertThat(decision.action).isEqualTo(StepResume.Action.PAUSE);
+  }
+
+  @Test
+  public void decide_inAWorkflowNode_replaysTheTrailingCallAfterAnUnansweredOne() {
+    Event trailingCall = event(AGENT, callPart("y", "c2")).toBuilder().branch("node").build();
+    InvocationContext context =
+        inWorkflowNode(
+            ImmutableList.of(
+                event(USER, Part.fromText("go")),
+                event(AGENT, callPart("x", "c1")).toBuilder().branch("node").build(),
+                event(AGENT, Part.fromText("Retrying.")).toBuilder().branch("node").build(),
+                trailingCall),
+            "node");
+
+    StepResume.Decision decision =
+        StepResume.decide(
+            context,
+            ImmutableMap.of("x", new BaseTool("x", "x") {}, "y", new BaseTool("y", "y") {}));
+
+    assertThat(decision.action).isEqualTo(StepResume.Action.REPLAY_CALLS);
+    assertThat(decision.replayEvent()).isEqualTo(trailingCall);
+  }
+
+  @Test
+  public void decide_inAWorkflowNode_pausesOnItsOwnOpenApprovalAfterAnUnansweredCall() {
+    InvocationContext context =
+        inWorkflowNode(
+            ImmutableList.of(
+                event(USER, Part.fromText("go")),
+                event(AGENT, callPart("x", "c1")).toBuilder().branch("node").build(),
+                event(AGENT, callPart("approve", "p1")).toBuilder()
+                    .branch("node")
+                    .longRunningToolIds(ImmutableSet.of("p1"))
+                    .build()),
+            "node");
+
+    StepResume.Decision decision =
+        StepResume.decide(
+            context,
+            ImmutableMap.of(
+                "x", new BaseTool("x", "x") {}, "approve", new BaseTool("approve", "approve") {}));
+
+    assertThat(decision.action).isEqualTo(StepResume.Action.PAUSE);
+  }
+
   private static LlmAgent coordinatorWithSingleTurnWorker() {
     return LlmAgent.builder()
         .name("coordinator")
@@ -278,6 +367,11 @@ public final class StepResumeTest {
             .add(otherAgentsCall)
             .add(event(USER, responsePart("z", "lro1")))
             .build();
+    return decideOver(events);
+  }
+
+  /** Decides the next step for a resumable agent over {@code events}, outside any workflow. */
+  private static StepResume.Decision decideOver(ImmutableList<Event> events) {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session = sessionService.createSession("app", USER).blockingGet();
     session.addEvents(events);
@@ -292,6 +386,44 @@ public final class StepResumeTest {
     ImmutableMap<String, BaseTool> tools =
         ImmutableMap.of("x", new BaseTool("x", "x") {}, "y", new BaseTool("y", "y") {});
     return StepResume.decide(context, tools);
+  }
+
+  /**
+   * Returns a resumable context over {@code events} for {@code AGENT} running as a workflow node on
+   * {@code branch}.
+   */
+  private static InvocationContext inWorkflowNode(ImmutableList<Event> events, String branch) {
+    AtomicReference<InvocationContext> nodeContext = new AtomicReference<>();
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name(AGENT)
+            .beforeAgentCallbackSync(callback -> {
+              nodeContext.set(callback.invocationContext());
+              return Optional.of(Content.fromParts(Part.fromText("done")));
+            })
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("app")
+                    .rootNode(
+                        Workflow.builder()
+                            .name("wf")
+                            .edges(new Edge(Start.INSTANCE, agent))
+                            .build())
+                    .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .build())
+            .build();
+    String sessionId = runner.sessionService().createSession("app", USER).blockingGet().id();
+    runner.runAsync(USER, sessionId, Content.fromParts(Part.fromText("go"))).blockingSubscribe();
+    Session session = new InMemorySessionService().createSession("app", USER).blockingGet();
+    session.addEvents(events);
+    return nodeContext.get().toBuilder()
+        .invocationId(INVOCATION)
+        .session(session)
+        .branch(branch)
+        .build();
   }
 
   private static Event event(String author, Part... parts) {

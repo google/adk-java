@@ -24,12 +24,14 @@ import static com.google.adk.workflow.WorkflowResumeTesting.START;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
+import static com.google.adk.workflow.WorkflowResumeTesting.instantRetry;
 import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
 import static com.google.adk.workflow.WorkflowResumeTesting.modelText;
 import static com.google.adk.workflow.WorkflowResumeTesting.newEvent;
 import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
+import static com.google.adk.workflow.WorkflowResumeTesting.retrying;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
@@ -866,19 +868,6 @@ public final class WorkflowRetryTest {
     String sessionId =
         runner.sessionService().createSession("retry_app", "user").blockingGet().id();
     return runner.runAsync("user", sessionId, go()).timeout(30, SECONDS);
-  }
-
-  /** Returns a retry policy of {@code maxAttempts} attempts that never waits between them. */
-  private static RetryConfig instantRetry(int maxAttempts) {
-    return RetryConfig.builder()
-        .maxAttempts(maxAttempts)
-        .initialDelay(Duration.ZERO)
-        .jitter(0)
-        .build();
-  }
-
-  private static NodeConfig retrying(int maxAttempts) {
-    return NodeConfig.builder().retryConfig(instantRetry(maxAttempts)).build();
   }
 
   private static Flowable<Object> fail() {
