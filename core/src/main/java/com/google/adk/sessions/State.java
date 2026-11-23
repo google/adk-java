@@ -27,7 +27,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
 
-/** A {@link State} object that also keeps track of the changes to the state. */
+/**
+ * Session state that also records each write made through {@link #put(String, Object)}, {@link
+ * #remove(Object)} and the other write methods in a delta. Writes through the {@link #entrySet()},
+ * {@link #keySet()} and {@link #values()} views and {@link #clear()} skip the delta, so no event
+ * carries them; in the {@link com.google.adk.agents.Context#state()} of a workflow node, they throw
+ * {@link UnsupportedOperationException}.
+ */
 @SuppressWarnings("ShouldNotSubclass")
 public final class State implements ConcurrentMap<String, Object> {
 
@@ -67,6 +73,11 @@ public final class State implements ConcurrentMap<String, Object> {
     return concurrentMap;
   }
 
+  /**
+   * Clears the backing map without recording removals in the delta.
+   *
+   * @throws UnsupportedOperationException if this state belongs to a workflow node's context
+   */
   @Override
   public void clear() {
     state.clear();
@@ -82,6 +93,9 @@ public final class State implements ConcurrentMap<String, Object> {
     return state.containsValue(value);
   }
 
+  /**
+   * Returns the entries view; read-only in a workflow node, and writes elsewhere skip the delta.
+   */
   @Override
   public Set<Entry<String, Object>> entrySet() {
     return state.entrySet();
@@ -95,7 +109,8 @@ public final class State implements ConcurrentMap<String, Object> {
     if (!(o instanceof State other)) {
       return false;
     }
-    return state.equals(other.state);
+    // Compares entries, matching hashCode(): the backing map may be a State or a wrapper.
+    return state.entrySet().equals(other.state.entrySet());
   }
 
   @Override
@@ -105,7 +120,7 @@ public final class State implements ConcurrentMap<String, Object> {
 
   @Override
   public int hashCode() {
-    return state.hashCode();
+    return state.entrySet().hashCode();
   }
 
   @Override
@@ -113,6 +128,9 @@ public final class State implements ConcurrentMap<String, Object> {
     return state.isEmpty();
   }
 
+  /**
+   * Returns the key set view; read-only in a workflow node, and writes elsewhere skip the delta.
+   */
   @Override
   public Set<String> keySet() {
     return state.keySet();
@@ -180,6 +198,7 @@ public final class State implements ConcurrentMap<String, Object> {
     return state.size();
   }
 
+  /** Returns the values view; read-only in a workflow node, and writes elsewhere skip the delta. */
   @Override
   public Collection<Object> values() {
     return state.values();

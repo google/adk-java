@@ -23,6 +23,7 @@ import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.events.Event;
@@ -42,6 +43,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -176,6 +178,50 @@ public final class ContextTest {
             .findFirst()
             .orElseThrow();
     assertThat(functionResponse.response().orElseThrow()).containsEntry("functionCallId", "call-1");
+  }
+
+  @Test
+  public void state_outsideAWorkflowNode_viewWritesChangeTheState() {
+    InvocationContext invocationContext = newInvocationContext();
+    invocationContext.session().state().putAll(ImmutableMap.of("a", 1, "b", 2));
+    CallbackContext context = new CallbackContext(invocationContext, /* eventActions= */ null);
+
+    context.state().keySet().remove("a");
+    context.state().entrySet().iterator().next().setValue(3);
+
+    assertThat(context.state()).containsExactly("b", 3);
+    assertThat(context.eventActions().stateDelta()).isEmpty();
+  }
+
+  @Test
+  public void state_outsideAWorkflowNode_clearEmptiesTheState() {
+    InvocationContext invocationContext = newInvocationContext();
+    invocationContext.session().state().put("a", 1);
+    CallbackContext context = new CallbackContext(invocationContext, /* eventActions= */ null);
+
+    context.state().clear();
+
+    assertThat(context.state()).isEmpty();
+    assertThat(context.eventActions().stateDelta()).isEmpty();
+  }
+
+  @Test
+  public void state_outsideAWorkflowNode_equalsSessionStateBothWays() {
+    InvocationContext invocationContext = newInvocationContext();
+    invocationContext.session().state().put("a", 1);
+    State contextState = new CallbackContext(invocationContext, /* eventActions= */ null).state();
+    Map<String, Object> sessionState = invocationContext.session().state();
+    State differentState = new State(ImmutableMap.of("a", 2));
+
+    assertWithMessage("context equals session").that(contextState.equals(sessionState)).isTrue();
+    assertWithMessage("session equals context").that(sessionState.equals(contextState)).isTrue();
+    assertThat(contextState.hashCode()).isEqualTo(sessionState.hashCode());
+    assertWithMessage("context equals different state")
+        .that(contextState.equals(differentState))
+        .isFalse();
+    assertWithMessage("different state equals context")
+        .that(differentState.equals(contextState))
+        .isFalse();
   }
 
   @Test
