@@ -102,6 +102,44 @@ public class LoadSkillResourceToolTest {
   }
 
   @Test
+  public void call_loadSkillResourceTool_ymlAsset_success() {
+    LoadSkillResourceTool loadSkillResourceTool =
+        new LoadSkillResourceTool(createTestSkillSource());
+    Map<String, Object> response =
+        loadSkillResourceTool
+            .runAsync(
+                ImmutableMap.of("skill_name", "test-skill", "file_path", "assets/config.yml"),
+                createToolContext())
+            .blockingGet();
+
+    assertThat(response)
+        .containsExactly(
+            "skill_name", "test-skill",
+            "file_path", "assets/config.yml",
+            "mime_type", "application/yaml",
+            "content", "id: a\nname: b\n");
+  }
+
+  @Test
+  public void call_loadSkillResourceTool_yamlAsset_success() {
+    LoadSkillResourceTool loadSkillResourceTool =
+        new LoadSkillResourceTool(createTestSkillSource());
+    Map<String, Object> response =
+        loadSkillResourceTool
+            .runAsync(
+                ImmutableMap.of("skill_name", "test-skill", "file_path", "assets/config.yaml"),
+                createToolContext())
+            .blockingGet();
+
+    assertThat(response)
+        .containsExactly(
+            "skill_name", "test-skill",
+            "file_path", "assets/config.yaml",
+            "mime_type", "application/yaml",
+            "content", "id: a\nname: b\n");
+  }
+
+  @Test
   public void call_loadSkillResourceTool_streamDetection_success() {
     LoadSkillResourceTool loadSkillResourceTool =
         new LoadSkillResourceTool(createTestSkillSource());
@@ -324,6 +362,8 @@ public class LoadSkillResourceToolTest {
         .addResource("references/binary.dat", new byte[] {0, 1, 2, 3})
         .addResource("assets/template.txt", "asset content".getBytes(UTF_8))
         .addResource("scripts/setup.sh", "echo hello".getBytes(UTF_8))
+        .addResource("assets/config.yml", "id: a\nname: b\n".getBytes(UTF_8))
+        .addResource("assets/config.yaml", "id: a\nname: b\n".getBytes(UTF_8))
         .addResource("assets/data_no_ext", "<?xml version=\"1.0\"?><root/>".getBytes(UTF_8))
         .build();
   }
