@@ -29,7 +29,9 @@ import com.google.adk.models.LlmRequest;
 import com.google.adk.platform.UuidProvider;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
@@ -42,6 +44,12 @@ import org.jspecify.annotations.Nullable;
 
 /** An LLM-based event summarizer for sliding window compaction. */
 public final class LlmEventSummarizer implements BaseEventSummarizer {
+
+  // Compare values: knownEnum() also maps unknown reasons to FINISH_REASON_UNSPECIFIED.
+  private static final ImmutableSet<FinishReason> COMPLETE_FINISH_REASONS =
+      ImmutableSet.of(
+          new FinishReason(FinishReason.Known.STOP),
+          new FinishReason(FinishReason.Known.FINISH_REASON_UNSPECIFIED));
 
   private static final String DEFAULT_PROMPT_TEMPLATE =
       """
@@ -108,11 +116,15 @@ public final class LlmEventSummarizer implements BaseEventSummarizer {
     return baseLlm
         .generateContent(llmRequest, false)
         .firstElement()
+        // Reject explicit failure reasons, while allowing custom models that omit the reason.
+        .filter(
+            response -> response.finishReason().map(COMPLETE_FINISH_REASONS::contains).orElse(true))
         .flatMap(
             llmResponse ->
                 Maybe.fromOptional(
                     llmResponse
                         .content()
+                        .filter(LlmEventSummarizer::hasSummaryText)
                         .map(content -> content.toBuilder().role("model").build())
                         .map(
                             summaryContent ->
@@ -130,6 +142,15 @@ public final class LlmEventSummarizer implements BaseEventSummarizer {
                                     .actions(EventActions.builder().compaction(compaction).build())
                                     .invocationId(uuidProvider.newUuid())
                                     .build())));
+  }
+
+  private static boolean hasSummaryText(Content content) {
+    // An unusable summary must not hide the history it was meant to replace.
+    return content.parts().orElse(ImmutableList.of()).stream()
+        .anyMatch(
+            part ->
+                !part.thought().orElse(false)
+                    && part.text().filter(text -> !text.isBlank()).isPresent());
   }
 
   private String formatEventsForPrompt(List<Event> events) {
