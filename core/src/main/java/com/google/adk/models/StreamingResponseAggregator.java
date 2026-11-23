@@ -86,6 +86,8 @@ final class StreamingResponseAggregator {
   // The streamed function call being assembled from partialArgs chunks.
   private @Nullable String currentFcName = null;
   private Map<String, Object> currentFcArgs = new LinkedHashMap<>();
+  // String chunks per parsed JSONPath, joined once on flush: concatenating each chunk is quadratic.
+  private final Map<List<Object>, StringBuilder> currentFcArgBuffers = new LinkedHashMap<>();
   private @Nullable String currentFcId = null;
   private byte @Nullable [] currentThoughtSignature = null;
   // Where the call started in accumulatedSequence, so parts that arrive later stay after it.
@@ -314,22 +316,39 @@ final class StreamingResponseAggregator {
   }
 
   /**
-   * Applies a single {@link PartialArg} to {@link #currentFcArgs} at {@code jsonPath}, mirroring
-   * ADK Python's {@code _get_value_from_partial_arg}: string chunks are appended to any existing
-   * string at the path, while number/bool/null values overwrite.
+   * Applies a single {@link PartialArg} to {@link #currentFcArgs} at {@code jsonPath}: string
+   * chunks are buffered per parsed path and joined once when the call is flushed, while a number,
+   * bool or null overwrites the value and drops any buffered strings at or under that path.
    */
   private void applyPartialArg(PartialArg partialArg, String jsonPath) {
-    if (partialArg.stringValue().isPresent()) {
-      Object existing = getValueByJsonPath(jsonPath);
-      String chunk = partialArg.stringValue().get();
-      setValueByJsonPath(jsonPath, existing instanceof String s ? s + chunk : chunk);
-    } else if (partialArg.numberValue().isPresent()) {
-      setValueByJsonPath(jsonPath, wholeNumberAsInteger(partialArg.numberValue().get()));
-    } else if (partialArg.boolValue().isPresent()) {
-      setValueByJsonPath(jsonPath, partialArg.boolValue().get());
-    } else if (partialArg.nullValue().isPresent()) {
-      setValueByJsonPath(jsonPath, null);
+    List<Object> path = parseJsonPath(jsonPath);
+    if (path.isEmpty()) {
+      return;
     }
+    if (partialArg.stringValue().isPresent()) {
+      StringBuilder buffer = currentFcArgBuffers.get(path);
+      if (buffer == null) {
+        buffer = new StringBuilder();
+        currentFcArgBuffers.put(path, buffer);
+        // Reserves the key, so the joined value keeps the order its path first arrived in.
+        setValueByJsonPath(path, "");
+      }
+      buffer.append(partialArg.stringValue().get());
+      return;
+    }
+    if (partialArg.numberValue().isPresent()) {
+      setValueByJsonPath(path, wholeNumberAsInteger(partialArg.numberValue().get()));
+    } else if (partialArg.boolValue().isPresent()) {
+      setValueByJsonPath(path, partialArg.boolValue().get());
+    } else if (partialArg.nullValue().isPresent()) {
+      setValueByJsonPath(path, null);
+    } else {
+      return;
+    }
+    // The value replaces the path and everything under it, so their buffers must not come back.
+    currentFcArgBuffers
+        .keySet()
+        .removeIf(key -> key.size() >= path.size() && key.subList(0, path.size()).equals(path));
   }
 
   /**
@@ -348,34 +367,14 @@ final class StreamingResponseAggregator {
     return whole;
   }
 
-  /** Returns the value currently stored at {@code jsonPath} in {@link #currentFcArgs}, or null. */
-  private @Nullable Object getValueByJsonPath(String jsonPath) {
-    Object current = currentFcArgs;
-    for (Object segment : parseJsonPath(jsonPath)) {
-      if (segment instanceof String key
-          && current instanceof Map<?, ?> map
-          && map.containsKey(key)) {
-        current = map.get(key);
-      } else if (segment instanceof Integer index
-          && current instanceof List<?> list
-          && index < list.size()) {
-        current = list.get(index);
-      } else {
-        return null;
-      }
-    }
-    return current;
-  }
-
   /**
-   * Sets {@code value} at {@code jsonPath} in {@link #currentFcArgs}, creating maps and lists as
-   * needed and padding lists with nulls, as ADK Python's {@code _set_value_by_json_path} does. It
-   * stops at a segment that hits a value of the wrong type or an index above 10,000; containers
-   * created before that segment stay.
+   * Sets {@code value} at the parsed JSONPath {@code segments} in {@link #currentFcArgs}, creating
+   * maps and lists as needed and padding lists with nulls, as ADK Python's {@code
+   * _set_value_by_json_path} does. It stops at a segment that hits a value of the wrong type or an
+   * index above 10,000; containers created before that segment stay.
    */
   @SuppressWarnings("unchecked")
-  private void setValueByJsonPath(String jsonPath, @Nullable Object value) {
-    List<Object> segments = parseJsonPath(jsonPath);
+  private void setValueByJsonPath(List<Object> segments, @Nullable Object value) {
     Object current = currentFcArgs;
     for (int i = 0; i < segments.size(); i++) {
       boolean last = i == segments.size() - 1;
@@ -454,6 +453,7 @@ final class StreamingResponseAggregator {
    */
   private void flushFunctionCallToSequence() {
     if (currentFcName != null) {
+      currentFcArgBuffers.forEach((path, value) -> setValueByJsonPath(path, value.toString()));
       FunctionCall fc =
           FunctionCall.builder()
               .name(currentFcName)
@@ -468,6 +468,7 @@ final class StreamingResponseAggregator {
     }
     currentFcName = null;
     currentFcArgs = new LinkedHashMap<>();
+    currentFcArgBuffers.clear();
     currentFcId = null;
     currentThoughtSignature = null;
     currentFcIndex = -1;

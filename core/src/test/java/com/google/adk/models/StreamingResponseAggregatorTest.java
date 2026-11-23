@@ -30,6 +30,7 @@ import com.google.genai.types.GroundingMetadata;
 import com.google.genai.types.NullValue;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
+import java.util.Collections;
 import java.util.List;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -907,6 +908,172 @@ public final class StreamingResponseAggregatorTest {
   }
 
   @Test
+  public void aggregate_scalarAfterStringChunksOnSamePath_replacesThem() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("my_tool", "$.value", "12")),
+        chunk(streamedCallContinuation("$.value", "34")),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.value").numberValue(99.0).build())
+                    .willContinue(false)
+                    .build())));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args()).hasValue(ImmutableMap.of("value", 99));
+  }
+
+  @Test
+  public void aggregate_valuelessPartialArgAfterStringChunks_keepsTheString() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("my_tool", "$.a", "hello")),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.a").build())
+                    .willContinue(false)
+                    .build())));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args()).hasValue(ImmutableMap.of("a", "hello"));
+  }
+
+  @Test
+  public void aggregate_stringChunksUnderTwoSpellingsOfOnePath_joinIntoOneValue() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("my_tool", "$.a", "hello")),
+        chunk(streamedCallContinuation("$['a']", " world")),
+        chunk(streamedCallEnd()));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args()).hasValue(ImmutableMap.of("a", "hello world"));
+  }
+
+  @Test
+  public void aggregate_nullOnListElementAfterStringChunksUnderIt_keepsTheNull() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("my_tool", "$.items[0].name", "alice")),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(
+                        PartialArg.builder()
+                            .jsonPath("$.items[0]")
+                            .nullValue(NullValue.Known.NULL_VALUE)
+                            .build())
+                    .willContinue(false)
+                    .build())));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args().get()).containsExactly("items", Collections.singletonList(null));
+  }
+
+  @Test
+  public void aggregate_interleavedArgs_keepTheirArrivalOrder() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("my_tool", "$.a", "hello")),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.b").numberValue(7.0).build())
+                    .willContinue(true)
+                    .build())),
+        chunk(streamedCallContinuation("$.a", " world")),
+        chunk(streamedCallEnd()));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args().get()).containsExactly("a", "hello world", "b", 7).inOrder();
+  }
+
+  @Test
+  public void aggregate_rootPathScalarAfterStringChunks_keepsTheStrings() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("my_tool", "$.a", "hello")),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(
+                        PartialArg.builder()
+                            .jsonPath("$")
+                            .nullValue(NullValue.Known.NULL_VALUE)
+                            .build())
+                    .willContinue(false)
+                    .build())));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args()).hasValue(ImmutableMap.of("a", "hello"));
+  }
+
+  @Test
+  public void aggregate_stringAfterScalarOnSamePath_replacesTheScalar() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("my_tool", "$.x", "old")),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.x").numberValue(42.0).build())
+                    .willContinue(true)
+                    .build())),
+        chunk(streamedCallContinuation("$.x", "new")),
+        chunk(streamedCallEnd()));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args()).hasValue(ImmutableMap.of("x", "new"));
+  }
+
+  @Test
+  public void aggregate_stringChunksAtNestedPath_joinIntoNestedValue() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("my_tool", "$.user.name", "Ja")),
+        chunk(streamedCallContinuation("$.user.name", "n")),
+        chunk(streamedCallEnd()));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args()).hasValue(ImmutableMap.of("user", ImmutableMap.of("name", "Jan")));
+  }
+
+  @Test
+  public void aggregate_twoCallsSamePath_keepTheirOwnValues() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("tool_a", "$.x", "first")),
+        chunk(streamedCallEnd()),
+        chunk(streamedCallStart("tool_b", "$.x", "second")),
+        chunk(streamedCallEnd()));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).functionCall().get().args()).hasValue(ImmutableMap.of("x", "first"));
+    assertThat(parts.get(1).functionCall().get().args()).hasValue(ImmutableMap.of("x", "second"));
+  }
+
+  @Test
   public void aggregate_noChunks_returnsEmpty() {
     assertThat(new StreamingResponseAggregator().aggregate()).isEmpty();
   }
@@ -1126,6 +1293,14 @@ public final class StreamingResponseAggregatorTest {
     return functionCallPart(
         FunctionCall.builder()
             .name(name)
+            .partialArgs(PartialArg.builder().jsonPath(jsonPath).stringValue(value).build())
+            .willContinue(true)
+            .build());
+  }
+
+  private static Part streamedCallContinuation(String jsonPath, String value) {
+    return functionCallPart(
+        FunctionCall.builder()
             .partialArgs(PartialArg.builder().jsonPath(jsonPath).stringValue(value).build())
             .willContinue(true)
             .build());
