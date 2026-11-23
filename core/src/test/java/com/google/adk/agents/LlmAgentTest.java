@@ -226,6 +226,29 @@ public final class LlmAgentTest {
   }
 
   @Test
+  public void testRun_withOutputKeyAndOutputSchema_savesTheDefaultsOfOmittedProperties() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "city",
+                    Schema.builder().type("STRING").build(),
+                    "country",
+                    Schema.builder().type("STRING").default_("France").build()))
+            .build();
+    TestLlm testLlm = createTestLlm(createTextLlmResponse("{\"city\":\"Paris\"}"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).outputSchema(outputSchema).outputKey("answer").build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(getOnlyElement(events).actions().stateDelta())
+        .containsEntry("answer", ImmutableMap.of("city", "Paris", "country", "France"));
+  }
+
+  @Test
   public void testRun_withOutputKey_savesMultiPartState() {
     Content modelContent = Content.fromParts(Part.fromText("Part 1."), Part.fromText(" Part 2."));
     TestLlm testLlm = createTestLlm(createLlmResponse(modelContent));

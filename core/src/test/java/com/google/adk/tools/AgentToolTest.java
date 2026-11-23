@@ -456,6 +456,71 @@ public final class AgentToolTest {
   }
 
   @Test
+  public void call_withInputSchema_omittedArgWithDefault_sendsTheDefault() throws Exception {
+    TestLlm testLlm =
+        createTestLlm(
+            LlmResponse.builder()
+                .content(Content.fromParts(Part.fromText("test response")))
+                .build());
+    LlmAgent testAgent =
+        createTestAgentBuilder(testLlm)
+            .name("agent_name")
+            .description("agent description")
+            .inputSchema(
+                Schema.builder()
+                    .type("OBJECT")
+                    .properties(
+                        ImmutableMap.of(
+                            "is_magic",
+                            Schema.builder().type("BOOLEAN").build(),
+                            "level",
+                            Schema.builder().type("INTEGER").default_(3).build()))
+                    .required(ImmutableList.of("is_magic"))
+                    .build())
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent);
+    ToolContext toolContext = createToolContext(testAgent);
+
+    Map<String, Object> unused =
+        agentTool.runAsync(ImmutableMap.of("is_magic", true), toolContext).blockingGet();
+
+    assertThat(testLlm.getLastRequest().contents())
+        .containsExactly(Content.fromParts(Part.fromText("{\"is_magic\":true,\"level\":3}")));
+  }
+
+  @Test
+  public void call_withOutputSchema_omittedPropertyWithDefault_isLeftOmitted() throws Exception {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "is_valid",
+                    Schema.builder().type("BOOLEAN").build(),
+                    "message",
+                    Schema.builder().type("STRING").default_("none").build()))
+            .required(ImmutableList.of("is_valid"))
+            .build();
+    LlmAgent testAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    LlmResponse.builder()
+                        .content(Content.fromParts(Part.fromText("{\"is_valid\": true}")))
+                        .build()))
+            .name("agent_name")
+            .description("agent description")
+            .outputSchema(outputSchema)
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent);
+    ToolContext toolContext = createToolContext(testAgent);
+
+    Map<String, Object> result =
+        agentTool.runAsync(ImmutableMap.of("request", "test"), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("is_valid", true);
+  }
+
+  @Test
   public void call_withoutInputSchema_requestIsSentToAgent() throws Exception {
     TestLlm testLlm =
         createTestLlm(

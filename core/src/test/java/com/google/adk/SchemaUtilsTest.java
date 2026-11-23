@@ -24,7 +24,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Schema;
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.Test;
@@ -483,6 +485,369 @@ public final class SchemaUtilsTest {
   }
 
   @Test
+  public void validateOutputSchema_omittedPropertyWithDefault_leavesItOmitted() throws Exception {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("name", STRING, "extra", defaulted(STRING, "default")))
+            .build();
+
+    Map<String, Object> output = SchemaUtils.validateOutputSchema("{\"name\":\"x\"}", schema);
+
+    assertThat(output).containsExactly("name", "x");
+  }
+
+  @Test
+  public void validateOutputSchema_missingRequiredPropertyWithDefault_throws() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("extra", defaulted(STRING, "default")))
+            .required(ImmutableList.of("extra"))
+            .build();
+
+    assertThrows(
+        IllegalArgumentException.class, () -> SchemaUtils.validateOutputSchema("{}", schema));
+  }
+
+  @Test
+  public void withDefaults_explicitNull_keepsTheNull() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "extra",
+                    Schema.builder().type("STRING").nullable(true).default_("default").build()))
+            .build();
+    Map<String, Object> args = new HashMap<>();
+    args.put("extra", null);
+
+    Map<String, Object> filled = SchemaUtils.withDefaults(args, schema);
+
+    assertThat(filled).containsExactly("extra", null);
+  }
+
+  @Test
+  public void withDefaults_listDefault_isCopied() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "tags",
+                    Schema.builder()
+                        .type("ARRAY")
+                        .items(STRING)
+                        .default_(new ArrayList<>(ImmutableList.of("a")))
+                        .build()))
+            .build();
+
+    @SuppressWarnings("unchecked") // The default is a list.
+    List<Object> tags =
+        (List<Object>) SchemaUtils.withDefaults(ImmutableMap.of(), schema).get("tags");
+    tags.add("b");
+
+    assertThat(schema.properties().get().get("tags").default_()).hasValue(ImmutableList.of("a"));
+  }
+
+  @Test
+  public void withDefaults_mapDefault_isCopied() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "meta",
+                    Schema.builder()
+                        .type("OBJECT")
+                        .default_(new HashMap<>(ImmutableMap.of("k", "v")))
+                        .build()))
+            .build();
+
+    @SuppressWarnings("unchecked") // The default is a map.
+    Map<String, Object> meta =
+        (Map<String, Object>) SchemaUtils.withDefaults(ImmutableMap.of(), schema).get("meta");
+    meta.put("k2", "v2");
+
+    assertThat(schema.properties().get().get("meta").default_())
+        .hasValue(ImmutableMap.of("k", "v"));
+  }
+
+  @Test
+  public void withDefaults_nestedObjectsAndArrayItems_fillsTheirDefaults() {
+    Schema item =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("id", INTEGER, "tag", defaulted(STRING, "t")))
+            .build();
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "items",
+                    Schema.builder().type("ARRAY").items(item).build(),
+                    "inner",
+                    Schema.builder()
+                        .type("OBJECT")
+                        .properties(ImmutableMap.of("n", defaulted(INTEGER, 3)))
+                        .build()))
+            .build();
+
+    Map<String, Object> filled =
+        SchemaUtils.withDefaults(
+            ImmutableMap.of(
+                "items", ImmutableList.of(ImmutableMap.of("id", 1)), "inner", ImmutableMap.of()),
+            schema);
+
+    assertThat(filled)
+        .containsExactly(
+            "items",
+            ImmutableList.of(ImmutableMap.of("id", 1, "tag", "t")),
+            "inner",
+            ImmutableMap.of("n", 3));
+  }
+
+  @Test
+  public void withDefaults_anyOf_fillsTheDefaultsOfTheMatchingAlternative() {
+    Schema withA =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("a", INTEGER, "x", defaulted(STRING, "from a")))
+            .required(ImmutableList.of("a"))
+            .build();
+    Schema withB =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("b", INTEGER, "x", defaulted(STRING, "from b")))
+            .required(ImmutableList.of("b"))
+            .build();
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "value", Schema.builder().anyOf(ImmutableList.of(withA, withB)).build()))
+            .build();
+
+    Map<String, Object> filled =
+        SchemaUtils.withDefaults(ImmutableMap.of("value", ImmutableMap.of("b", 2)), schema);
+
+    assertThat(filled).containsExactly("value", ImmutableMap.of("b", 2, "x", "from b"));
+  }
+
+  @Test
+  public void valueWithDefaults_anyOfAlternativesWithEnums_picksTheOneWhoseEnumMatches() {
+    Schema dog =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "kind",
+                    Schema.builder().type("STRING").enum_(ImmutableList.of("dog")).build(),
+                    "sound",
+                    defaulted(STRING, "woof")))
+            .build();
+    Schema cat =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "kind",
+                    Schema.builder().type("STRING").enum_(ImmutableList.of("cat")).build(),
+                    "sound",
+                    defaulted(STRING, "meow")))
+            .build();
+    Schema schema = Schema.builder().anyOf(ImmutableList.of(dog, cat)).build();
+
+    Object filled = SchemaUtils.valueWithDefaults(ImmutableMap.of("kind", "cat"), schema);
+
+    assertThat(filled).isEqualTo(ImmutableMap.of("kind", "cat", "sound", "meow"));
+  }
+
+  @Test
+  public void valueWithDefaults_enumInANestedAnyOf_picksTheOneWhoseEnumMatches() {
+    Schema schema =
+        Schema.builder()
+            .anyOf(
+                ImmutableList.of(
+                    animalWithOptionalKind("dog", "woof"), animalWithOptionalKind("cat", "meow")))
+            .build();
+
+    Object filled = SchemaUtils.valueWithDefaults(ImmutableMap.of("kind", "cat"), schema);
+
+    assertThat(filled).isEqualTo(ImmutableMap.of("kind", "cat", "sound", "meow"));
+  }
+
+  @Test
+  public void valueWithDefaults_nullForANullableAnyOfProperty_fillsThatAlternativesDefaults() {
+    Schema stringOrNumber =
+        Schema.builder().nullable(true).anyOf(ImmutableList.of(STRING, INTEGER)).build();
+    Schema withA =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("a", stringOrNumber, "x", defaulted(STRING, "A")))
+            .required(ImmutableList.of("a"))
+            .build();
+    Schema schema =
+        Schema.builder().anyOf(ImmutableList.of(withA, itemWithDefault("b", "B"))).build();
+    Map<String, Object> value = new HashMap<>();
+    value.put("a", null);
+
+    Object filled = SchemaUtils.valueWithDefaults(value, schema);
+
+    Map<String, Object> expected = new HashMap<>();
+    expected.put("a", null);
+    expected.put("x", "A");
+    assertThat(filled).isEqualTo(expected);
+  }
+
+  @Test
+  public void valueWithDefaults_stringForAnUntypedArrayProperty_picksTheStringAlternative() {
+    Schema withList =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "v", Schema.builder().items(INTEGER).build(), "x", defaulted(STRING, "list")))
+            .build();
+    Schema withString =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("v", STRING, "x", defaulted(STRING, "string")))
+            .build();
+    Schema schema = Schema.builder().anyOf(ImmutableList.of(withList, withString)).build();
+
+    Object filled = SchemaUtils.valueWithDefaults(ImmutableMap.of("v", "hello"), schema);
+
+    assertThat(filled).isEqualTo(ImmutableMap.of("v", "hello", "x", "string"));
+  }
+
+  @Test
+  public void valueWithDefaults_twoUntypedArrayAlternatives_picksTheOneWhoseItemsMatch() {
+    Schema withA = Schema.builder().items(itemWithDefault("a", "A")).build();
+    Schema withB = Schema.builder().items(itemWithDefault("b", "B")).build();
+    Schema schema = Schema.builder().anyOf(ImmutableList.of(withA, withB)).build();
+
+    Object filled =
+        SchemaUtils.valueWithDefaults(ImmutableList.of(ImmutableMap.of("b", 1)), schema);
+
+    assertThat(filled).isEqualTo(ImmutableList.of(ImmutableMap.of("b", 1, "x", "B")));
+  }
+
+  @Test
+  public void valueWithDefaults_mapAndUntypedAnyOfAlternatives_picksTheObjectOne() {
+    Schema list = Schema.builder().items(STRING).build();
+    Schema object =
+        Schema.builder()
+            .properties(ImmutableMap.of("n", INTEGER, "extra", defaulted(STRING, "e")))
+            .build();
+    Schema schema = Schema.builder().anyOf(ImmutableList.of(list, object)).build();
+
+    Object filled = SchemaUtils.valueWithDefaults(ImmutableMap.of("n", 1), schema);
+
+    assertThat(filled).isEqualTo(ImmutableMap.of("n", 1, "extra", "e"));
+  }
+
+  @Test
+  public void valueWithDefaults_listAndUntypedAnyOfAlternatives_fillsTheArrayOnesItems() {
+    Schema object = Schema.builder().properties(ImmutableMap.of("n", INTEGER)).build();
+    Schema item =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("id", INTEGER, "tag", defaulted(STRING, "t")))
+            .build();
+    Schema list = Schema.builder().items(item).build();
+    Schema schema = Schema.builder().anyOf(ImmutableList.of(object, list)).build();
+
+    Object filled =
+        SchemaUtils.valueWithDefaults(ImmutableList.of(ImmutableMap.of("id", 1)), schema);
+
+    assertThat(filled).isEqualTo(ImmutableList.of(ImmutableMap.of("id", 1, "tag", "t")));
+  }
+
+  @Test
+  public void valueWithDefaults_null_staysNull() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("extra", defaulted(STRING, "e")))
+            .nullable(true)
+            .build();
+
+    assertThat(SchemaUtils.valueWithDefaults(null, schema)).isNull();
+  }
+
+  @Test
+  public void withDefaults_nestedListInADefault_isCopied() {
+    Map<String, Object> fallback = new HashMap<>();
+    fallback.put("tags", new ArrayList<>(ImmutableList.of("a")));
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of("meta", Schema.builder().type("OBJECT").default_(fallback).build()))
+            .build();
+
+    @SuppressWarnings("unchecked") // The default is a map holding a list.
+    List<Object> tags =
+        (List<Object>)
+            ((Map<String, Object>) SchemaUtils.withDefaults(ImmutableMap.of(), schema).get("meta"))
+                .get("tags");
+    tags.add("b");
+
+    assertThat(schema.properties().get().get("meta").default_())
+        .hasValue(ImmutableMap.of("tags", ImmutableList.of("a")));
+  }
+
+  @Test
+  public void parseModelOutput_omittedPropertyWithDefault_fillsTheDefault() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("name", STRING, "extra", defaulted(STRING, "default")))
+            .build();
+
+    Object output = SchemaUtils.parseModelOutput("{\"name\":\"x\"}", schema);
+
+    assertThat(output).isEqualTo(ImmutableMap.of("name", "x", "extra", "default"));
+  }
+
+  @Test
+  public void validateOutput_arrayOfObjectsOmittingADefault_leavesItOmitted() throws Exception {
+    Schema item =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("id", INTEGER, "tag", defaulted(STRING, "t")))
+            .build();
+    Schema schema = Schema.builder().type("ARRAY").items(item).build();
+
+    Object output = SchemaUtils.validateOutput("[{\"id\":1}]", schema);
+
+    assertThat(output).isEqualTo(ImmutableList.of(ImmutableMap.of("id", 1)));
+  }
+
+  @Test
+  public void valueWithDefaults_arrayOfObjects_fillsEachItemsDefaults() throws Exception {
+    Schema item =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("id", INTEGER, "tag", defaulted(STRING, "t")))
+            .build();
+    Schema schema = Schema.builder().type("ARRAY").items(item).build();
+
+    Object output =
+        SchemaUtils.valueWithDefaults(
+            SchemaUtils.validateOutput("[{\"id\":1},{\"id\":2,\"tag\":\"u\"}]", schema), schema);
+
+    assertThat(output)
+        .isEqualTo(
+            ImmutableList.of(
+                ImmutableMap.of("id", 1, "tag", "t"), ImmutableMap.of("id", 2, "tag", "u")));
+  }
+
+  @Test
   public void describesObject_unknownTypeWithProperties_isAnObject() {
     Schema schema =
         Schema.builder().type("TYPE_UNSPECIFIED").properties(ImmutableMap.of("a", INTEGER)).build();
@@ -493,5 +858,33 @@ public final class SchemaUtilsTest {
   @Test
   public void describesObject_untypedSchemaWithOnlyItems_isNotAnObject() {
     assertThat(SchemaUtils.describesObject(Schema.builder().items(STRING).build())).isFalse();
+  }
+
+  private static Schema defaulted(Schema schema, Object defaultValue) {
+    return schema.toBuilder().default_(defaultValue).build();
+  }
+
+  /** Animal schema where {@code kind} is {@code kind} or null; {@code sound} has a default. */
+  private static Schema animalWithOptionalKind(String kind, String sound) {
+    Schema kindOrNull =
+        Schema.builder()
+            .anyOf(
+                ImmutableList.of(
+                    Schema.builder().type("STRING").enum_(ImmutableList.of(kind)).build(),
+                    Schema.builder().type("NULL").build()))
+            .build();
+    return Schema.builder()
+        .type("OBJECT")
+        .properties(ImmutableMap.of("kind", kindOrNull, "sound", defaulted(STRING, sound)))
+        .build();
+  }
+
+  /** Object schema that requires {@code key} and defaults {@code x} to {@code x}. */
+  private static Schema itemWithDefault(String key, String x) {
+    return Schema.builder()
+        .type("OBJECT")
+        .properties(ImmutableMap.of(key, INTEGER, "x", defaulted(STRING, x)))
+        .required(ImmutableList.of(key))
+        .build();
   }
 }

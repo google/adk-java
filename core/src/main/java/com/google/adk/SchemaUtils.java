@@ -24,8 +24,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -155,9 +157,9 @@ public final class SchemaUtils {
   }
 
   /**
-   * Parses model text against {@code schema} as one JSON value, or returns the text itself when
-   * that fails and the schema accepts a string. Blank text, and a JSON null the schema allows, give
-   * {@code null}.
+   * Parses model text as one JSON value against {@code schema}, or returns the text itself if that
+   * fails and the schema accepts a string. Returns {@code null} for blank text or a JSON null the
+   * schema allows, and fills omitted properties of a parsed value with their schema defaults.
    *
    * <p>This method is only for use by Agent Development Kit.
    *
@@ -172,7 +174,7 @@ public final class SchemaUtils {
       Object value = readStrictJson(output);
       reason = mismatch(value, schema);
       if (reason == null) {
-        return value;
+        return fillDefaults(value, schema);
       }
     } catch (JsonProcessingException e) {
       reason = "it is not JSON";
@@ -268,6 +270,133 @@ public final class SchemaUtils {
     return outputMap;
   }
 
+  /**
+   * Returns {@code args} with defaults added for omitted (not explicitly null) properties across
+   * nested objects, array items, and the first matching {@code anyOf} alternative. The result may
+   * be {@code args} itself or share its maps and lists; this method does not validate the result or
+   * the defaults.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @SuppressWarnings("unchecked") // A map stays a map with String keys.
+  public static Map<String, Object> withDefaults(Map<String, Object> args, Schema schema) {
+    return (Map<String, Object>) fillDefaults(Preconditions.checkNotNull(args), schema);
+  }
+
+  /**
+   * Returns {@code value}, any JSON value, as {@link #withDefaults} fills it; null stays null.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  public static @Nullable Object valueWithDefaults(@Nullable Object value, Schema schema) {
+    return fillDefaults(value, schema);
+  }
+
+  private static @Nullable Object fillDefaults(@Nullable Object value, Schema schema) {
+    if (value instanceof Map<?, ?> map && schema.properties().isPresent()) {
+      Map<String, Schema> properties = schema.properties().get();
+      Map<String, Object> result = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        String key = String.valueOf(entry.getKey());
+        Schema property = properties.get(key);
+        result.put(
+            key, property == null ? entry.getValue() : fillDefaults(entry.getValue(), property));
+      }
+      for (Map.Entry<String, Schema> property : properties.entrySet()) {
+        // An explicit null is a value, so only an absent key gets the default.
+        Optional<Object> fallback = property.getValue().default_();
+        if (fallback.isPresent() && !result.containsKey(property.getKey())) {
+          result.put(property.getKey(), copyDefault(fallback.get()));
+        }
+      }
+      return result;
+    }
+    if (value instanceof List<?> list && schema.items().isPresent()) {
+      Schema items = schema.items().get();
+      List<Object> result = new ArrayList<>();
+      for (Object item : list) {
+        result.add(fillDefaults(item, items));
+      }
+      return result;
+    }
+    if (value instanceof Map<?, ?> || value instanceof List<?>) {
+      // Apply defaults from the first alternative the value fits.
+      for (Schema member : schema.anyOf().orElse(ImmutableList.of())) {
+        if (fits(value, member)) {
+          return fillDefaults(value, member);
+        }
+      }
+    }
+    return value;
+  }
+
+  /**
+   * Returns whether {@code value} can receive defaults from {@code schema}. In addition to {@link
+   * #mismatch}, it checks enum values, nested {@code anyOf} alternatives, and types inferred from
+   * keys, including items of an untyped array.
+   */
+  private static boolean fits(@Nullable Object value, Schema schema) {
+    if (value == null && schema.nullable().orElse(false)) {
+      return true;
+    }
+    Type.Known type = inferredTypeOf(schema);
+    boolean kindFits =
+        type == null
+            || (value instanceof Map<?, ?>
+                ? type == Type.Known.OBJECT
+                : value instanceof List<?>
+                    ? type == Type.Known.ARRAY
+                    : type != Type.Known.OBJECT && type != Type.Known.ARRAY);
+    if (!kindFits || mismatch(value, schema) != null) {
+      return false;
+    }
+    Optional<List<String>> allowed = schema.enum_();
+    if (allowed.isPresent() && (value == null || !allowed.get().contains(String.valueOf(value)))) {
+      return false;
+    }
+    List<Schema> anyOf = schema.anyOf().orElse(ImmutableList.of());
+    if (!anyOf.isEmpty() && anyOf.stream().noneMatch(member -> fits(value, member))) {
+      return false;
+    }
+    if (value instanceof Map<?, ?> map && schema.properties().isPresent()) {
+      Map<String, Schema> properties = schema.properties().get();
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        Schema property = properties.get(String.valueOf(entry.getKey()));
+        if (property != null && !fits(entry.getValue(), property)) {
+          return false;
+        }
+      }
+    }
+    if (value instanceof List<?> list && schema.items().isPresent()) {
+      Schema items = schema.items().get();
+      for (Object item : list) {
+        if (!fits(item, items)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /** Returns a copy of {@code value} whose maps and lists are new, so callers can change it. */
+  private static @Nullable Object copyDefault(@Nullable Object value) {
+    if (value instanceof Map<?, ?> map) {
+      Map<String, Object> copy = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        copy.put(String.valueOf(entry.getKey()), copyDefault(entry.getValue()));
+      }
+      return copy;
+    }
+    if (value instanceof List<?> list) {
+      List<Object> copy = new ArrayList<>();
+      for (Object item : list) {
+        copy.add(copyDefault(item));
+      }
+      return copy;
+    }
+    return value;
+  }
+
   private static @Nullable String mismatch(@Nullable Object value, Schema schema) {
     if (value == null && schema.nullable().orElse(false)) {
       return null;
@@ -343,5 +472,17 @@ public final class SchemaUtils {
 
   private static Type.@Nullable Known typeOf(Schema schema) {
     return schema.type().map(Type::knownEnum).orElse(null);
+  }
+
+  /** Returns the type of {@code schema}, inferred from keys if unset or TYPE_UNSPECIFIED. */
+  private static Type.@Nullable Known inferredTypeOf(Schema schema) {
+    Type.Known type = typeOf(schema);
+    if (type != null && type != Type.Known.TYPE_UNSPECIFIED) {
+      return type;
+    }
+    if (schema.properties().isPresent() || schema.required().isPresent()) {
+      return Type.Known.OBJECT;
+    }
+    return schema.items().isPresent() ? Type.Known.ARRAY : null;
   }
 }

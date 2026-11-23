@@ -704,7 +704,9 @@ public class LlmAgent extends BaseAgent {
       }
     } else if (outputSchema.isPresent()) {
       try {
-        output = SchemaUtils.validateOutput(rawResult, outputSchema.get());
+        output =
+            SchemaUtils.valueWithDefaults(
+                SchemaUtils.validateOutput(rawResult, outputSchema.get()), outputSchema.get());
         if (output == null) {
           // A JSON null for a nullable array or primitive schema. State cannot hold null, so save
           // "", which {key} renders as Python renders None. Single-turn mode skips the save.
@@ -1138,7 +1140,12 @@ public class LlmAgent extends BaseAgent {
         if (outputKey().isPresent()) {
           var unused = context.state().put(outputKey().get(), output);
         }
-        return event.toBuilder().output(output).build();
+        // As in adk-python, schema defaults apply to the node output, not the saved arguments.
+        Object nodeOutput =
+            outputSchema()
+                .map(schema -> SchemaUtils.valueWithDefaults(output, schema))
+                .orElse(output);
+        return event.toBuilder().output(nodeOutput).build();
       }
     }
     round.delegations = delegations;
