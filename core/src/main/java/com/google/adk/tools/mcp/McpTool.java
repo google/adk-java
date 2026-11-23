@@ -21,12 +21,13 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.tools.ToolContext;
-import com.google.common.collect.ImmutableMap;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import io.reactivex.rxjava3.core.Single;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
@@ -93,7 +94,9 @@ public final class McpTool extends AbstractMcpTool<McpSyncClient> {
                 Optional.ofNullable(
                     mcpSession.callTool(
                         new CallToolRequest(
-                            this.name(), ImmutableMap.copyOf(args), /* meta= */ null))))
+                            this.name(),
+                            Collections.unmodifiableMap(new LinkedHashMap<>(args)),
+                            /* meta= */ null))))
         .retryWhen(
             errors ->
                 errors
