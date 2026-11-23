@@ -153,7 +153,7 @@ final class PortScalars {
   }
 
   /** Returns {@code value} as a finite number if it is one or a JSON literal of one, else null. */
-  private static @Nullable Number numberLiteral(@Nullable Object value) {
+  static @Nullable Number numberLiteral(@Nullable Object value) {
     if (value instanceof Long n) {
       return n;
     }
@@ -175,7 +175,7 @@ final class PortScalars {
   }
 
   /** Returns {@code value} as a boolean if it is one or the text true or false, else null. */
-  private static @Nullable Boolean booleanLiteral(@Nullable Object value) {
+  static @Nullable Boolean booleanLiteral(@Nullable Object value) {
     if (value instanceof Boolean b) {
       return b;
     }

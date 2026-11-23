@@ -126,8 +126,8 @@ public final class FunctionNodes {
 
   /**
    * Asks the user for input; it never returns. Unless the node reruns on resume, the answer,
-   * checked against any {@code responseSchema}, becomes the node's output without being read as its
-   * output type; if it reruns, the body runs again and must ask only when {@code
+   * checked against and converted to any {@code responseSchema}, becomes the node's output without
+   * being read as its output type; if it reruns, the body runs again and must ask only when {@code
    * ctx.resumeInputs()} lacks the answer:
    *
    * <pre>{@code
@@ -140,7 +140,8 @@ public final class FunctionNodes {
    * <p>Call it on the body's thread: it ends the body by throwing an internal {@link Error}, which
    * {@code catch (Exception e)} lets through and {@code catch (Throwable t)} stops.
    *
-   * @param interruptId the ID the answer carries; keep it stable across reruns
+   * @param interruptId the ID the answer carries; keep it stable across reruns, and do not use the
+   *     prefix reserved in {@link RequestInput#interruptId}
    * @param message the text to show the user, or {@code null}
    * @param payload data for rendering the request, written in JSON form as a node output is, or
    *     {@code null}

@@ -19,7 +19,6 @@ package com.google.adk.workflow;
 import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.google.adk.JsonBaseModel;
-import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
@@ -226,11 +225,13 @@ final class ResumeScan {
   }
 
   /**
-   * Unwraps and validates the answer {@code response} to interrupt {@code interruptId}. A {@code
-   * {"result": value}} envelope is unwrapped, and a string value inside it is read as JSON unless
-   * {@code schema} accepts a string.
+   * Unwraps the answer {@code response} to interrupt {@code interruptId} and returns it converted
+   * to {@code schema}'s types. A {@code {"result": value}} envelope is unwrapped, and a string
+   * value inside it is read as JSON unless {@code schema} accepts a string. An undeclared key is
+   * kept, except in the answer to a tool confirmation request, whose schema is closed.
    *
-   * @throws IllegalArgumentException if the answer does not match {@code schema}
+   * @throws IllegalArgumentException if the answer does not match {@code schema}, or a confirmation
+   *     answer has an undeclared key
    */
   static @Nullable Object validateAnswer(
       @Nullable Schema schema, @Nullable Object response, String interruptId) {
@@ -238,12 +239,13 @@ final class ResumeScan {
     if (schema == null) {
       return answer;
     }
-    Optional<String> mismatch = SchemaUtils.findMismatch(answer, schema);
-    if (mismatch.isPresent()) {
+    boolean closed = interruptId.startsWith(ToolConfirmations.INTERRUPT_ID_PREFIX);
+    try {
+      return ValueCoercer.coerceValue(answer, schema, "answer", closed);
+    } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
-          "Validation failed for interrupt " + interruptId + ": " + mismatch.get());
+          "Validation failed for interrupt " + interruptId + ": " + e.getMessage(), e);
     }
-    return answer;
   }
 
   private static @Nullable Object unwrapAnswer(@Nullable Schema schema, @Nullable Object response) {

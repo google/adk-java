@@ -236,7 +236,7 @@ final class SchemaFit {
     return schema.nullable().orElse(false);
   }
 
-  private static boolean declaresKeys(Schema schema) {
+  static boolean declaresKeys(Schema schema) {
     return schema.properties().isPresent() || schema.required().isPresent();
   }
 
@@ -252,7 +252,7 @@ final class SchemaFit {
     return schema.items().isPresent() ? Type.Known.ARRAY : null;
   }
 
-  private static Type.@Nullable Known declaredType(Schema schema) {
+  static Type.@Nullable Known declaredType(Schema schema) {
     Type.Known type = schema.type().map(Type::knownEnum).orElse(null);
     return type == Type.Known.TYPE_UNSPECIFIED ? null : type;
   }

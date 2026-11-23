@@ -35,7 +35,7 @@ import org.jspecify.annotations.Nullable;
 final class ToolConfirmations {
 
   /** The interrupt ID prefix of a confirmation request, followed by the node path. */
-  private static final String INTERRUPT_ID_PREFIX = "wf_tool_confirmation:";
+  static final String INTERRUPT_ID_PREFIX = "wf_tool_confirmation:";
 
   /** The schema of an answer to a confirmation request. */
   private static final Schema RESPONSE_SCHEMA =

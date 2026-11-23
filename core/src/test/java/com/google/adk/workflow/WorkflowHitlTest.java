@@ -132,14 +132,34 @@ public final class WorkflowHitlTest {
   }
 
   @Test
-  public void resume_objectAnswerWithAWrongType_failsNamingTheInterrupt() {
+  public void resume_objectAnswerWithAQuotedInteger_reachesTheNodeAsAnInteger() {
+    // Arrange
     WorkflowSession session = sessionAwaitingAnswer(AGE_SCHEMA);
-    Content reply = requestAnswer("ask_1", ImmutableMap.of("age", "25"));
 
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("age", "25")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("age", 25L));
+  }
+
+  @Test
+  public void resume_objectAnswerWithAWrongType_failsNamingTheInterruptNotTheValue() {
+    // Arrange
+    WorkflowSession session = sessionAwaitingAnswer(AGE_SCHEMA);
+    Content reply = requestAnswer("ask_1", ImmutableMap.of("age", "x9z"));
+
+    // Act
     IllegalArgumentException error =
         assertThrows(IllegalArgumentException.class, () -> session.turn(reply));
 
-    assertThat(error).hasMessageThat().contains("Validation failed for interrupt ask_1");
+    // Assert
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "Validation failed for interrupt ask_1: validation error: answer does not match its"
+                + " schema: 'age' is not an integer");
   }
 
   @Test
@@ -154,15 +174,36 @@ public final class WorkflowHitlTest {
   }
 
   @Test
-  public void resume_objectAnswerWithAnUndeclaredKey_failsWithoutNamingTheKey() {
+  public void resume_objectAnswerWithAnUndeclaredKey_keepsTheKey() {
+    // Arrange
     WorkflowSession session = sessionAwaitingAnswer(AGE_SCHEMA);
-    Content reply = requestAnswer("ask_1", ImmutableMap.of("age", 3, "s3cret", 1));
 
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("age", 3, "note", "tall")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("age", 3, "note", "tall"));
+  }
+
+  @Test
+  public void resume_answerOutsideTheSchemaEnum_failsNamingTheInterruptNotTheValue() {
+    // Arrange
+    WorkflowSession session =
+        sessionAwaitingAnswer(
+            Schema.builder().type(Type.Known.STRING).enum_("red", "green").build());
+    Content reply = requestAnswer("ask_1", ImmutableMap.of("result", "blue"));
+
+    // Act
     IllegalArgumentException error =
         assertThrows(IllegalArgumentException.class, () -> session.turn(reply));
 
-    assertThat(error).hasMessageThat().contains("Validation failed for interrupt ask_1");
-    assertThat(error).hasMessageThat().doesNotContain("s3cret");
+    // Assert
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "Validation failed for interrupt ask_1: validation error: answer does not match its"
+                + " schema: the value is not one of the schema's enum values");
   }
 
   @Test
@@ -235,13 +276,20 @@ public final class WorkflowHitlTest {
 
   @Test
   public void resume_nullAnswerToANonNullableSchema_failsNamingTheInterrupt() {
+    // Arrange
     WorkflowSession session = sessionAwaitingAnswer(AGE_SCHEMA);
     Content reply = requestAnswer("ask_1", Collections.singletonMap("result", null));
 
+    // Act
     IllegalArgumentException error =
         assertThrows(IllegalArgumentException.class, () -> session.turn(reply));
 
-    assertThat(error).hasMessageThat().contains("Validation failed for interrupt ask_1");
+    // Assert
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "Validation failed for interrupt ask_1: validation error: answer does not match its"
+                + " schema: the value is null");
   }
 
   @Test
