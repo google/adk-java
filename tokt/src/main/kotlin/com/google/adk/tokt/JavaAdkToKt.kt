@@ -130,8 +130,11 @@ object JavaAdkToKt {
   ): List<KtPlugin> = javaPlugins.map { asKtPlugin(it, dispatcher) }
 
   /**
-   * Adapts an ADK Java model so the Kotlin engine can call it, running its generation on
-   * `dispatcher`.
+   * Adapts an ADK Java model so the Kotlin engine can call it, running its generation and live
+   * connections on `dispatcher`. Java's `BaseLlmConnection` cannot send activity signals or audio
+   * stream end, so a live connection throws on the signals and drops audio stream end. Opening a
+   * live connection also fails when automatic activity detection is disabled or `explicitVadSignal`
+   * is true.
    */
   @JvmStatic
   @JvmOverloads
