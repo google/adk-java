@@ -150,7 +150,8 @@ internal object GenerateContentConfigCodec {
       continuationToken = config.continuationToken().getOrNull(),
     )
 
-  private fun toolToJava(tool: KtTool): GenaiTool {
+  /** Returns the genai [GenaiTool] view of the Kotlin [tool]. */
+  fun toolToJava(tool: KtTool): GenaiTool {
     val builder = GenaiTool.builder()
     tool.functionDeclarations?.let { decls ->
       builder.functionDeclarations(decls.map { FunctionDeclarationCodec.toJava(it) })
@@ -315,7 +316,8 @@ internal object GenerateContentConfigCodec {
       filter = spec.filter().getOrNull(),
     )
 
-  private fun thinkingConfigToJava(config: KtThinkingConfig): GenaiThinkingConfig {
+  /** Returns the genai [GenaiThinkingConfig] view of the Kotlin [config]. */
+  fun thinkingConfigToJava(config: KtThinkingConfig): GenaiThinkingConfig {
     val builder = GenaiThinkingConfig.builder()
     config.includeThoughts?.let { builder.includeThoughts(it) }
     config.thinkingBudget?.let { builder.thinkingBudget(it) }
@@ -373,7 +375,8 @@ internal object GenerateContentConfigCodec {
       streamFunctionCallArguments = config.streamFunctionCallArguments().getOrNull(),
     )
 
-  private fun safetySettingToJava(setting: KtSafetySetting): GenaiSafetySetting {
+  /** Returns the genai [GenaiSafetySetting] view of the Kotlin [setting]. */
+  fun safetySettingToJava(setting: KtSafetySetting): GenaiSafetySetting {
     val builder = GenaiSafetySetting.builder()
     setting.category?.let { builder.category(GenaiHarmCategory(it.name)) }
     setting.threshold?.let { builder.threshold(GenaiHarmBlockThreshold(it.name)) }

@@ -45,6 +45,7 @@ internal object FunctionDeclarationCodec {
       GenaiFunctionDeclaration.builder().name(declaration.name).description(declaration.description)
     declaration.parameters?.let { builder.parameters(SchemaCodec.toJava(it)) }
     declaration.response?.let { builder.response(SchemaCodec.toJava(it)) }
+    declaration.behavior?.let { builder.behavior(it.name) }
     return builder.build()
   }
 }
