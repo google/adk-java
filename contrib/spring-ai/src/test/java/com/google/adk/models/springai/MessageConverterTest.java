@@ -23,6 +23,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.tools.BaseTool;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
@@ -40,6 +42,8 @@ import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
@@ -1141,6 +1145,71 @@ class MessageConverterTest {
     assertThat(roundTripped.getToolCalls()).hasSize(1);
   }
 
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void toLlmResponse_reasoningContent_roundTripsThroughJsonWithoutBecomingAnswerText(
+      boolean withToolCall) {
+    AssistantMessage.Builder builder =
+        AssistantMessage.builder()
+            .content("Answer")
+            .properties(ImmutableMap.of("reasoningContent", "Check first", "index", 0));
+    if (withToolCall) {
+      builder.toolCalls(
+          ImmutableList.of(new AssistantMessage.ToolCall("call_1", "function", "inspect", "{}")));
+    }
+    LlmResponse response =
+        messageConverter.toLlmResponse(
+            new ChatResponse(
+                ImmutableList.of(
+                    new Generation(builder.build()),
+                    new Generation(
+                        AssistantMessage.builder()
+                            .content("Other candidate")
+                            .properties(
+                                ImmutableMap.of("reasoningContent", "Other reasoning", "index", 1))
+                            .build()))));
+    Content restored = Content.fromJson(response.content().orElseThrow().toJson());
+    List<Part> parts = restored.parts().orElseThrow();
+    assertThat(parts.get(0).thought()).contains(true);
+    assertThat(parts.get(0).text()).contains("Check first");
+    assertThat(parts.get(0).partMetadata()).isEmpty();
+    assertThat(parts.get(1).text()).contains("Answer");
+    AssistantMessage replayed =
+        (AssistantMessage) messageConverter.toSpringAiMessages(restored).get(0);
+    assertThat(replayed.getText()).isEqualTo("Answer");
+    assertThat(replayed.getMetadata()).containsEntry("reasoningContent", "Check first");
+    assertThat(replayed.getToolCalls()).hasSize(withToolCall ? 1 : 0);
+    if (withToolCall) {
+      assertThat(replayed.getToolCalls().get(0).id()).isEqualTo("call_1");
+    }
+  }
+
+  @Test
+  void toAdkContent_nullMetadata_preservesAnswer() {
+    AssistantMessage message =
+        new AssistantMessage("Answer") {
+          @Override
+          public Map<String, Object> getMetadata() {
+            return null;
+          }
+        };
+    assertThat(messageConverter.toAdkContent(message).parts().orElseThrow())
+        .containsExactly(Part.fromText("Answer"));
+  }
+
+  @Test
+  void toAdkContent_emptyOrNonStringReasoning_doesNotCreateThoughtPart() {
+    for (Object reasoning : ImmutableList.of("", 42)) {
+      Content content =
+          messageConverter.toAdkContent(
+              AssistantMessage.builder()
+                  .content("Answer")
+                  .properties(ImmutableMap.of("reasoningContent", reasoning))
+                  .build());
+      assertThat(content.parts().orElseThrow()).containsExactly(Part.fromText("Answer"));
+    }
+  }
+
   @Test
   void toLlmResponse_multipleCandidates_keepsOnlyFirstCandidate() {
     Generation firstChoice =
@@ -1511,7 +1580,7 @@ class MessageConverterTest {
   }
 
   @Test
-  void toSpringAiMessages_assistantContentWithThoughtAndIdlessFunctionCall_filtersThought() {
+  void toSpringAiMessages_assistantContentWithThoughtAndIdlessFunctionCall_separatesReasoning() {
     Content assistantContent =
         Content.builder()
             .role("model")
@@ -1529,6 +1598,8 @@ class MessageConverterTest {
     assertThat(messages).hasSize(1);
     AssistantMessage assistantMessage = (AssistantMessage) messages.get(0);
     assertThat(assistantMessage.getText()).isEqualTo("Visible answer.");
+    assertThat(assistantMessage.getMetadata())
+        .containsEntry("reasoningContent", "internal thought");
     assertThat(assistantMessage.getToolCalls()).hasSize(1);
     assertThat(assistantMessage.getToolCalls().get(0).id()).isEmpty();
   }

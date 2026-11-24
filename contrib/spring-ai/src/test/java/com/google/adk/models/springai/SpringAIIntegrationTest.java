@@ -18,20 +18,40 @@ package com.google.adk.models.springai;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.anthropic.models.messages.MessageDeltaUsage;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
+import com.google.adk.models.Gemini;
+import com.google.adk.models.LlmRequest;
+import com.google.adk.models.LlmResponse;
 import com.google.adk.models.springai.integrations.tools.WeatherTool;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
 import com.google.adk.tools.FunctionTool;
+import com.google.auth.oauth2.AccessToken;
+import com.google.auth.oauth2.GoogleCredentials;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.genai.Client;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.HttpOptions;
 import com.google.genai.types.Part;
+import com.sun.net.httpserver.HttpServer;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
@@ -42,6 +62,8 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.model.StreamingChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.google.genai.metadata.GoogleGenAiUsage;
+import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import reactor.core.publisher.Flux;
 
 /**
@@ -51,6 +73,230 @@ import reactor.core.publisher.Flux;
 class SpringAIIntegrationTest {
 
   public static final String GEMINI_2_5_FLASH = "gemini-2.0-flash";
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void openAiReasoning_survivesBridgeAndJsonBeforeToolResultRequest(boolean streaming)
+      throws Exception {
+    ObjectMapper json = new ObjectMapper();
+    List<JsonNode> requests = new CopyOnWriteArrayList<>();
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    String toolCall =
+        """
+        {"id":"call_1","type":"function","function":{"name":"weather","arguments":"{}"}}
+        """;
+    String response =
+        """
+        {"id":"response_1","object":"chat.completion","created":1,"model":"fixture",
+         "choices":[{"index":0,"message":{"role":"assistant","content":"Checking",
+         "reasoning_content":"Check the weather","tool_calls":[%s]},"finish_reason":"tool_calls"}]}
+        """
+            .formatted(toolCall);
+    List<String> deltas =
+        ImmutableList.of(
+            "{\"role\":\"assistant\",\"reasoning_content\":\"Check\"}",
+            "{\"reasoning_content\":\" the weather\"}",
+            "{\"content\":\"Checking\"}",
+            "{\"tool_calls\":[{\"index\":0," + toolCall.strip().substring(1) + "]}");
+    StringBuilder events = new StringBuilder();
+    for (String delta : deltas) {
+      events
+          .append("data: ")
+          .append(
+              """
+              {"id":"response_1","object":"chat.completion.chunk","created":1,"model":"fixture",
+               "choices":[{"index":0,"delta":%s,"finish_reason":null}]}
+              """
+                  .formatted(delta)
+                  .replace("\n", "")
+                  .strip())
+          .append("\n\n");
+    }
+    events.append(
+        """
+        data: {"id":"response_1","object":"chat.completion.chunk","created":1,"model":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+        data: [DONE]
+
+        """);
+    server.createContext("/", exchange -> {
+      requests.add(json.readTree(exchange.getRequestBody()));
+      boolean streamResponse = requests.get(requests.size() - 1).path("stream").asBoolean();
+      exchange
+          .getResponseHeaders()
+          .set("Content-Type", streamResponse ? "text/event-stream" : "application/json");
+      byte[] bytes =
+          (streamResponse ? events.toString() : response).getBytes(StandardCharsets.UTF_8);
+      exchange.sendResponseHeaders(200, bytes.length);
+      try (OutputStream body = exchange.getResponseBody()) {
+        body.write(bytes);
+      }
+    });
+    server.start();
+    try {
+      OpenAiChatModel model =
+          OpenAiChatModel.builder()
+              .options(
+                  OpenAiChatOptions.builder()
+                      .baseUrl("http://127.0.0.1:" + server.getAddress().getPort())
+                      .apiKey("fixture")
+                      .model("fixture")
+                      .maxTokens(128)
+                      .maxRetries(0)
+                      .build())
+              .build();
+      SpringAI bridge = new SpringAI((ChatModel) model, "fixture");
+      Content user = Content.builder().role("user").parts(Part.fromText("Weather?")).build();
+      List<LlmResponse> responses =
+          bridge
+              .generateContent(
+                  LlmRequest.builder().contents(ImmutableList.of(user)).build(), streaming)
+              .timeout(10, TimeUnit.SECONDS)
+              .toList()
+              .blockingGet();
+      Content saved =
+          Content.fromJson(responses.get(responses.size() - 1).content().orElseThrow().toJson());
+      assertEquals("Check the weather", saved.parts().orElseThrow().get(0).text().orElseThrow());
+      Content toolResult =
+          Content.builder()
+              .role("user")
+              .parts(
+                  Part.builder()
+                      .functionResponse(
+                          FunctionResponse.builder()
+                              .id("call_1")
+                              .name("weather")
+                              .response(ImmutableMap.of("weather", "sunny"))
+                              .build())
+                      .build())
+              .build();
+      LlmResponse unused =
+          bridge
+              .generateContent(
+                  LlmRequest.builder().contents(ImmutableList.of(user, saved, toolResult)).build(),
+                  false)
+              .blockingSingle();
+      assertEquals(2, requests.size());
+      JsonNode assistant = requests.get(1).at("/messages/1");
+      assertEquals("Checking", assistant.path("content").asText());
+      assertEquals("Check the weather", assistant.path("reasoning_content").asText());
+      assertEquals("call_1", assistant.at("/tool_calls/0/id").asText());
+      if (streaming) {
+        MessageConverter converter = new MessageConverter(json);
+        StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+        LlmResponse aggregated =
+            model.stream(
+                    converter.toLlmPrompt(
+                        LlmRequest.builder().contents(ImmutableList.of(user)).build()))
+                .map(
+                    chunk ->
+                        aggregator.processStreamingResponse(converter.toLlmResponse(chunk, true)))
+                .blockLast(java.time.Duration.ofSeconds(10));
+        assertNotNull(aggregated);
+        assertEquals(
+            "Checking",
+            aggregated.content().orElseThrow().parts().orElseThrow().get(0).text().orElseThrow());
+        assertEquals(
+            "call_1",
+            aggregated
+                .content()
+                .orElseThrow()
+                .parts()
+                .orElseThrow()
+                .get(1)
+                .functionCall()
+                .orElseThrow()
+                .id()
+                .orElseThrow());
+      }
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void generateContent_reasoningHistory_canSwitchToVertex() throws Exception {
+    ObjectMapper json = new ObjectMapper();
+    List<JsonNode> requests = new CopyOnWriteArrayList<>();
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/", exchange -> {
+      requests.add(json.readTree(exchange.getRequestBody()));
+      byte[] response =
+          """
+          {"candidates":[{"content":{"role":"model","parts":[{"text":"Vertex answer"}]},
+          "finishReason":"STOP"}]}
+          """
+              .getBytes(StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().set("Content-Type", "application/json");
+      exchange.sendResponseHeaders(200, response.length);
+      try (OutputStream body = exchange.getResponseBody()) {
+        body.write(response);
+      }
+    });
+    server.start();
+    try (Client client =
+        Client.builder()
+            .vertexAI(true)
+            .project("fixture")
+            .location("us-central1")
+            .credentials(GoogleCredentials.create(new AccessToken("fixture", null)))
+            .httpOptions(
+                HttpOptions.builder()
+                    .baseUrl("http://127.0.0.1:" + server.getAddress().getPort())
+                    .build())
+            .build()) {
+      ChatModel firstModel =
+          prompt ->
+              new ChatResponse(
+                  ImmutableList.of(
+                      new Generation(
+                          AssistantMessage.builder()
+                              .content("First answer")
+                              .properties(ImmutableMap.of("reasoningContent", "Think first"))
+                              .build())));
+      Runner first =
+          new InMemoryRunner(
+              LlmAgent.builder()
+                  .name("assistant")
+                  .model(new SpringAI(firstModel, "fixture"))
+                  .build());
+      Session session = first.sessionService().createSession(first.appName(), "user").blockingGet();
+      List<Event> firstEvents =
+          first
+              .runAsync(
+                  "user",
+                  session.id(),
+                  Content.builder().role("user").parts(Part.fromText("First turn")).build())
+              .toList()
+              .blockingGet();
+      assertFalse(firstEvents.isEmpty());
+      Runner second =
+          Runner.builder()
+              .appName(first.appName())
+              .sessionService(first.sessionService())
+              .agent(
+                  LlmAgent.builder()
+                      .name("assistant")
+                      .model(new Gemini("gemini-2.5-flash", client))
+                      .build())
+              .build();
+      List<Event> events =
+          second
+              .runAsync(
+                  "user",
+                  session.id(),
+                  Content.builder().role("user").parts(Part.fromText("Next turn")).build())
+              .timeout(10, TimeUnit.SECONDS)
+              .toList()
+              .blockingGet();
+      assertFalse(events.isEmpty());
+      assertEquals(1, requests.size());
+      assertTrue(requests.get(0).toString().contains("Think first"));
+      assertFalse(requests.get(0).toString().contains("partMetadata"));
+    } finally {
+      server.stop(0);
+    }
+  }
 
   @Test
   void testSimpleAgentWithDummyChatModel() {

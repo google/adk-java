@@ -19,15 +19,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockConstruction;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.models.springai.observability.SpringAIObservabilityHandler;
+import com.google.adk.models.springai.properties.SpringAIProperties;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.functions.Consumer;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
@@ -39,6 +47,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.MockedConstruction;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
@@ -52,6 +63,7 @@ import org.springframework.ai.content.Media;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.util.MimeType;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
 
 class SpringAITest {
 
@@ -574,6 +586,156 @@ class SpringAITest {
     List<Part> parts = response.content().get().parts().get();
     assertThat(parts).hasSize(1);
     return parts.get(0).functionCall().get();
+  }
+
+  @Test
+  void generateContent_cumulativeReasoning_emitsOnlyNewThoughtText() {
+    ChatResponse toolCall =
+        new ChatResponse(
+            ImmutableList.of(
+                new Generation(
+                    AssistantMessage.builder()
+                        .content("Checking")
+                        .properties(
+                            ImmutableMap.of(
+                                "reasoningContent",
+                                "Check the weather",
+                                "index",
+                                0L,
+                                "id",
+                                "response"))
+                        .toolCalls(
+                            ImmutableList.of(
+                                new AssistantMessage.ToolCall(
+                                    "call_1", "function", "weather", "{}")))
+                        .build())));
+    when(mockStreamingChatModel.stream(any(Prompt.class)))
+        .thenReturn(
+            Flux.just(reasoningResponse("Check", ""), reasoningResponse("Check", ""), toolCall));
+    List<LlmResponse> responses =
+        new SpringAI(mockStreamingChatModel)
+            .generateContent(testRequest, true)
+            .toList()
+            .blockingGet();
+    assertThat(responses)
+        .extracting(response -> response.partial().orElseThrow())
+        .containsExactly(true, true, false);
+    assertThat(
+            responses.subList(0, 2).stream()
+                .flatMap(
+                    response -> response.content().orElseThrow().parts().orElseThrow().stream())
+                .filter(part -> part.thought().orElse(false))
+                .map(part -> part.text().orElseThrow())
+                .toList())
+        .containsExactly("Check", " the weather");
+    List<Part> parts = responses.get(2).content().orElseThrow().parts().orElseThrow();
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0).text()).contains("Check the weather");
+    assertThat(parts.get(1).text()).contains("Checking");
+    assertThat(parts.get(2).functionCall().orElseThrow().id()).contains("call_1");
+  }
+
+  @Test
+  void generateContent_reasoningStateIsIsolatedAcrossInterleavedStreamsAndSubscriptions() {
+    Sinks.Many<ChatResponse> first = Sinks.many().unicast().onBackpressureBuffer();
+    Sinks.Many<ChatResponse> second = Sinks.many().unicast().onBackpressureBuffer();
+    when(mockStreamingChatModel.stream(any(Prompt.class)))
+        .thenReturn(
+            first.asFlux(), second.asFlux(), Flux.just(reasoningResponse("Same prefix", "Done")));
+    SpringAI bridge = new SpringAI(mockStreamingChatModel);
+    Flowable<LlmResponse> stream = bridge.generateContent(testRequest, true);
+    TestSubscriber<LlmResponse> one = stream.test();
+    TestSubscriber<LlmResponse> two = stream.test();
+    first.tryEmitNext(reasoningResponse("Same", "")).orThrow();
+    second.tryEmitNext(reasoningResponse("Same prefix", "Done")).orThrow();
+    first.tryEmitNext(reasoningResponse("Same prefix", "Done")).orThrow();
+    first.tryEmitComplete().orThrow();
+    second.tryEmitComplete().orThrow();
+    one.assertComplete().assertNoErrors();
+    two.assertComplete().assertNoErrors();
+    LlmResponse repeated = stream.blockingLast();
+    for (LlmResponse response :
+        ImmutableList.of(
+            one.values().get(one.values().size() - 1),
+            two.values().get(two.values().size() - 1),
+            repeated)) {
+      assertThat(response.content().orElseThrow().parts().orElseThrow())
+          .extracting(part -> part.text().orElseThrow())
+          .containsExactly("Same prefix", "Done");
+    }
+  }
+
+  @Test
+  void generateContent_mixedThoughtFormats_preservesIncrementalThoughts() {
+    when(mockStreamingChatModel.stream(any(Prompt.class)))
+        .thenReturn(
+            Flux.just(
+                createThoughtChatResponse("a"), createThoughtChatResponse("a"),
+                reasoningResponse("a", ""), reasoningResponse("ab", "Answer")));
+    LlmResponse response =
+        new SpringAI(mockStreamingChatModel).generateContent(testRequest, true).blockingLast();
+    Content restored = Content.fromJson(response.content().orElseThrow().toJson());
+    List<Part> parts = restored.parts().orElseThrow();
+    assertThat(parts)
+        .extracting(part -> part.text().orElseThrow())
+        .containsExactly("aaab", "Answer");
+    AssistantMessage replayed =
+        (AssistantMessage)
+            new MessageConverter(new ObjectMapper()).toSpringAiMessages(restored).get(0);
+    assertThat(replayed.getMetadata()).containsEntry("reasoningContent", "aaab");
+    assertThat(replayed.getText()).isEqualTo("Answer");
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void generateContent_incrementalReasoning_preservesRepeatedPrefixes(boolean changingIds) {
+    List<ChatResponse> chunks = new ArrayList<>();
+    for (String delta : ImmutableList.of("Wait", ".", ".", ". Done")) {
+      Map<String, Object> metadata =
+          changingIds
+              ? ImmutableMap.of(
+                  "reasoningContent", delta, "id", "chunk-" + chunks.size(), "index", 0L)
+              : ImmutableMap.of("reasoningContent", delta);
+      chunks.add(
+          new ChatResponse(
+              ImmutableList.of(
+                  new Generation(AssistantMessage.builder().properties(metadata).build()))));
+    }
+    when(mockStreamingChatModel.stream(any(Prompt.class))).thenReturn(Flux.fromIterable(chunks));
+    LlmResponse result =
+        new SpringAI(mockStreamingChatModel).generateContent(testRequest, true).blockingLast();
+    assertThat(result.content().orElseThrow().parts().orElseThrow())
+        .extracting(part -> part.text().orElseThrow())
+        .containsExactly("Wait... Done");
+  }
+
+  @Test
+  void generateContent_contentLogging_logsAnswerInsteadOfReasoning() {
+    when(mockChatModel.call(any(Prompt.class))).thenReturn(reasoningResponse("Think", "Answer"));
+    SpringAIProperties.Observability config = new SpringAIProperties.Observability();
+    config.setEnabled(true);
+    config.setIncludeContent(true);
+    try (MockedConstruction<SpringAIObservabilityHandler> handlers =
+        mockConstruction(SpringAIObservabilityHandler.class)) {
+      LlmResponse result =
+          new SpringAI(mockChatModel, "fixture", config)
+              .generateContent(testRequest, false)
+              .blockingSingle();
+      assertThat(result.content()).isPresent();
+      verify(handlers.constructed().get(0)).logResponse("Answer", "fixture");
+    }
+  }
+
+  private static ChatResponse reasoningResponse(String reasoning, String text) {
+    return new ChatResponse(
+        ImmutableList.of(
+            new Generation(
+                AssistantMessage.builder()
+                    .content(text)
+                    .properties(
+                        ImmutableMap.of(
+                            "reasoningContent", reasoning, "index", 0L, "id", "response"))
+                    .build())));
   }
 
   private ChatResponse createStreamingChatResponse(String text) {

@@ -40,6 +40,7 @@ import com.google.genai.types.Tool;
 import java.net.URI;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -91,6 +92,8 @@ public class MessageConverter {
    * https://ai.google.dev/gemini-api/docs/thought-signatures.
    */
   private static final String THOUGHT_SIGNATURES_KEY = "thoughtSignatures";
+
+  private static final String REASONING_CONTENT_KEY = "reasoningContent";
 
   /** Metadata key the Spring AI Google GenAI provider uses to flag a generation as thought text. */
   private static final String IS_THOUGHT_KEY = "isThought";
@@ -561,6 +564,7 @@ public class MessageConverter {
 
   private AssistantMessage handleAssistantContent(Content content) {
     StringBuilder textBuilder = new StringBuilder();
+    StringBuilder reasoning = new StringBuilder();
     List<AssistantMessage.ToolCall> toolCalls = new ArrayList<>();
     List<byte[]> thoughtSignatures = new ArrayList<>();
     List<Media> mediaList = new ArrayList<>();
@@ -569,6 +573,8 @@ public class MessageConverter {
       if (part.text().isPresent()) {
         if (!part.thought().orElse(false)) {
           textBuilder.append(part.text().get());
+        } else {
+          reasoning.append(part.text().get());
         }
       } else if (part.functionCall().isPresent()) {
         FunctionCall functionCall = part.functionCall().get();
@@ -587,11 +593,16 @@ public class MessageConverter {
     }
 
     String text = textBuilder.toString();
-    if (toolCalls.isEmpty() && mediaList.isEmpty()) {
+    Map<String, Object> properties = new LinkedHashMap<>();
+    if (!thoughtSignatures.isEmpty()) {
+      properties.put(THOUGHT_SIGNATURES_KEY, thoughtSignatures);
+    }
+    if (!reasoning.isEmpty()) {
+      properties.put(REASONING_CONTENT_KEY, reasoning.toString());
+    }
+    if (toolCalls.isEmpty() && mediaList.isEmpty() && properties.isEmpty()) {
       return new AssistantMessage(text);
     }
-    Map<String, Object> properties =
-        thoughtSignatures.isEmpty() ? Map.of() : Map.of(THOUGHT_SIGNATURES_KEY, thoughtSignatures);
     return AssistantMessage.builder()
         .content(text)
         .properties(properties)
@@ -754,9 +765,13 @@ public class MessageConverter {
 
   private Content convertAssistantMessageToContent(AssistantMessage assistantMessage) {
     List<Part> parts = new ArrayList<>();
+    Map<String, Object> metadata = assistantMessage.getMetadata();
+    Object reasoning = metadata == null ? null : metadata.get(REASONING_CONTENT_KEY);
+    if (reasoning instanceof String reasoningText && !reasoningText.isEmpty()) {
+      parts.add(Part.builder().text(reasoningText).thought(true).build());
+    }
 
     if (assistantMessage.getText() != null && !assistantMessage.getText().isEmpty()) {
-      Map<String, Object> metadata = assistantMessage.getMetadata();
       boolean isThought =
           metadata != null
               && (Boolean.TRUE.equals(metadata.get(IS_THOUGHT_KEY))
