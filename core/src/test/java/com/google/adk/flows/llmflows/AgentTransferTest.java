@@ -23,6 +23,8 @@ import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
@@ -37,20 +39,27 @@ import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
+import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
+import io.reactivex.rxjava3.schedulers.TestScheduler;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -202,6 +211,175 @@ public final class AgentTransferTest {
     long closedConnectionsCount =
         testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose).count();
     assertThat(closedConnectionsCount).isEqualTo(1);
+  }
+
+  @Test
+  public void runLive_transferToAgentAndBack_sendsEachFunctionResponseOnce() throws Exception {
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                createLlmResponse(Content.fromParts(createTransferCallPart("sub_agent_1")))),
+            Flowable.just(
+                createLlmResponse(
+                    Content.fromParts(Part.fromFunctionCall("echo_tool", ImmutableMap.of()))),
+                createLlmResponse(Content.fromParts(createTransferCallPart("root_agent")))),
+            Flowable.just(createLlmResponse(Content.fromParts(Part.fromText("response1")))));
+    LlmAgent subAgent1 =
+        createTestAgentBuilder(testLlm)
+            .name("sub_agent_1")
+            .executor(Runnable::run)
+            .tools(new EchoTool())
+            .build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .executor(Runnable::run)
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(rootAgent);
+    Runner runner = getRunnerAndCreateSession(rootAgent, invocationContext.session());
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runner
+            .runLive(invocationContext.session(), liveRequestQueue, RunConfig.builder().build())
+            .test();
+    liveRequestQueue.content(Content.fromParts(Part.fromText("hi")));
+    testSubscriber.await();
+
+    testSubscriber.assertComplete();
+    assertThat(
+            testLlm.getLiveRequestHistory().stream()
+                .flatMap(request -> request.content().stream())
+                .flatMap(content -> content.parts().orElse(ImmutableList.of()).stream())
+                .flatMap(part -> part.functionResponse().stream())
+                .map(response -> response.name().get()))
+        .containsExactly("transfer_to_agent", "echo_tool", "transfer_to_agent")
+        .inOrder();
+  }
+
+  @Test
+  public void runLive_transferWhileSendsRunOnWorker_sendsTransferResponseBeforeClosing()
+      throws Exception {
+    ScheduledExecutorService sender = Executors.newSingleThreadScheduledExecutor();
+    // Prevent the close timeout from firing so only sending the response ends the wait.
+    TestScheduler frozenClock = new TestScheduler();
+    RxJavaPlugins.setComputationSchedulerHandler(unused -> frozenClock);
+    try {
+      TestLlm testLlm =
+          createTestLlm(
+              Flowable.just(
+                  createLlmResponse(Content.fromParts(createTransferCallPart("sub_agent_1")))),
+              Flowable.just(createLlmResponse(Content.fromParts(Part.fromText("response1")))));
+      LlmAgent subAgent1 =
+          createTestAgentBuilder(testLlm).name("sub_agent_1").executor(Runnable::run).build();
+      LlmAgent rootAgent =
+          createTestAgentBuilder(testLlm)
+              .name("root_agent")
+              // Sends lag on a worker, so a close that does not wait for them comes first.
+              .executor(command -> {
+                ScheduledFuture<?> unused = sender.schedule(command, 100, MILLISECONDS);
+              })
+              .subAgents(ImmutableList.of(subAgent1))
+              .build();
+      InvocationContext invocationContext = createInvocationContext(rootAgent);
+      Runner runner = getRunnerAndCreateSession(rootAgent, invocationContext.session());
+
+      TestSubscriber<Event> testSubscriber =
+          runner
+              .runLive(
+                  invocationContext.session(), new LiveRequestQueue(), RunConfig.builder().build())
+              .test();
+      assertThat(testSubscriber.await(5, SECONDS)).isTrue();
+
+      testSubscriber.assertComplete();
+      List<LiveRequest> history = testLlm.getLiveRequestHistory();
+      int transferResponse =
+          Iterables.indexOf(
+              history,
+              request ->
+                  request.content().stream()
+                      .flatMap(content -> content.parts().orElse(ImmutableList.of()).stream())
+                      .flatMap(part -> part.functionResponse().stream())
+                      .anyMatch(response -> response.name().get().equals("transfer_to_agent")));
+      // The root agent's connection gets the response before it closes.
+      assertThat(transferResponse).isAtLeast(0);
+      assertThat(transferResponse).isLessThan(Iterables.indexOf(history, LiveRequest::shouldClose));
+    } finally {
+      RxJavaPlugins.setComputationSchedulerHandler(null);
+      sender.shutdownNow();
+    }
+  }
+
+  @Test
+  public void runLive_transfer_stopsReadingOldConnection() throws Exception {
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                createLlmResponse(Content.fromParts(createTransferCallPart("sub_agent_1"))),
+                createLlmResponse(Content.fromParts(Part.fromText("after transfer")))),
+            Flowable.just(createLlmResponse(Content.fromParts(Part.fromText("response1")))));
+    LlmAgent subAgent1 =
+        createTestAgentBuilder(testLlm).name("sub_agent_1").executor(Runnable::run).build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .executor(Runnable::run)
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(rootAgent);
+    Runner runner = getRunnerAndCreateSession(rootAgent, invocationContext.session());
+
+    TestSubscriber<Event> testSubscriber =
+        runner
+            .runLive(
+                invocationContext.session(), new LiveRequestQueue(), RunConfig.builder().build())
+            .test();
+
+    assertThat(testSubscriber.await(5, SECONDS)).isTrue();
+    testSubscriber.assertComplete();
+    ImmutableList<String> events = simplifyEvents(testSubscriber.values());
+    // Anything sent by the old connection after the transfer is not read.
+    assertThat(events).doesNotContain("root_agent: after transfer");
+    assertThat(events).contains("sub_agent_1: response1");
+  }
+
+  @Test
+  public void runLive_transferAfterCallerHungUp_closesWithoutWaiting() throws Exception {
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                createLlmResponse(Content.fromParts(createTransferCallPart("sub_agent_1")))),
+            Flowable.just(createLlmResponse(Content.fromParts(Part.fromText("response1")))));
+    LlmAgent subAgent1 =
+        createTestAgentBuilder(testLlm).name("sub_agent_1").executor(Runnable::run).build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .executor(Runnable::run)
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(rootAgent);
+    Runner runner = getRunnerAndCreateSession(rootAgent, invocationContext.session());
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    // The caller hangs up first, so the transfer's response is never sent.
+    liveRequestQueue.close();
+
+    // Prevent the close timeout from firing so only the caller's hang-up ends the wait.
+    TestScheduler frozenClock = new TestScheduler();
+    RxJavaPlugins.setComputationSchedulerHandler(unused -> frozenClock);
+    try {
+      TestSubscriber<Event> testSubscriber =
+          runner
+              .runLive(invocationContext.session(), liveRequestQueue, RunConfig.builder().build())
+              .test();
+
+      assertThat(testSubscriber.await(5, SECONDS)).isTrue();
+      testSubscriber.assertComplete();
+      assertThat(simplifyEvents(testSubscriber.values())).contains("sub_agent_1: response1");
+    } finally {
+      RxJavaPlugins.setComputationSchedulerHandler(null);
+    }
   }
 
   @Test

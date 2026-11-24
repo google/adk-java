@@ -46,6 +46,7 @@ import com.google.adk.tools.ToolContext;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.genai.types.Content;
 import com.google.genai.types.FunctionResponse;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
@@ -56,22 +57,32 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.functions.Predicate;
 import io.reactivex.rxjava3.observers.DisposableCompletableObserver;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** A basic flow that calls the LLM in a loop until a final response is generated. */
 public abstract class BaseLlmFlow implements BaseFlow {
   private static final Logger logger = LoggerFactory.getLogger(BaseLlmFlow.class);
+
+  /**
+   * Maximum wait for the last function response to finish sending before closing a live connection:
+   * the 1 second ADK Python always waits ({@code DEFAULT_TRANSFER_AGENT_DELAY}).
+   */
+  private static final Duration CLOSING_ANSWER_TIMEOUT = Duration.ofSeconds(1);
 
   protected final List<RequestProcessor> requestProcessors;
   protected final List<ResponseProcessor> responseProcessors;
@@ -661,6 +672,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
                       }
                     }
                   });
+          // The last function response for this connection, which closes only once it is sent.
+          AtomicReference<Content> closingAnswer = new AtomicReference<>();
+          CompletableSubject closingAnswerSent = CompletableSubject.create();
           Disposable sendTask =
               historySent
                   .observeOn(Functions.resolveWorkerScheduler(invocationContext))
@@ -669,8 +683,14 @@ public abstract class BaseLlmFlow implements BaseFlow {
                           .onBackpressureBuffer()
                           .concatMapCompletable(request -> {
                             if (request.content().isPresent()) {
-                              return connection.sendContent(
-                                  request.content().get(), request.isPartial());
+                              Content content = request.content().get();
+                              return connection
+                                  .sendContent(content, request.isPartial())
+                                  .doOnComplete(() -> {
+                                    if (content.equals(closingAnswer.get())) {
+                                      closingAnswerSent.onComplete();
+                                    }
+                                  });
                             } else if (request.blob().isPresent()) {
                               return connection.sendRealtime(request.blob().get());
                             }
@@ -681,13 +701,36 @@ public abstract class BaseLlmFlow implements BaseFlow {
                         @Override
                         public void onComplete() {
                           connection.close();
+                          // Nothing more is sent, so a close need not wait for a response.
+                          closingAnswerSent.onComplete();
                         }
 
                         @Override
                         public void onError(Throwable e) {
                           connection.close(e);
+                          closingAnswerSent.onComplete();
                         }
                       });
+
+          // Closing with an unsent function response drops it or leaves it queued for the next
+          // connection.
+          Function<Event, Completable> closeAfterAnswer =
+              event ->
+                  (event.functionResponses().isEmpty()
+                          ? Completable.complete()
+                          : closingAnswerSent
+                              .timeout(CLOSING_ANSWER_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+                              .doOnError(error ->
+                                  logger.warn("A function response was not sent before closing."))
+                              .onErrorComplete())
+                      .andThen(
+                          Completable.fromAction(() -> {
+                            sendTask.dispose();
+                            connection.close();
+                          }));
+
+          // Ends this connection; what it sends afterwards is not read, as in ADK Python 2.x.
+          Predicate<Event> endsConnection = event -> event.actions().transferToAgent().isPresent();
 
           Event.Builder liveEventBuilderTemplate =
               Event.builder()
@@ -713,6 +756,21 @@ public abstract class BaseLlmFlow implements BaseFlow {
                         llmResponse,
                         callLlmContext);
                   })
+                  // Before the transfer below, so a sub-agent's events skip this agent's handling.
+                  .doOnNext(event -> {
+                    ImmutableList<FunctionResponse> functionResponses = event.functionResponses();
+                    if (!functionResponses.isEmpty()) {
+                      if (event.actions().transferToAgent().isPresent()) {
+                        closingAnswer.set(event.content().get());
+                      }
+                      invocationContext.liveRequestQueue().get().content(event.content().get());
+                    }
+                    if (event.actions().endOfAgent()) {
+                      sendTask.dispose();
+                      connection.close();
+                    }
+                  })
+                  .takeUntil(endsConnection)
                   .flatMap(event -> {
                     Flowable<Event> events = Flowable.just(event);
                     if (event.actions().transferToAgent().isPresent()) {
@@ -724,25 +782,17 @@ public abstract class BaseLlmFlow implements BaseFlow {
                             "Agent not found: " + event.actions().transferToAgent().get());
                       }
                       Flowable<Event> nextAgentEvents =
-                          Flowable.defer(() -> {
-                            try (Scope scope = spanContext.makeCurrent()) {
-                              return nextAgent.get().runLive(invocationContext);
-                            }
-                          });
+                          closeAfterAnswer
+                              .apply(event)
+                              .andThen(
+                                  Flowable.defer(() -> {
+                                    try (Scope scope = spanContext.makeCurrent()) {
+                                      return nextAgent.get().runLive(invocationContext);
+                                    }
+                                  }));
                       events = Flowable.concat(events, nextAgentEvents);
                     }
                     return events;
-                  })
-                  .doOnNext(event -> {
-                    ImmutableList<FunctionResponse> functionResponses = event.functionResponses();
-                    if (!functionResponses.isEmpty()) {
-                      invocationContext.liveRequestQueue().get().content(event.content().get());
-                    }
-                    if (event.actions().transferToAgent().isPresent()
-                        || event.actions().endOfAgent()) {
-                      sendTask.dispose();
-                      connection.close();
-                    }
                   });
 
           return Tracing.traceFlowable(
