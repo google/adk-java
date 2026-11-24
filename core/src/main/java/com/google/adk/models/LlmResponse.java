@@ -32,23 +32,25 @@ import com.google.genai.types.GenerateContentResponsePromptFeedback;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
 import com.google.genai.types.Transcription;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Represents a response received from the LLM. */
 @AutoValue
 @JsonDeserialize(builder = LlmResponse.Builder.class)
 public abstract class LlmResponse extends JsonBaseModel {
 
+  private static final Logger logger = LoggerFactory.getLogger(LlmResponse.class);
+
   LlmResponse() {}
 
   /**
-   * Returns the content of the first candidate in the response, if available.
-   *
-   * @return An {@link Content} of the first {@link Candidate} in the {@link
-   *     GenerateContentResponse} if the response contains at least one candidate., or an empty
-   *     optional if no candidates are present in the response.
+   * Returns the content of the response: the first candidate's content when present, or an empty
+   * model content when there are no candidates and no prompt feedback.
    */
   @JsonProperty("content")
   public abstract Optional<Content> content();
@@ -229,8 +231,10 @@ public abstract class LlmResponse extends JsonBaseModel {
               .ifPresent(reason -> this.errorCode(new FinishReason(reason.toString())));
           promptFeedback.blockReasonMessage().ifPresent(this::errorMessage);
         } else {
-          this.errorCode(new FinishReason("Unknown error."));
-          this.errorMessage("Unknown error.");
+          logger.warn(
+              "Received empty candidates and no prompt feedback in model response."
+                  + " Treating as a successful empty response.");
+          this.content(Content.builder().role("model").parts(new ArrayList<>()).build());
         }
       }
       this.usageMetadata(response.usageMetadata().orElse(null));
