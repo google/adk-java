@@ -16,6 +16,7 @@
 
 package com.google.adk.workflow;
 
+import static com.google.adk.testing.ResumabilityTestUtils.confirmingEchoFunctionTool;
 import static com.google.adk.testing.ResumabilityTestUtils.pendingFunctionTool;
 import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
@@ -45,6 +46,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
+import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.BaseLlmConnection;
 import com.google.adk.models.LlmRequest;
@@ -908,6 +910,38 @@ public final class LlmAgentAsNodeTest {
     // As in ADK Kotlin, an approval requested by a failed attempt still pauses the retry.
     assertThat(firstModel.getRequests()).hasSize(1);
     assertThat(secondModel.getRequests()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_toolAsksForConfirmationInANonResumableApp_endsTheTurnOnTheRequest() {
+    TestLlm model =
+        TestLlm.create(
+            createFunctionCallLlmResponse("call_1", "echoTool", ImmutableMap.of("message", "hi")),
+            createTextLlmResponse("done"));
+    LlmAgent worker =
+        LlmAgent.builder().name("worker").model(model).tools(confirmingEchoFunctionTool()).build();
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, worker)).build(),
+            /* resumable= */ false);
+
+    ImmutableList<Event> events = session.turn(go());
+    int requestsBeforeAnswer = model.getRequests().size();
+    FunctionCall request =
+        events.stream()
+            .flatMap(event -> Functions.getAskUserConfirmationFunctionCalls(event).stream())
+            .collect(onlyElement());
+    ImmutableList<Event> answered =
+        session.turn(
+            answer(
+                request.id().orElseThrow(),
+                ImmutableMap.of("confirmed", true),
+                Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME));
+
+    // As in ADK Kotlin and Python, the model is not called again until the user answers.
+    assertThat(requestsBeforeAnswer).isEqualTo(1);
+    assertThat(model.getRequests()).hasSize(2);
+    assertThat(answered.stream().map(Event::stringifyContent)).contains("done");
   }
 
   @Test

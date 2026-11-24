@@ -252,6 +252,10 @@ public class FunctionTool extends BaseTool {
                   "Please approve or reject the tool call %s() by responding with a"
                       + " FunctionResponse with an expected ToolConfirmation payload.",
                   name()));
+          // Python ends every turn here; limit to workflow nodes to keep other agents unchanged.
+          if (toolContext.invocationContext().nodePath().isPresent()) {
+            toolContext.eventActions().setSkipSummarization(true);
+          }
           return Single.just(
               ImmutableMap.of(
                   "error", "This tool call requires confirmation, please approve or reject."));
