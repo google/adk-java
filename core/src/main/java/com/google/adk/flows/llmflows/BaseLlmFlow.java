@@ -57,6 +57,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.functions.Action;
 import io.reactivex.rxjava3.functions.Predicate;
 import io.reactivex.rxjava3.observers.DisposableCompletableObserver;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
@@ -737,6 +738,14 @@ public abstract class BaseLlmFlow implements BaseFlow {
                         }
                       });
 
+          AtomicBoolean connectionClosed = new AtomicBoolean();
+          Action closeConnection =
+              () -> {
+                if (connectionClosed.compareAndSet(false, true)) {
+                  sendTask.dispose();
+                  connection.close();
+                }
+              };
           // Closing with an unsent function response drops it or leaves it queued for the next
           // connection.
           Function<Event, Completable> closeAfterAnswer =
@@ -748,11 +757,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                               .doOnError(error ->
                                   logger.warn("A function response was not sent before closing."))
                               .onErrorComplete())
-                      .andThen(
-                          Completable.fromAction(() -> {
-                            sendTask.dispose();
-                            connection.close();
-                          }));
+                      .andThen(Completable.fromAction(closeConnection));
 
           // Any live agent's own task_completed tool ends its live run, not only when running as a
           // SequentialAgent step; offeredTo limits only which agents receive the tool. ADK Python
@@ -803,10 +808,6 @@ public abstract class BaseLlmFlow implements BaseFlow {
                       }
                       invocationContext.liveRequestQueue().get().content(event.content().get());
                     }
-                    if (event.actions().endOfAgent()) {
-                      sendTask.dispose();
-                      connection.close();
-                    }
                   })
                   .takeUntil(endsConnection)
                   .flatMap(event -> {
@@ -834,12 +835,11 @@ public abstract class BaseLlmFlow implements BaseFlow {
                       events = events.concatWith(closeAfterAnswer.apply(event));
                     }
                     return events;
-                  });
+                  })
+                  .doOnCancel(closeConnection)
+                  .doOnError(error -> closeConnection.run());
 
-          return Tracing.traceFlowable(
-                  callLlmContext,
-                  span,
-                  () -> receiveFlow.takeWhile(event -> !event.actions().endOfAgent()))
+          return Tracing.traceFlowable(callLlmContext, span, () -> receiveFlow)
               .compose(Tracing.withContext(spanContext));
         }));
   }
