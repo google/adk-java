@@ -23,6 +23,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.tools.BaseTool;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
@@ -40,6 +42,8 @@ import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
@@ -549,6 +553,7 @@ class MessageConverterTest {
             .outputTokensDetails(Optional.empty())
             .serverToolUse(Optional.empty())
             .serviceTier(Optional.empty())
+            .speed(Optional.empty())
             .build();
     return new DefaultUsage(
         Math.toIntExact(inputTokens),
@@ -1139,6 +1144,78 @@ class MessageConverterTest {
     assertThat(roundTripped.getText()).isEqualTo("Checking now.");
     assertThat(roundTripped.getMedia()).hasSize(1);
     assertThat(roundTripped.getToolCalls()).hasSize(1);
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void anthropicThinking_roundTripsSignedAndRedactedBlocksWithoutDuplicateThoughts(
+      boolean withTool) {
+    List<Map<String, Object>> blocks =
+        ImmutableList.of(
+            ImmutableMap.of("thinking", "first thought", "signature", "first+/= signature"),
+            ImmutableMap.of("thinking", "", "signature", "empty-text signature"),
+            ImmutableMap.of("redactedData", "opaque redacted+/="));
+    AssistantMessage.Builder builder =
+        AssistantMessage.builder()
+            .content("Answer")
+            .properties(ImmutableMap.of("anthropicThinkingContents", blocks));
+    if (withTool) {
+      builder.toolCalls(
+          ImmutableList.of(new AssistantMessage.ToolCall("call_1", "function", "inspect", "{}")));
+    }
+    ChatResponse response =
+        new ChatResponse(
+            ImmutableList.of(
+                new Generation(builder.build()),
+                new Generation(
+                    AssistantMessage.builder()
+                        .content("first thought")
+                        .properties(ImmutableMap.of("signature", "first+/= signature"))
+                        .build()),
+                new Generation(
+                    AssistantMessage.builder()
+                        .content("")
+                        .properties(ImmutableMap.of("signature", "empty-text signature"))
+                        .build()),
+                new Generation(
+                    AssistantMessage.builder()
+                        .properties(ImmutableMap.of("data", "opaque redacted+/="))
+                        .build())));
+    Content converted = messageConverter.toLlmResponse(response).content().orElseThrow();
+    Content restored = Content.fromJson(converted.toJson());
+    List<Part> parts = restored.parts().orElseThrow();
+    assertThat(parts).hasSize(withTool ? 5 : 4);
+    assertThat(parts.subList(0, 3)).allSatisfy(part -> assertThat(part.thought()).contains(true));
+    assertThat(parts.get(0).text()).contains("first thought");
+    assertThat(parts.get(1).text()).contains("");
+    assertThat(parts.get(2).text()).isEmpty();
+    assertThat(parts.get(0).thoughtSignature())
+        .contains("first+/= signature".getBytes(StandardCharsets.UTF_8));
+    AssistantMessage replayed =
+        (AssistantMessage) messageConverter.toSpringAiMessages(restored).get(0);
+    assertThat(replayed.getText()).isEqualTo("Answer");
+    assertThat(replayed.getMetadata()).containsEntry("anthropicThinkingContents", blocks);
+    assertThat(replayed.getToolCalls()).hasSize(withTool ? 1 : 0);
+  }
+
+  @Test
+  void toSpringAiMessages_thoughtsWithoutAnAnthropicSignatureAreNotReplayed() {
+    Content content =
+        Content.builder()
+            .role("model")
+            .parts(
+                Part.builder().text("unsigned thought").thought(true).build(),
+                Part.builder()
+                    .text("binary signature")
+                    .thought(true)
+                    .thoughtSignature(new byte[] {(byte) 0xff})
+                    .build(),
+                Part.fromText("Answer"))
+            .build();
+    AssistantMessage replayed =
+        (AssistantMessage) messageConverter.toSpringAiMessages(content).get(0);
+    assertThat(replayed.getText()).isEqualTo("Answer");
+    assertThat(replayed.getMetadata()).doesNotContainKey("anthropicThinkingContents");
   }
 
   @Test

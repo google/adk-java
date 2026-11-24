@@ -16,6 +16,7 @@
 package com.google.adk.models.springai;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -24,6 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.tools.BaseTool;
+import com.google.common.base.Utf8;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Blob;
@@ -40,6 +42,7 @@ import com.google.genai.types.Tool;
 import java.net.URI;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -97,6 +100,9 @@ public class MessageConverter {
 
   /** Metadata key the Spring AI Anthropic provider sets only on thinking-block generations. */
   private static final String ANTHROPIC_THINKING_SIGNATURE_KEY = "signature";
+
+  /** Complete ordered thinking blocks used by Spring AI for Anthropic assistant replay. */
+  private static final String ANTHROPIC_THINKING_CONTENTS_KEY = "anthropicThinkingContents";
 
   /** Metadata key the Spring AI Google GenAI provider uses for the candidate index. */
   private static final String CANDIDATE_INDEX_KEY = "candidateIndex";
@@ -306,12 +312,23 @@ public class MessageConverter {
               .findFirst()
               .map(MessageConverter::candidateIndex)
               .orElse(null);
+      boolean hasAnthropicThinking =
+          chatResponse.getResults().stream()
+              .filter(gen -> gen.getOutput() != null)
+              .filter(gen -> Objects.equals(candidateIndex(gen), firstCandidateIndex))
+              .anyMatch(gen -> hasAnthropicThinkingContents(gen.getOutput()));
       for (Generation gen : chatResponse.getResults()) {
         // Providers may split one candidate into several generations; ADK keeps one candidate.
         if (gen.getOutput() != null && !Objects.equals(candidateIndex(gen), firstCandidateIndex)) {
           continue;
         }
-        if (gen.getOutput() != null) {
+        // Anthropic also exposes each thinking block as an auxiliary generation. The complete
+        // payload already includes these blocks, including empty and redacted thinking.
+        if (gen.getOutput() != null
+            && !(hasAnthropicThinking
+                && !hasAnthropicThinkingContents(gen.getOutput())
+                && (gen.getOutput().getMetadata().containsKey(ANTHROPIC_THINKING_SIGNATURE_KEY)
+                    || gen.getOutput().getMetadata().containsKey("data")))) {
           Content genContent = convertAssistantMessageToContent(gen.getOutput());
           genContent.parts().ifPresent(mergedParts::addAll);
         }
@@ -563,9 +580,23 @@ public class MessageConverter {
     StringBuilder textBuilder = new StringBuilder();
     List<AssistantMessage.ToolCall> toolCalls = new ArrayList<>();
     List<byte[]> thoughtSignatures = new ArrayList<>();
+    List<Map<String, Object>> anthropicThinking = new ArrayList<>();
     List<Media> mediaList = new ArrayList<>();
 
     for (Part part : content.parts().orElse(List.of())) {
+      if (part.thought().orElse(false) && part.functionCall().isEmpty()) {
+        // Match the native Claude adapter: text presence distinguishes thinking (even empty
+        // text) from redacted thinking. Signatures and redacted data are opaque UTF-8 strings.
+        byte[] signature = part.thoughtSignature().orElse(null);
+        if (signature != null && signature.length > 0 && Utf8.isWellFormed(signature)) {
+          String value = new String(signature, UTF_8);
+          anthropicThinking.add(
+              part.text().isPresent()
+                  ? ImmutableMap.of("thinking", part.text().get(), "signature", value)
+                  : ImmutableMap.of("redactedData", value));
+        }
+        continue;
+      }
       if (part.text().isPresent()) {
         if (!part.thought().orElse(false)) {
           textBuilder.append(part.text().get());
@@ -587,11 +618,16 @@ public class MessageConverter {
     }
 
     String text = textBuilder.toString();
-    if (toolCalls.isEmpty() && mediaList.isEmpty()) {
+    Map<String, Object> properties = new LinkedHashMap<>();
+    if (!thoughtSignatures.isEmpty()) {
+      properties.put(THOUGHT_SIGNATURES_KEY, thoughtSignatures);
+    }
+    if (!anthropicThinking.isEmpty()) {
+      properties.put(ANTHROPIC_THINKING_CONTENTS_KEY, anthropicThinking);
+    }
+    if (toolCalls.isEmpty() && mediaList.isEmpty() && properties.isEmpty()) {
       return new AssistantMessage(text);
     }
-    Map<String, Object> properties =
-        thoughtSignatures.isEmpty() ? Map.of() : Map.of(THOUGHT_SIGNATURES_KEY, thoughtSignatures);
     return AssistantMessage.builder()
         .content(text)
         .properties(properties)
@@ -752,8 +788,39 @@ public class MessageConverter {
     };
   }
 
-  private Content convertAssistantMessageToContent(AssistantMessage assistantMessage) {
+  private static boolean hasAnthropicThinkingContents(AssistantMessage message) {
+    return message.getMetadata().get(ANTHROPIC_THINKING_CONTENTS_KEY) instanceof List<?> blocks
+        && !blocks.isEmpty();
+  }
+
+  private List<Part> anthropicThinkingParts(AssistantMessage message) {
+    if (!hasAnthropicThinkingContents(message)) {
+      return ImmutableList.of();
+    }
+    // Spring AI stores provider records here. JSON conversion also accepts maps restored from
+    // storage, without depending on the provider's package-private record type.
+    List<Map<String, Object>> blocks =
+        objectMapper.convertValue(
+            message.getMetadata().get(ANTHROPIC_THINKING_CONTENTS_KEY), new TypeReference<>() {});
     List<Part> parts = new ArrayList<>();
+    for (Map<String, Object> block : blocks) {
+      Object thinking = block.get("thinking");
+      Object signature = block.get("signature");
+      Object redacted = block.get("redactedData");
+      if (thinking instanceof String text && signature instanceof String sig && redacted == null) {
+        parts.add(
+            Part.builder().text(text).thought(true).thoughtSignature(sig.getBytes(UTF_8)).build());
+      } else if (redacted instanceof String data && thinking == null && signature == null) {
+        parts.add(Part.builder().thought(true).thoughtSignature(data.getBytes(UTF_8)).build());
+      } else {
+        throw new IllegalArgumentException("Invalid Anthropic thinking content metadata");
+      }
+    }
+    return parts;
+  }
+
+  private Content convertAssistantMessageToContent(AssistantMessage assistantMessage) {
+    List<Part> parts = new ArrayList<>(anthropicThinkingParts(assistantMessage));
 
     if (assistantMessage.getText() != null && !assistantMessage.getText().isEmpty()) {
       Map<String, Object> metadata = assistantMessage.getMetadata();
