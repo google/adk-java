@@ -390,6 +390,35 @@ public final class LlmResponseTest {
     assertThat(response.content()).isEmpty();
   }
 
+  /**
+   * A response without candidates and without prompt feedback is a legitimate empty response, not
+   * an error; ADK Python logs a warning and returns Content(role='model', parts=[]).
+   */
+  @Test
+  public void testCreate_noCandidatesNoPromptFeedback_treatedAsSuccessfulEmptyResponse() {
+    LlmResponse response = LlmResponse.create(GenerateContentResponse.builder().build());
+
+    assertThat(response.errorCode()).isEmpty();
+    assertThat(response.errorMessage()).isEmpty();
+    assertThat(response.content()).isPresent();
+    assertThat(response.content().get().role()).hasValue("model");
+    assertThat(response.content().get().parts().get()).isEmpty();
+  }
+
+  @Test
+  public void testCreate_noCandidatesNoPromptFeedback_preservesUsageMetadata() {
+    GenerateContentResponseUsageMetadata usage =
+        GenerateContentResponseUsageMetadata.builder().totalTokenCount(42).build();
+
+    LlmResponse response =
+        LlmResponse.create(GenerateContentResponse.builder().usageMetadata(usage).build());
+
+    assertThat(response.errorCode()).isEmpty();
+    assertThat(response.content()).isPresent();
+    assertThat(response.content().get().parts().get()).isEmpty();
+    assertThat(response.usageMetadata()).hasValue(usage);
+  }
+
   /** A turn that ended normally is not an error, even when the candidate carries no content. */
   @Test
   public void testCreate_contentlessCandidateStoppedNormally_isReportedAsSuccess() {
