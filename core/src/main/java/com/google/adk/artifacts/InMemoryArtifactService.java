@@ -25,11 +25,12 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.IntStream;
 import org.jspecify.annotations.Nullable;
 
@@ -40,10 +41,12 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   // of whatever sessionId happened to be current when they were saved.
   private static final String USER_NAMESPACE_SESSION_KEY = "user";
 
-  private final Map<String, Map<String, Map<String, Map<String, List<Part>>>>> artifacts;
+  private final ConcurrentMap<
+          String, ConcurrentMap<String, ConcurrentMap<String, ConcurrentMap<String, List<Part>>>>>
+      artifacts;
 
   public InMemoryArtifactService() {
-    this.artifacts = new HashMap<>();
+    this.artifacts = new ConcurrentHashMap<>();
   }
 
   /**
@@ -66,9 +69,11 @@ public final class InMemoryArtifactService implements BaseArtifactService {
       String appName, String userId, String sessionId, String filename, Part artifact) {
     List<Part> versions =
         getArtifactsMap(appName, userId, sessionId, filename)
-            .computeIfAbsent(filename, unused -> new ArrayList<>());
-    versions.add(artifact);
-    return Single.just(versions.size() - 1);
+            .computeIfAbsent(filename, unused -> new CopyOnWriteArrayList<>());
+    synchronized (versions) {
+      versions.add(artifact);
+      return Single.just(versions.size() - 1);
+    }
   }
 
   /**
@@ -158,17 +163,17 @@ public final class InMemoryArtifactService implements BaseArtifactService {
    * {@link #USER_NAMESPACE_SESSION_KEY} bucket instead of the given session, so they are visible
    * across all of a user's sessions exactly as {@link GcsArtifactService} stores them.
    */
-  private Map<String, List<Part>> getArtifactsMap(
+  private ConcurrentMap<String, List<Part>> getArtifactsMap(
       String appName, String userId, String sessionId, String filename) {
     String sessionKey = fileHasUserNamespace(filename) ? USER_NAMESPACE_SESSION_KEY : sessionId;
     return getArtifactsMapForSessionKey(appName, userId, sessionKey);
   }
 
-  private Map<String, List<Part>> getArtifactsMapForSessionKey(
+  private ConcurrentMap<String, List<Part>> getArtifactsMapForSessionKey(
       String appName, String userId, String sessionKey) {
     return artifacts
-        .computeIfAbsent(appName, unused -> new HashMap<>())
-        .computeIfAbsent(userId, unused -> new HashMap<>())
-        .computeIfAbsent(sessionKey, unused -> new HashMap<>());
+        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
+        .computeIfAbsent(sessionKey, unused -> new ConcurrentHashMap<>());
   }
 }

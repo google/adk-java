@@ -15,13 +15,23 @@
  */
 package com.google.adk.artifacts;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -165,6 +175,79 @@ public class InMemoryArtifactServiceTest {
         service.listArtifactKeys(APP_NAME, USER_ID, SESSION_B).blockingGet();
 
     assertThat(response.filenames()).isEmpty();
+  }
+
+  @Test
+  public void saveArtifact_concurrentAccess_isThreadSafe() throws Exception {
+    int threadCount = 16;
+    int writesPerThread = 50;
+    ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+    CountDownLatch startLatch = new CountDownLatch(1);
+    List<Future<?>> futures = new ArrayList<>();
+
+    for (int t = 0; t < threadCount; t++) {
+      final int threadId = t;
+      futures.add(
+          executor.submit(
+              () -> {
+                startLatch.await();
+                for (int i = 0; i < writesPerThread; i++) {
+                  String filename = "file_" + (i % 5) + ".txt";
+                  Part part = Part.fromBytes(new byte[] {(byte) threadId, (byte) i}, "text/plain");
+                  service
+                      .saveArtifact(APP_NAME, USER_ID, "session_" + (threadId % 3), filename, part)
+                      .blockingGet();
+                }
+                return null;
+              }));
+    }
+
+    startLatch.countDown();
+    for (Future<?> future : futures) {
+      future.get();
+    }
+    executor.shutdown();
+    assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+  }
+
+  @Test
+  public void saveArtifact_concurrentAppendsToSameFile_preservesDistinctMonotonicVersions()
+      throws Exception {
+    int threadCount = 20;
+    ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+    CountDownLatch startLatch = new CountDownLatch(1);
+    List<Future<Integer>> futures = new ArrayList<>();
+    ConcurrentSkipListSet<Integer> assignedVersions = new ConcurrentSkipListSet<>();
+
+    for (int t = 0; t < threadCount; t++) {
+      final int threadId = t;
+      futures.add(
+          executor.submit(
+              () -> {
+                startLatch.await();
+                Part part = Part.fromBytes(new byte[] {(byte) threadId}, "text/plain");
+                int version =
+                    service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, part).blockingGet();
+                assignedVersions.add(version);
+                return version;
+              }));
+    }
+
+    startLatch.countDown();
+    for (Future<Integer> future : futures) {
+      future.get();
+    }
+    executor.shutdown();
+    assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+
+    // Verify all 20 versions (0..19) were assigned distinctly without duplicates or skips
+    ImmutableList<Integer> expectedVersions =
+        IntStream.range(0, threadCount).boxed().collect(toImmutableList());
+    assertThat(assignedVersions).containsExactlyElementsIn(expectedVersions).inOrder();
+
+    ImmutableList<Integer> listedVersions =
+        service.listVersions(APP_NAME, USER_ID, SESSION_ID, FILENAME).blockingGet();
+    assertThat(listedVersions).containsExactlyElementsIn(expectedVersions).inOrder();
   }
 
   private static <T> Optional<T> asOptional(Maybe<T> maybe) {
