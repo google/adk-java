@@ -17,9 +17,11 @@
 package com.google.adk.runner;
 
 import static com.google.adk.testing.ResumabilityTestUtils.answerCall;
+import static com.google.adk.testing.ResumabilityTestUtils.approveConfirmation;
 import static com.google.adk.testing.ResumabilityTestUtils.assertEndOfAgent;
 import static com.google.adk.testing.ResumabilityTestUtils.assertNoEndOfAgent;
 import static com.google.adk.testing.ResumabilityTestUtils.confirmingEchoFunctionTool;
+import static com.google.adk.testing.ResumabilityTestUtils.functionResponseContent;
 import static com.google.adk.testing.ResumabilityTestUtils.longRunningEchoFunctionTool;
 import static com.google.adk.testing.ResumabilityTestUtils.newSession;
 import static com.google.adk.testing.ResumabilityTestUtils.pauseThenSay;
@@ -30,6 +32,7 @@ import static com.google.adk.testing.ResumabilityTestUtils.resumableRunner;
 import static com.google.adk.testing.ResumabilityTestUtils.resume;
 import static com.google.adk.testing.ResumabilityTestUtils.resumeFlowable;
 import static com.google.adk.testing.ResumabilityTestUtils.runTurn;
+import static com.google.adk.testing.ResumabilityTestUtils.runTurnAskingConfirmation;
 import static com.google.adk.testing.ResumabilityTestUtils.textAgent;
 import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
@@ -55,6 +58,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.ParallelAgent;
+import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
@@ -69,6 +73,8 @@ import com.google.adk.telemetry.Tracing;
 import com.google.adk.testing.ResumabilityTestUtils.Tools;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestLlm;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.FunctionTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -2188,5 +2194,92 @@ public final class RunnerResumabilityTest {
     // The long-running branch paused after one model call; the other branch still completed.
     assertThat(longRunningLlm.getRequests()).hasSize(1);
     assertThat(simplifyEvents(events)).contains("plain_branch: plain branch done");
+  }
+
+  @Test
+  public void runAsync_withToolConfirmationAndContextFilteredToolset_resumesConfirmedTool() {
+    BaseToolset contextFilteredToolset =
+        contextFilteredConfirmingEchoToolset(/* returnToolsOnNullContext= */ false);
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("Response after user confirmed."));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).name("agent").tools(contextFilteredToolset).build();
+    Runner runner = resumableRunner(agent);
+    Session session =
+        runner
+            .sessionService()
+            .createSession("test", "user", ImmutableMap.of("tool_enabled", true), null)
+            .blockingGet();
+
+    FunctionCall confirmationCall = runTurnAskingConfirmation(runner, session, "from user");
+    ImmutableList<Event> eventsAfterConfirmation =
+        approveConfirmation(runner, session, confirmationCall);
+
+    assertThat(simplifyResumableEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "agent: FunctionResponse(name=echoTool, response={message=hello})",
+            "agent: Response after user confirmed.",
+            "agent: end_of_agent")
+        .inOrder();
+  }
+
+  @Test
+  public void
+      runAsync_withToolConfirmationAndContextFilteredToolsetDisabledOnResume_skipsDisabledTool() {
+    BaseToolset contextFilteredToolset =
+        contextFilteredConfirmingEchoToolset(/* returnToolsOnNullContext= */ true);
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("Tool was disabled before resume."));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).name("agent").tools(contextFilteredToolset).build();
+    Runner runner = resumableRunner(agent);
+    Session session =
+        runner
+            .sessionService()
+            .createSession("test", "user", ImmutableMap.of("tool_enabled", true), null)
+            .blockingGet();
+
+    FunctionCall confirmationCall = runTurnAskingConfirmation(runner, session, "from user");
+    ImmutableList<Event> eventsAfterConfirmation =
+        resume(
+            runner,
+            session,
+            /* invocationId= */ null,
+            functionResponseContent(
+                confirmationCall.id().orElseThrow(),
+                confirmationCall.name().orElseThrow(),
+                ImmutableMap.of("confirmed", true)),
+            ImmutableMap.of("tool_enabled", false));
+
+    assertThat(simplifyResumableEvents(eventsAfterConfirmation))
+        .containsExactly("agent: Tool was disabled before resume.", "agent: end_of_agent")
+        .inOrder();
+  }
+
+  private static BaseToolset contextFilteredConfirmingEchoToolset(
+      boolean returnToolsOnNullContext) {
+    return new BaseToolset() {
+      @Override
+      public Flowable<BaseTool> getTools(@Nullable ReadonlyContext readonlyContext) {
+        if (readonlyContext == null) {
+          return returnToolsOnNullContext
+              ? Flowable.just(confirmingEchoFunctionTool())
+              : Flowable.empty();
+        }
+        if (Objects.equals(readonlyContext.state().get("tool_enabled"), true)) {
+          return Flowable.just(confirmingEchoFunctionTool());
+        }
+        return Flowable.empty();
+      }
+
+      @Override
+      public void close() {}
+    };
   }
 }

@@ -26,6 +26,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.agents.Role;
 import com.google.adk.events.Event;
 import com.google.adk.events.ToolConfirmation;
@@ -348,10 +349,8 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
     if (invocationContext.agent() instanceof LlmAgent llmAgent) {
       toolsMapSingle =
           llmAgent
-              .tools()
-              .map(
-                  toolList ->
-                      toolList.stream().collect(toImmutableMap(BaseTool::name, tool -> tool)));
+              .canonicalTools(new ReadonlyContext(invocationContext))
+              .collect(toImmutableMap(BaseTool::name, tool -> tool));
     } else {
       toolsMapSingle = Single.just(ImmutableMap.of());
     }

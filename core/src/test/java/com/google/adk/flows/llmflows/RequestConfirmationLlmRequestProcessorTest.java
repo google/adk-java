@@ -27,6 +27,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
@@ -37,13 +38,18 @@ import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.LlmEventSummarizer;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils.EchoTool;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Flowable;
+import java.util.Objects;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -625,6 +631,40 @@ public class RequestConfirmationLlmRequestProcessorTest {
     assertThat(response.name()).hasValue(ECHO_TOOL_NAME);
   }
 
+  @Test
+  public void runAsync_withConfirmationAndContextFilteredToolset_passesReadonlyContextToToolset() {
+    LlmAgent agent =
+        createAgentWithContextFilteredEchoToolset(/* returnToolsOnNullContext= */ false);
+    Session session =
+        Session.builder("session_id")
+            .state(ImmutableMap.of("tool_enabled", true))
+            .events(CONFIRMED_CALL_EVENTS)
+            .build();
+
+    ImmutableList<Event> resumed = resumedEvents(agent, session);
+
+    assertThat(resumed).hasSize(1);
+    FunctionResponse response = resumed.get(0).functionResponses().get(0);
+    assertThat(response.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
+    assertThat(response.name()).hasValue(ECHO_TOOL_NAME);
+    assertThat(response.response())
+        .hasValue(ImmutableMap.of("result", ORIGINAL_FUNCTION_CALL_ARGS));
+  }
+
+  @Test
+  public void
+      runAsync_withConfirmationAndContextFilteredToolsetDisabled_doesNotCallOriginalFunction() {
+    LlmAgent agent =
+        createAgentWithContextFilteredEchoToolset(/* returnToolsOnNullContext= */ true);
+    Session session =
+        Session.builder("session_id")
+            .state(ImmutableMap.of("tool_enabled", false))
+            .events(CONFIRMED_CALL_EVENTS)
+            .build();
+
+    assertThat(resumedEvents(agent, session)).isEmpty();
+  }
+
   private static ImmutableList<Event> resumedEvents(LlmAgent agent, Session session) {
     return ImmutableList.copyOf(
         processor
@@ -707,5 +747,28 @@ public class RequestConfirmationLlmRequestProcessorTest {
         createTestLlm(
             createLlmResponse(contentWithFunctionCall), createLlmResponse(unreachableContent));
     return createTestAgentBuilder(testLlm).tools(new EchoTool()).maxSteps(2).build();
+  }
+
+  private static LlmAgent createAgentWithContextFilteredEchoToolset(
+      boolean returnToolsOnNullContext) {
+    BaseToolset contextFilteredToolset =
+        new BaseToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(@Nullable ReadonlyContext readonlyContext) {
+            if (readonlyContext == null) {
+              return returnToolsOnNullContext ? Flowable.just(new EchoTool()) : Flowable.empty();
+            }
+            if (Objects.equals(readonlyContext.state().get("tool_enabled"), true)) {
+              return Flowable.just(new EchoTool());
+            }
+            return Flowable.empty();
+          }
+
+          @Override
+          public void close() {}
+        };
+    TestLlm testLlm =
+        createTestLlm(createLlmResponse(Content.fromParts(Part.fromText("unreachable"))));
+    return createTestAgentBuilder(testLlm).tools(contextFilteredToolset).maxSteps(2).build();
   }
 }
