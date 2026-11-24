@@ -92,6 +92,24 @@ class ApiServerSpanExporterTest {
   }
 
   @Test
+  void export_executeToolSpans_shouldStoreTheirEventTraces() {
+    ApiServerSpanExporter exporter = new ApiServerSpanExporter();
+    SpanData toolSpan = mockSpan("execute_tool get_weather", "tool-event", null);
+    SpanData mergedSpan = mockSpan("execute_tool (merged)", "merged-event", null);
+    SpanData agentSpan = mockSpan("invoke_agent weather_agent", "agent-event", null);
+
+    exporter.export(List.of(toolSpan, mergedSpan, agentSpan));
+
+    Map<String, Object> toolAttrs = exporter.getEventTraceAttributes("tool-event");
+    assertNotNull(toolAttrs);
+    assertEquals(toolSpan.getSpanContext().getSpanId(), toolAttrs.get("span_id"));
+    Map<String, Object> mergedAttrs = exporter.getEventTraceAttributes("merged-event");
+    assertNotNull(mergedAttrs);
+    assertEquals(mergedSpan.getSpanContext().getSpanId(), mergedAttrs.get("span_id"));
+    assertNull(exporter.getEventTraceAttributes("agent-event"));
+  }
+
+  @Test
   void eviction_shouldRespectRefCount() {
     // Limit to 2 spans
     ApiServerSpanExporter exporter =
