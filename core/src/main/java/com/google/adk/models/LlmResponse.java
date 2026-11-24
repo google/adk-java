@@ -31,7 +31,9 @@ import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponsePromptFeedback;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.LiveServerGoAway;
 import com.google.genai.types.Transcription;
+import com.google.genai.types.VoiceActivity;
 import java.util.List;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
@@ -130,6 +132,14 @@ public abstract class LlmResponse extends JsonBaseModel {
   @JsonProperty("outputTranscription")
   public abstract Optional<Transcription> outputTranscription();
 
+  /** A Live server warning that the connection will close; does not complete the model turn. */
+  @JsonProperty("goAway")
+  public abstract Optional<LiveServerGoAway> goAway();
+
+  /** A Live server notification that the user has started or stopped speaking. */
+  @JsonProperty("voiceActivity")
+  public abstract Optional<VoiceActivity> voiceActivity();
+
   /** Context cache state for this response; set only when context caching is enabled. */
   @JsonProperty("cacheMetadata")
   public abstract Optional<CacheMetadata> cacheMetadata();
@@ -188,6 +198,12 @@ public abstract class LlmResponse extends JsonBaseModel {
 
     @JsonProperty("outputTranscription")
     public abstract Builder outputTranscription(@Nullable Transcription outputTranscription);
+
+    @JsonProperty("goAway")
+    public abstract Builder goAway(@Nullable LiveServerGoAway goAway);
+
+    @JsonProperty("voiceActivity")
+    public abstract Builder voiceActivity(@Nullable VoiceActivity voiceActivity);
 
     @JsonProperty("cacheMetadata")
     public abstract Builder cacheMetadata(@Nullable CacheMetadata cacheMetadata);

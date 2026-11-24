@@ -180,6 +180,30 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
                     handled.set(true);
                   });
 
+          message
+              .goAway()
+              .ifPresent(
+                  goAway -> {
+                    emitter.onNext(LlmResponse.builder().goAway(goAway).build());
+                    handled.set(true);
+                  });
+          message
+              .voiceActivity()
+              .ifPresent(
+                  voiceActivity -> {
+                    emitter.onNext(LlmResponse.builder().voiceActivity(voiceActivity).build());
+                    handled.set(true);
+                  });
+          message
+              .voiceActivityDetectionSignal()
+              .ifPresent(
+                  signal -> {
+                    // This lower-level VAD signal has no ADK event representation. Recognize it
+                    // without treating it as an error or as the end of the model turn.
+                    logger.debug("Received voice activity detection signal: {}", signal);
+                    handled.set(true);
+                  });
+
           if (!handled.get()) {
             logger.warn("Received unknown or empty server message.");
             emitter.onNext(createUnknownMessageResponse());

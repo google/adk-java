@@ -100,10 +100,12 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.LiveServerGoAway;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Transcription;
+import com.google.genai.types.VoiceActivity;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
@@ -118,6 +120,7 @@ import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
@@ -2438,6 +2441,56 @@ public final class RunnerTest {
     testSubscriber.await();
     testSubscriber.assertComplete();
     assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void runLive_controlMessages_reachCallerAndDoNotEndTheTurn() {
+    LiveServerGoAway goAway = LiveServerGoAway.builder().timeLeft(Duration.ofSeconds(30)).build();
+    VoiceActivity start = VoiceActivity.builder().voiceActivityType("ACTIVITY_START").build();
+    VoiceActivity end = VoiceActivity.builder().voiceActivityType("ACTIVITY_END").build();
+    Content content = createContent("The connection is still usable.");
+    TestLlm liveLlm =
+        createTestLlm(
+            LlmResponse.builder().voiceActivity(start).build(),
+            LlmResponse.builder().goAway(goAway).build(),
+            LlmResponse.builder().voiceActivity(end).build(),
+            LlmResponse.builder().content(content).turnComplete(true).build());
+    Runner liveRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(createTestAgentBuilder(liveLlm).executor(Runnable::run).build())
+                    .build())
+            .build();
+    Session liveSession = liveRunner.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue queue = new LiveRequestQueue();
+    try {
+      TestSubscriber<Event> subscriber =
+          liveRunner
+              .runLive(
+                  liveSession,
+                  queue,
+                  RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.BIDI).build())
+              .test();
+      subscriber.awaitDone(5, SECONDS).assertComplete().assertNoErrors().assertValueCount(4);
+
+      List<Event> events = subscriber.values();
+      assertThat(events.get(0).voiceActivity()).hasValue(start);
+      assertThat(events.get(1).goAway()).hasValue(goAway);
+      assertThat(events.get(2).voiceActivity()).hasValue(end);
+      for (Event event : events.subList(0, 3)) {
+        assertThat(event.content()).isEmpty();
+        assertThat(event.errorCode()).isEmpty();
+        assertThat(event.finalResponse()).isFalse();
+        assertThat(event.turnComplete().orElse(false)).isFalse();
+      }
+      assertThat(events.get(3).content()).hasValue(content);
+      assertThat(events.get(3).turnComplete()).hasValue(true);
+      assertThat(events.get(3).finalResponse()).isTrue();
+    } finally {
+      queue.close();
+    }
   }
 
   // Each runLive opens a new connection and sends it the session's stored history.
