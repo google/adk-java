@@ -33,6 +33,7 @@ import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.RunConfig;
+import com.google.adk.agents.RunConfig.StreamingMode;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.events.Event;
 import com.google.adk.runner.InMemoryRunner;
@@ -41,6 +42,7 @@ import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -52,6 +54,7 @@ import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
+import io.reactivex.rxjava3.processors.PublishProcessor;
 import io.reactivex.rxjava3.schedulers.TestScheduler;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
@@ -60,6 +63,7 @@ import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -309,6 +313,105 @@ public final class AgentTransferTest {
       RxJavaPlugins.setComputationSchedulerHandler(null);
       sender.shutdownNow();
     }
+  }
+
+  /** A streaming tool whose updates are sent by the test. */
+  public static final class StreamingSource {
+    final PublishProcessor<ImmutableMap<String, Object>> updates = PublishProcessor.create();
+    final AtomicBoolean started = new AtomicBoolean();
+
+    public Flowable<ImmutableMap<String, Object>> monitor() {
+      return updates.doOnSubscribe(unused -> started.set(true));
+    }
+  }
+
+  @Test
+  public void runLive_transfer_stopsStreamingToolsOfPreviousAgent() throws Exception {
+    StreamingSource source = new StreamingSource();
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                createLlmResponse(
+                    Content.fromParts(Part.fromFunctionCall("monitor", ImmutableMap.of()))),
+                createLlmResponse(Content.fromParts(createTransferCallPart("sub_agent_1")))),
+            Flowable.just(createTextLlmResponse("response1")).concatWith(Flowable.never()));
+    LlmAgent subAgent1 =
+        createTestAgentBuilder(testLlm).name("sub_agent_1").executor(Runnable::run).build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .executor(Runnable::run)
+            .tools(FunctionTool.create(source, "monitor"))
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(rootAgent);
+    Runner runner = getRunnerAndCreateSession(rootAgent, invocationContext.session());
+
+    TestSubscriber<Event> testSubscriber =
+        runner
+            .runLive(
+                invocationContext.session(),
+                new LiveRequestQueue(),
+                RunConfig.builder().setStreamingMode(StreamingMode.BIDI).build())
+            .test();
+    testSubscriber.awaitCount(5);
+    assertThat(simplifyEvents(testSubscriber.values())).contains("sub_agent_1: response1");
+    source.updates.onNext(ImmutableMap.of("update", "after transfer"));
+
+    assertThat(
+            testLlm.getLiveRequestHistory().stream()
+                .flatMap(request -> request.content().stream())
+                .map(Content::text)
+                .anyMatch(text -> text != null && text.startsWith("Function monitor returned:")))
+        .isFalse();
+    assertThat(source.started.get()).isTrue();
+    assertThat(source.updates.hasSubscribers()).isFalse();
+    testSubscriber.cancel();
+  }
+
+  @Test
+  public void runLive_streamingToolAndTransferInOneResponse_stopsTheTool() throws Exception {
+    StreamingSource source = new StreamingSource();
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                createLlmResponse(
+                    Content.fromParts(
+                        Part.fromFunctionCall("monitor", ImmutableMap.of()),
+                        createTransferCallPart("sub_agent_1")))),
+            Flowable.just(createTextLlmResponse("response1")).concatWith(Flowable.never()));
+    LlmAgent subAgent1 =
+        createTestAgentBuilder(testLlm).name("sub_agent_1").executor(Runnable::run).build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .executor(Runnable::run)
+            .tools(FunctionTool.create(source, "monitor"))
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(rootAgent);
+    Runner runner = getRunnerAndCreateSession(rootAgent, invocationContext.session());
+
+    TestSubscriber<Event> testSubscriber =
+        runner
+            .runLive(
+                invocationContext.session(),
+                new LiveRequestQueue(),
+                RunConfig.builder().setStreamingMode(StreamingMode.BIDI).build())
+            .test();
+    testSubscriber.awaitCount(3);
+    assertThat(simplifyEvents(testSubscriber.values())).contains("sub_agent_1: response1");
+    source.updates.onNext(ImmutableMap.of("update", "after transfer"));
+
+    assertThat(
+            testLlm.getLiveRequestHistory().stream()
+                .flatMap(request -> request.content().stream())
+                .map(Content::text)
+                .anyMatch(text -> text != null && text.startsWith("Function monitor returned:")))
+        .isFalse();
+    assertThat(source.started.get()).isTrue();
+    assertThat(source.updates.hasSubscribers()).isFalse();
+    testSubscriber.cancel();
   }
 
   @Test

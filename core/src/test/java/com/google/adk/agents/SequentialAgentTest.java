@@ -28,25 +28,38 @@ import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
+import com.google.adk.models.LlmRequest;
+import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestLlm;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
+import com.google.adk.tools.FunctionTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.processors.PublishProcessor;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -198,6 +211,227 @@ public final class SequentialAgentTest {
     assertThat(events.get(1).author()).isEqualTo("subAgent_live");
     assertThat(events.get(2).id()).isEqualTo("event3_live");
     assertThat(events.get(2).author()).isEqualTo("subAgent2_live");
+  }
+
+  @Test
+  public void runLive_stepCallsTaskCompleted_nextStepRuns() throws Exception {
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                    createLlmResponse(
+                        Content.fromParts(
+                            Part.fromFunctionCall("task_completed", ImmutableMap.of()))),
+                    // Sent after task_completed, so it is not read.
+                    createTextLlmResponse("after task_completed"))
+                // The connection stays open, so only task_completed can end the step.
+                .concatWith(Flowable.never()),
+            Flowable.just(createTextLlmResponse("from b")));
+    LlmAgent agentA = createTestAgentBuilder(testLlm).name("a").executor(Runnable::run).build();
+    LlmAgent agentB = createTestAgentBuilder(testLlm).name("b").executor(Runnable::run).build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder().name("seq").subAgents(agentA, agentB).build();
+    InMemoryRunner runner = new InMemoryRunner(sequentialAgent, "test_app");
+    Session session = runner.sessionService().createSession("test_app", "user").blockingGet();
+
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, new LiveRequestQueue(), RunConfig.builder().build()).test();
+
+    assertThat(testSubscriber.await(5, SECONDS)).isTrue();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values()))
+        .containsExactly(
+            "a: FunctionCall(name=task_completed, args={})",
+            "a: FunctionResponse(name=task_completed, response={result=Task completion signaled.})",
+            "b: from b")
+        .inOrder();
+    // Step a's connection gets the response before it closes.
+    List<LiveRequest> history = testLlm.getLiveRequestHistory();
+    int response = Iterables.indexOf(history, request -> request.content().isPresent());
+    assertThat(response).isAtLeast(0);
+    assertThat(response).isLessThan(Iterables.indexOf(history, LiveRequest::shouldClose));
+  }
+
+  /** A streaming tool whose updates are sent by the test. */
+  public static final class StreamingSource {
+    final PublishProcessor<ImmutableMap<String, Object>> updates = PublishProcessor.create();
+    final AtomicBoolean started = new AtomicBoolean();
+
+    public Flowable<ImmutableMap<String, Object>> monitor() {
+      return updates.doOnSubscribe(unused -> started.set(true));
+    }
+  }
+
+  @Test
+  public void runLive_stepCallsTaskCompleted_stopsItsStreamingTools() throws Exception {
+    StreamingSource source = new StreamingSource();
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                    createLlmResponse(
+                        Content.fromParts(Part.fromFunctionCall("monitor", ImmutableMap.of()))),
+                    createLlmResponse(
+                        Content.fromParts(
+                            Part.fromFunctionCall("task_completed", ImmutableMap.of()))))
+                .concatWith(Flowable.never()),
+            Flowable.just(createTextLlmResponse("from b")).concatWith(Flowable.never()));
+    LlmAgent agentA =
+        createTestAgentBuilder(testLlm)
+            .name("a")
+            .executor(Runnable::run)
+            .tools(FunctionTool.create(source, "monitor"))
+            .build();
+    LlmAgent agentB = createTestAgentBuilder(testLlm).name("b").executor(Runnable::run).build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder().name("seq").subAgents(agentA, agentB).build();
+    InMemoryRunner runner = new InMemoryRunner(sequentialAgent, "test_app");
+    Session session = runner.sessionService().createSession("test_app", "user").blockingGet();
+
+    TestSubscriber<Event> testSubscriber =
+        runner
+            .runLive(
+                session,
+                new LiveRequestQueue(),
+                RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.BIDI).build())
+            .test();
+    testSubscriber.awaitCount(5);
+    assertThat(simplifyEvents(testSubscriber.values())).contains("b: from b");
+    source.updates.onNext(ImmutableMap.of("update", "after task_completed"));
+
+    assertThat(
+            testLlm.getLiveRequestHistory().stream()
+                .flatMap(request -> request.content().stream())
+                .map(Content::text)
+                .anyMatch(text -> text != null && text.startsWith("Function monitor returned:")))
+        .isFalse();
+    assertThat(source.started.get()).isTrue();
+    assertThat(source.updates.hasSubscribers()).isFalse();
+    testSubscriber.cancel();
+  }
+
+  @Test
+  public void runLive_stepCallsStreamingToolAndTaskCompletedInOneResponse_stopsTheTool()
+      throws Exception {
+    StreamingSource source = new StreamingSource();
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                    createLlmResponse(
+                        Content.fromParts(
+                            Part.fromFunctionCall("monitor", ImmutableMap.of()),
+                            Part.fromFunctionCall("task_completed", ImmutableMap.of()))))
+                .concatWith(Flowable.never()),
+            Flowable.just(createTextLlmResponse("from b")).concatWith(Flowable.never()));
+    LlmAgent agentA =
+        createTestAgentBuilder(testLlm)
+            .name("a")
+            .executor(Runnable::run)
+            .tools(FunctionTool.create(source, "monitor"))
+            .build();
+    LlmAgent agentB = createTestAgentBuilder(testLlm).name("b").executor(Runnable::run).build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder().name("seq").subAgents(agentA, agentB).build();
+    InMemoryRunner runner = new InMemoryRunner(sequentialAgent, "test_app");
+    Session session = runner.sessionService().createSession("test_app", "user").blockingGet();
+
+    TestSubscriber<Event> testSubscriber =
+        runner
+            .runLive(
+                session,
+                new LiveRequestQueue(),
+                RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.BIDI).build())
+            .test();
+    testSubscriber.awaitCount(3);
+    assertThat(simplifyEvents(testSubscriber.values())).contains("b: from b");
+    source.updates.onNext(ImmutableMap.of("update", "after task_completed"));
+
+    assertThat(
+            testLlm.getLiveRequestHistory().stream()
+                .flatMap(request -> request.content().stream())
+                .map(Content::text)
+                .anyMatch(text -> text != null && text.startsWith("Function monitor returned:")))
+        .isFalse();
+    assertThat(source.started.get()).isTrue();
+    assertThat(source.updates.hasSubscribers()).isFalse();
+    testSubscriber.cancel();
+  }
+
+  @Test
+  public void runLive_offersTaskCompletedOnlyToStepsWithoutOne() throws Exception {
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(createTextLlmResponse("from a")),
+            Flowable.just(createTextLlmResponse("from b")));
+    BaseTool ownTool =
+        new BaseTool("task_completed", "The step's own tool.") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(FunctionDeclaration.builder().name(name()).build());
+          }
+        };
+    BaseToolset ownToolset =
+        new BaseToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.just(ownTool);
+          }
+
+          @Override
+          public void close() {}
+        };
+    LlmAgent agentA = createTestAgentBuilder(testLlm).name("a").executor(Runnable::run).build();
+    LlmAgent agentB =
+        createTestAgentBuilder(testLlm).name("b").executor(Runnable::run).tools(ownToolset).build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder().name("seq").subAgents(agentA, agentB).build();
+    InMemoryRunner runner = new InMemoryRunner(sequentialAgent, "test_app");
+    Session session = runner.sessionService().createSession("test_app", "user").blockingGet();
+    TestLlm soloLlm = createTestLlm(Flowable.just(createTextLlmResponse("from solo")));
+    LlmAgent solo = createTestAgentBuilder(soloLlm).name("solo").executor(Runnable::run).build();
+    InMemoryRunner soloRunner = new InMemoryRunner(solo, "test_app");
+    Session soloSession =
+        soloRunner.sessionService().createSession("test_app", "user").blockingGet();
+
+    var unused =
+        runner
+            .runLive(session, new LiveRequestQueue(), RunConfig.builder().build())
+            .toList()
+            .blockingGet();
+    var unusedSolo =
+        soloRunner
+            .runLive(soloSession, new LiveRequestQueue(), RunConfig.builder().build())
+            .toList()
+            .blockingGet();
+
+    LlmRequest stepA = testLlm.getRequests().get(0);
+    assertThat(stepA.tools()).containsKey("task_completed");
+    assertThat(systemInstruction(stepA)).contains("call the task_completed function");
+    // A step's own task_completed tool wins, even one from a toolset.
+    LlmRequest stepB = testLlm.getRequests().get(1);
+    assertThat(stepB.tools().get("task_completed")).isSameInstanceAs(ownTool);
+    assertThat(systemInstruction(stepB)).doesNotContain("call the task_completed function");
+    assertThat(soloLlm.getLastRequest().tools()).doesNotContainKey("task_completed");
+  }
+
+  @Test
+  public void runAsync_stepIsNotOfferedTaskCompleted() {
+    TestLlm testLlm = createTestLlm(Flowable.just(createTextLlmResponse("from a")));
+    LlmAgent agentA = createTestAgentBuilder(testLlm).name("a").build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder().name("seq").subAgents(agentA).build();
+    InMemoryRunner runner = new InMemoryRunner(sequentialAgent, "test_app");
+    Session session = runner.sessionService().createSession("test_app", "user").blockingGet();
+
+    var unused =
+        runner
+            .runAsync(session.userId(), session.id(), Content.fromParts(Part.fromText("hi")))
+            .toList()
+            .blockingGet();
+
+    assertThat(testLlm.getLastRequest().tools()).doesNotContainKey("task_completed");
+  }
+
+  private static String systemInstruction(LlmRequest request) {
+    return request.liveConnectConfig().systemInstruction().map(Content::text).orElse("");
   }
 
   @Test

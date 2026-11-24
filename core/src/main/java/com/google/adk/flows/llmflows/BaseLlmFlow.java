@@ -79,8 +79,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
   private static final Logger logger = LoggerFactory.getLogger(BaseLlmFlow.class);
 
   /**
-   * Maximum wait for the last function response to finish sending before closing a live connection:
-   * the 1 second ADK Python always waits ({@code DEFAULT_TRANSFER_AGENT_DELAY}).
+   * Maximum wait for the last function response to finish sending before closing a live connection.
+   * Matches the 1 second ADK Python always waits, {@code DEFAULT_TRANSFER_AGENT_DELAY} after a
+   * transfer and {@code DEFAULT_TASK_COMPLETION_DELAY} after task_completed.
    */
   private static final Duration CLOSING_ANSWER_TIMEOUT = Duration.ofSeconds(1);
 
@@ -170,6 +171,17 @@ public abstract class BaseLlmFlow implements BaseFlow {
               "Object in tools list is not of a supported type: "
                   + toolOrToolset.getClass().getName());
         }
+      }
+
+      if (TaskCompletedTool.offeredTo(context, agent)) {
+        processors.add((builder, ctx) -> {
+          // A step's own task_completed tool wins, even one from a toolset.
+          if (builder.build().tools().containsKey(TaskCompletedTool.NAME)) {
+            return Completable.complete();
+          }
+          builder.appendInstructions(ImmutableList.of(TaskCompletedTool.INSTRUCTION));
+          return new TaskCompletedTool().processLlmRequest(builder, ctx);
+        });
       }
 
       LlmRequest.Builder builder = request.toBuilder();
@@ -605,6 +617,19 @@ public abstract class BaseLlmFlow implements BaseFlow {
   }
 
   /**
+   * Stops the streaming tools an agent started so they no longer send to the live request queue
+   * read by the next agent's model, as in ADK Python.
+   */
+  private static void stopStreamingTools(InvocationContext context) {
+    for (ActiveStreamingTool tool : context.activeStreamingTools().values()) {
+      Disposable task = tool.task();
+      if (task != null) {
+        task.dispose();
+      }
+    }
+  }
+
+  /**
    * Executes the LLM flow in streaming mode.
    *
    * <p>Handles sending history and live requests to the LLM, receiving responses, processing them,
@@ -729,8 +754,17 @@ public abstract class BaseLlmFlow implements BaseFlow {
                             connection.close();
                           }));
 
+          // Any live agent's own task_completed tool ends its live run, not only when running as a
+          // SequentialAgent step; offeredTo limits only which agents receive the tool. ADK Python
+          // does the same.
+          Predicate<Event> completesTask =
+              event ->
+                  event.functionResponses().stream()
+                      .anyMatch(
+                          response -> response.name().equals(Optional.of(TaskCompletedTool.NAME)));
           // Ends this connection; what it sends afterwards is not read, as in ADK Python 2.x.
-          Predicate<Event> endsConnection = event -> event.actions().transferToAgent().isPresent();
+          Predicate<Event> endsConnection =
+              event -> event.actions().transferToAgent().isPresent() || completesTask.test(event);
 
           Event.Builder liveEventBuilderTemplate =
               Event.builder()
@@ -759,8 +793,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
                   // Before the transfer below, so a sub-agent's events skip this agent's handling.
                   .doOnNext(event -> {
                     ImmutableList<FunctionResponse> functionResponses = event.functionResponses();
+                    boolean endsThisConnection = endsConnection.test(event);
+                    if (endsThisConnection) {
+                      stopStreamingTools(invocationContext);
+                    }
                     if (!functionResponses.isEmpty()) {
-                      if (event.actions().transferToAgent().isPresent()) {
+                      if (endsThisConnection) {
                         closingAnswer.set(event.content().get());
                       }
                       invocationContext.liveRequestQueue().get().content(event.content().get());
@@ -791,6 +829,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                     }
                                   }));
                       events = Flowable.concat(events, nextAgentEvents);
+                    } else if (completesTask.test(event)) {
+                      // The step ends here, so the next one starts on a new connection.
+                      events = events.concatWith(closeAfterAnswer.apply(event));
                     }
                     return events;
                   });
