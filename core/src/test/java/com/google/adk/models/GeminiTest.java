@@ -33,11 +33,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Blob;
+import com.google.genai.types.BlockedReason;
 import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponse;
+import com.google.genai.types.GenerateContentResponsePromptFeedback;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
@@ -530,6 +532,152 @@ public final class GeminiTest {
     assertThat(Iterables.getLast(events).content().get().text()).isEqualTo("{\"guests\":2}");
   }
 
+  @Test
+  public void runner_sseTurnWithOnlyStreamTerminator_emitsOneEventWithUsage() {
+    GenerateContentResponseUsageMetadata usage = createUsageMetadata(120, 5, 125);
+
+    ImmutableList<Event> events =
+        runSseTurn(
+            toResponseWithText("", FinishReason.Known.STOP).toBuilder()
+                .usageMetadata(usage)
+                .build());
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).usageMetadata()).hasValue(usage);
+    assertThat(events.get(0).finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.STOP);
+    assertThat(events.get(0).errorCode()).isEmpty();
+  }
+
+  @Test
+  public void runner_sseTurnWithStreamTerminatorThenUsageOnlyChunk_emitsOneEventWithUsage() {
+    GenerateContentResponseUsageMetadata usage = createUsageMetadata(120, 5, 125);
+
+    ImmutableList<Event> events =
+        runSseTurn(
+            toResponseWithText("", FinishReason.Known.STOP),
+            GenerateContentResponse.builder().usageMetadata(usage).build());
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).usageMetadata()).hasValue(usage);
+    assertThat(events.get(0).finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.STOP);
+    assertThat(events.get(0).errorCode()).isEmpty();
+  }
+
+  @Test
+  public void runner_sseTurnWithStreamTerminatorThenStopWithoutParts_emitsOneEventWithUsage() {
+    GenerateContentResponseUsageMetadata usage = createUsageMetadata(120, 5, 125);
+    GenerateContentResponse terminator =
+        toResponse(
+            Candidate.builder()
+                .content(Content.builder().role("model").parts(Part.fromText("")).build())
+                .build());
+    GenerateContentResponse stopWithoutParts =
+        toResponse(
+                Candidate.builder().finishReason(new FinishReason(FinishReason.Known.STOP)).build())
+            .toBuilder()
+            .usageMetadata(usage)
+            .build();
+
+    ImmutableList<Event> events = runSseTurn(terminator, stopWithoutParts);
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).usageMetadata()).hasValue(usage);
+    assertThat(events.get(0).finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.STOP);
+    assertThat(events.get(0).errorCode()).isEmpty();
+  }
+
+  @Test
+  public void runner_sseTurnWithNamelessStreamedCallThenMalformedCall_endsWithTheError() {
+    Part namelessCallPart =
+        functionCallPart(
+            FunctionCall.builder()
+                .partialArgs(PartialArg.builder().jsonPath("$.x").stringValue("1").build())
+                .build());
+    GenerateContentResponse namelessCall =
+        toResponse(
+            Candidate.builder()
+                .content(Content.builder().role("model").parts(namelessCallPart).build())
+                .build());
+    GenerateContentResponse malformedCall =
+        toResponse(
+            Candidate.builder()
+                .finishReason(new FinishReason(FinishReason.Known.MALFORMED_FUNCTION_CALL))
+                .finishMessage("Malformed call.")
+                .build());
+
+    Event last = Iterables.getLast(runSseTurn(namelessCall, malformedCall));
+
+    assertThat(last.functionCalls()).isEmpty();
+    assertThat(last.errorCode().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.MALFORMED_FUNCTION_CALL);
+    assertThat(last.errorMessage()).hasValue("Malformed call.");
+  }
+
+  @Test
+  public void runner_sseTurnWithSafetyWithoutParts_emitsOneErrorEvent() {
+    GenerateContentResponse blocked =
+        toResponse(
+            Candidate.builder()
+                .finishReason(new FinishReason(FinishReason.Known.SAFETY))
+                .finishMessage("Response blocked.")
+                .build());
+
+    ImmutableList<Event> events = runSseTurn(blocked);
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).errorCode().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.SAFETY);
+    assertThat(events.get(0).errorMessage()).hasValue("Response blocked.");
+  }
+
+  @Test
+  public void runner_sseTurnWithTextThenUsageOnlyChunk_endsWithStopAndUsage() {
+    GenerateContentResponseUsageMetadata usage = createUsageMetadata(5, 2, 7);
+
+    Event last =
+        Iterables.getLast(
+            runSseTurn(
+                toResponseWithText("Done.", FinishReason.Known.STOP),
+                GenerateContentResponse.builder().usageMetadata(usage).build()));
+
+    assertThat(last.partial().orElse(false)).isFalse();
+    assertThat(last.content().get().text()).isEqualTo("Done.");
+    assertThat(last.finishReason().map(FinishReason::knownEnum)).hasValue(FinishReason.Known.STOP);
+    assertThat(last.errorCode()).isEmpty();
+    assertThat(last.usageMetadata()).hasValue(usage);
+  }
+
+  /** Runs one SSE turn of an agent whose Gemini model streams {@code chunks}. */
+  private static ImmutableList<Event> runSseTurn(GenerateContentResponse... chunks) {
+    BaseLlm streamingGemini =
+        new BaseLlm("gemini-2.5-flash") {
+          @Override
+          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+            return Gemini.processRawResponses(Flowable.fromArray(chunks));
+          }
+
+          @Override
+          public BaseLlmConnection connect(LlmRequest llmRequest) {
+            throw new UnsupportedOperationException();
+          }
+        };
+    InMemoryRunner runner =
+        new InMemoryRunner(
+            LlmAgent.builder().name("agent").model(streamingGemini).build(), "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+    return ImmutableList.copyOf(
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                Content.fromParts(Part.fromText("hello")),
+                RunConfig.builder().streamingMode(RunConfig.StreamingMode.SSE).build())
+            .blockingIterable());
+  }
+
   /** Streams one call whose arguments are {@code numbers}, one partial arg each. */
   private ImmutableMap<String, Object> streamedArgs(ImmutableMap<String, Double> numbers) {
     ImmutableList.Builder<PartialArg> partialArgs = ImmutableList.builder();
@@ -975,6 +1123,126 @@ public final class GeminiTest {
   }
 
   @Test
+  public void processRawResponses_finishReasonNotStopWithoutContent_emitsOneFinal() {
+    GenerateContentResponse blocked =
+        GenerateContentResponse.builder()
+            .candidates(
+                Candidate.builder()
+                    .finishReason(new FinishReason(FinishReason.Known.SAFETY))
+                    .build())
+            .build();
+
+    Flowable<LlmResponse> llmResponses = Gemini.processRawResponses(Flowable.just(blocked));
+
+    assertLlmResponses(
+        llmResponses, isFinalResponseWithoutContentWithErrorCode(FinishReason.Known.SAFETY));
+  }
+
+  @Test
+  public void processRawResponses_emptyChunkBeforeText_emitsNothingForIt() {
+    GenerateContentResponse empty =
+        GenerateContentResponse.builder()
+            .candidates(
+                Candidate.builder()
+                    .content(Content.builder().parts(ImmutableList.of()).build())
+                    .build())
+            .build();
+
+    Flowable<LlmResponse> llmResponses =
+        Gemini.processRawResponses(
+            Flowable.just(empty, toResponseWithText("Hi", FinishReason.Known.STOP)));
+
+    assertLlmResponses(llmResponses, isPartialTextResponse("Hi"), isFinalTextResponse("Hi"));
+  }
+
+  @Test
+  public void processRawResponses_maxTokensThenChunkWithoutCandidates_finalHasOnlyTheErrorCode() {
+    GenerateContentResponseUsageMetadata usage = createUsageMetadata(5, 7, 12);
+
+    LlmResponse aggregated =
+        aggregateFinalResponse(
+            toResponseWithText("Cut sho", FinishReason.Known.MAX_TOKENS),
+            GenerateContentResponse.builder().usageMetadata(usage).build());
+
+    assertThat(aggregated.errorCode().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.MAX_TOKENS);
+    assertThat(aggregated.errorMessage()).isEmpty();
+    assertThat(aggregated.usageMetadata()).hasValue(usage);
+  }
+
+  @Test
+  public void processRawResponses_safetyThenChunkWithoutCandidates_keepsTheFinishMessage() {
+    GenerateContentResponseUsageMetadata usage = createUsageMetadata(30, 10, 40);
+
+    LlmResponse aggregated =
+        aggregateFinalResponse(
+            toResponse(
+                Candidate.builder()
+                    .finishReason(new FinishReason(FinishReason.Known.SAFETY))
+                    .finishMessage("Response blocked.")
+                    .build()),
+            GenerateContentResponse.builder().usageMetadata(usage).build());
+
+    assertThat(aggregated.errorCode().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.SAFETY);
+    assertThat(aggregated.errorMessage()).hasValue("Response blocked.");
+    assertThat(aggregated.usageMetadata()).hasValue(usage);
+  }
+
+  @Test
+  public void processRawResponses_maxTokensWithMessageThenChunkWithoutCandidates_keepsIt() {
+    LlmResponse aggregated =
+        aggregateFinalResponse(
+            toResponse(
+                Candidate.builder()
+                    .content(Content.builder().parts(Part.fromText("Cut sho")).build())
+                    .finishReason(new FinishReason(FinishReason.Known.MAX_TOKENS))
+                    .finishMessage("Output limit reached.")
+                    .build()),
+            GenerateContentResponse.builder().usageMetadata(createUsageMetadata(5, 7, 12)).build());
+
+    assertThat(aggregated.errorMessage()).hasValue("Output limit reached.");
+  }
+
+  @Test
+  public void processRawResponses_maxTokensWithMessageThenCandidateWithoutReason_keepsIt() {
+    LlmResponse aggregated =
+        aggregateFinalResponse(
+            toResponse(
+                Candidate.builder()
+                    .content(Content.builder().parts(Part.fromText("Cut sho")).build())
+                    .finishReason(new FinishReason(FinishReason.Known.MAX_TOKENS))
+                    .finishMessage("Output limit reached.")
+                    .build()),
+            toResponse(Part.fromText("")),
+            GenerateContentResponse.builder().usageMetadata(createUsageMetadata(5, 7, 12)).build());
+
+    assertThat(aggregated.errorMessage()).hasValue("Output limit reached.");
+  }
+
+  @Test
+  public void processRawResponses_promptBlocked_finalHasBlockReason() {
+    GenerateContentResponseUsageMetadata usage = createUsageMetadata(60, 0, 60);
+    GenerateContentResponse blocked =
+        GenerateContentResponse.builder()
+            .promptFeedback(
+                GenerateContentResponsePromptFeedback.builder()
+                    .blockReason(new BlockedReason(BlockedReason.Known.SAFETY))
+                    .blockReasonMessage("Prompt blocked.")
+                    .build())
+            .usageMetadata(usage)
+            .build();
+
+    LlmResponse aggregated = aggregateFinalResponse(blocked);
+
+    assertThat(aggregated.content()).isEmpty();
+    assertThat(aggregated.errorCode().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.SAFETY);
+    assertThat(aggregated.errorMessage()).hasValue("Prompt blocked.");
+    assertThat(aggregated.usageMetadata()).hasValue(usage);
+  }
+
+  @Test
   public void processRawResponses_finishReasonNotStop_emitsFinalWithErrorCode() {
     Flowable<GenerateContentResponse> rawResponses =
         Flowable.just(
@@ -1352,7 +1620,6 @@ public final class GeminiTest {
 
     assertLlmResponses(
         llmResponses,
-        isEmptyResponse(),
         isPartialSignatureResponse("sig"),
         isFinalThoughtResponseWithUsageMetadataAndSignature("", metadata, "sig"));
   }
@@ -2160,6 +2427,16 @@ public final class GeminiTest {
       assertThat(response.partial().orElse(false)).isFalse();
       assertThat(GeminiUtil.getPart0FromLlmResponse(response).flatMap(Part::text).orElse(""))
           .isEmpty();
+      return true;
+    };
+  }
+
+  private static Predicate<LlmResponse> isFinalResponseWithoutContentWithErrorCode(
+      FinishReason.Known expectedErrorCode) {
+    return response -> {
+      assertThat(response.partial().orElse(false)).isFalse();
+      assertThat(response.content()).isEmpty();
+      assertThat(response.errorCode().map(FinishReason::knownEnum)).hasValue(expectedErrorCode);
       return true;
     };
   }

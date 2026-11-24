@@ -25,7 +25,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.Client;
 import com.google.genai.ResponseStream;
-import com.google.genai.types.Candidate;
 import com.google.genai.types.ClientOptions;
 import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
@@ -38,7 +37,6 @@ import java.time.Duration;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -494,7 +492,8 @@ public class Gemini extends BaseLlm {
   /** Feeds one stream's raw responses to a {@link StreamingResponseAggregator}. */
   private static final class StreamState {
     private final StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
-    private @Nullable GenerateContentResponse lastRawResponse = null;
+    // Kept from the error chunk, so a later chunk without candidates cannot drop it.
+    private @Nullable String finishMessage = null;
 
     private Flowable<LlmResponse> process(
         Flowable<GenerateContentResponse> rawResponses, @Nullable CacheMetadata cacheMetadata) {
@@ -508,7 +507,11 @@ public class Gemini extends BaseLlm {
     }
 
     private Flowable<LlmResponse> processRawResponse(GenerateContentResponse rawResponse) {
-      lastRawResponse = rawResponse;
+      rawResponse
+          .candidates()
+          .flatMap(candidates -> candidates.stream().findFirst())
+          .filter(candidate -> candidate.finishReason().isPresent())
+          .ifPresent(candidate -> finishMessage = candidate.finishMessage().orElse(null));
 
       LlmResponse response = LlmResponse.create(rawResponse);
       // Model output and tool arguments must not be logged, so only the chunk's shape is.
@@ -516,53 +519,16 @@ public class Gemini extends BaseLlm {
           "Streaming chunk: {} parts, finish reason {}",
           response.content().flatMap(Content::parts).map(List::size).orElse(0),
           response.finishReason().map(Object::toString).orElse("none"));
-      Optional<LlmResponse> partial = aggregator.processResponse(response);
-      if (partial.isPresent()) {
-        return Flowable.just(partial.get());
-      }
-
-      // If the chunk has no text or function calls (e.g. metadata-only or empty), we suppress it
-      // during streaming so it doesn't emit an empty partial response.
-      // Exception: If this is a standalone empty chunk in an otherwise completely empty stream
-      // (and not a STOP chunk), we emit it directly as a non-partial empty response, unless more
-      // of the stream follows it.
-      if (!StreamingResponseAggregator.isStop(response)
-          && !continuesStream(rawResponse)
-          && !aggregator.hasAccumulatedContent()) {
-        return Flowable.just(response.toBuilder().partial(null).build());
-      }
-
-      return Flowable.empty();
+      // A chunk without content emits nothing; aggregate() keeps its usage and finish reason.
+      return Flowable.fromOptional(aggregator.processResponse(response));
     }
 
-    /** Puts the candidate's finish message on an aggregated response with a non-STOP reason. */
+    /** Puts the finish message on an aggregated response whose finish reason is an error. */
     private LlmResponse withFinishMessage(LlmResponse response) {
-      if (lastRawResponse == null
-          || response.finishReason().isEmpty()
-          || StreamingResponseAggregator.isStop(response)) {
+      if (finishMessage == null || response.errorCode().isEmpty()) {
         return response;
       }
-      return lastRawResponse
-          .candidates()
-          .filter(candidates -> !candidates.isEmpty())
-          .map(candidates -> candidates.get(0))
-          .flatMap(Candidate::finishMessage)
-          .map(message -> response.toBuilder().errorMessage(message).build())
-          .orElse(response);
-    }
-
-    /**
-     * Returns whether more of the stream follows this chunk: it carries a continuation token but no
-     * finish reason, like a pause whose finish reason the SDK clears before resuming it.
-     */
-    private static boolean continuesStream(GenerateContentResponse response) {
-      return response
-          .candidates()
-          .flatMap(candidates -> candidates.stream().findFirst())
-          .filter(candidate -> candidate.finishReason().isEmpty())
-          .flatMap(Candidate::continuationToken)
-          .filter(token -> token.length > 0)
-          .isPresent();
+      return response.toBuilder().errorMessage(finishMessage).build();
     }
   }
 }

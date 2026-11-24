@@ -21,6 +21,8 @@ import com.google.common.primitives.Ints;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.GroundingMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import java.util.ArrayList;
@@ -72,6 +74,12 @@ final class StreamingResponseAggregator {
 
   private @Nullable LlmResponse lastResponse = null;
 
+  // Latest value from any chunk: providers may send these before the last chunk.
+  private @Nullable GenerateContentResponseUsageMetadata usageMetadata = null;
+  private @Nullable FinishReason finishReason = null;
+  private @Nullable GroundingMetadata groundingMetadata = null;
+  private @Nullable Content terminatorContent = null;
+
   // The streamed function call being assembled from partialArgs chunks.
   private @Nullable String currentFcName = null;
   private Map<String, Object> currentFcArgs = new LinkedHashMap<>();
@@ -84,7 +92,14 @@ final class StreamingResponseAggregator {
    */
   Optional<LlmResponse> processResponse(LlmResponse response) {
     lastResponse = response;
+    response.usageMetadata().ifPresent(usage -> usageMetadata = usage);
+    response.finishReason().ifPresent(reason -> finishReason = reason);
+    response.groundingMetadata().ifPresent(grounding -> groundingMetadata = grounding);
     List<Part> parts = response.content().flatMap(Content::parts).orElse(ImmutableList.of());
+    // Only terminators: a dropped part, such as a nameless function call, must not reach the final.
+    if (parts.stream().allMatch(StreamingResponseAggregator::isStreamTerminator)) {
+      response.content().ifPresent(content -> terminatorContent = content);
+    }
     List<Part> partsWithIds = ensureFunctionCallIds(parts);
 
     if (!accumulateParts(partsWithIds)) {
@@ -97,17 +112,11 @@ final class StreamingResponseAggregator {
   }
 
   /**
-   * Returns whether any text or part has been accumulated so far. A streamed function call that is
-   * still in progress does not count until it completes.
-   */
-  boolean hasAccumulatedContent() {
-    return !accumulatedSequence.isEmpty() || !currentTextBuffer.isEmpty();
-  }
-
-  /**
-   * Returns the final, non-partial response with every accumulated part, built on the last chunk's
-   * metadata, with a non-STOP finish reason set as the error code. Returns empty if no chunk was
-   * processed, or if nothing was accumulated and the last chunk has no finish reason.
+   * Returns the final, non-partial response: every accumulated part, or else the latest content
+   * made only of stream terminators, with the latest usage, finish reason and grounding metadata;
+   * other fields come from the last chunk. Once a finish reason is seen, the error code is that
+   * reason unless it is STOP, and the error message is cleared. Returns empty only if no chunk was
+   * processed.
    */
   Optional<LlmResponse> aggregate() {
     if (lastResponse == null) {
@@ -118,24 +127,27 @@ final class StreamingResponseAggregator {
     // Flush any in-progress streamed function call whose stream ended before completing.
     flushFunctionCallToSequence();
 
-    boolean hasFinishReason = lastResponse.finishReason().isPresent();
-    if (accumulatedSequence.isEmpty() && !hasFinishReason) {
-      return Optional.empty();
-    }
-
-    LlmResponse.Builder finalResponseBuilder = lastResponse.toBuilder().partial(null);
-    if (hasFinishReason && !isStop(lastResponse)) {
-      finalResponseBuilder.errorCode(lastResponse.finishReason().get());
-    }
-
-    if (accumulatedSequence.isEmpty()) {
-      return Optional.of(finalResponseBuilder.build());
+    LlmResponse.Builder finalResponseBuilder =
+        lastResponse.toBuilder()
+            .partial(null)
+            .usageMetadata(usageMetadata)
+            .finishReason(finishReason)
+            .groundingMetadata(groundingMetadata);
+    if (finishReason != null) {
+      // Overrides the placeholder error a trailing chunk without candidates carries.
+      finalResponseBuilder.errorCode(isStop(finishReason) ? null : finishReason).errorMessage(null);
     }
 
     return Optional.of(
         finalResponseBuilder
             .content(
-                Content.builder().role("model").parts(new ArrayList<>(accumulatedSequence)).build())
+                accumulatedSequence.isEmpty()
+                    // Without content or an error code, BaseLlmFlow drops the final and its usage.
+                    ? terminatorContent
+                    : Content.builder()
+                        .role("model")
+                        .parts(new ArrayList<>(accumulatedSequence))
+                        .build())
             .build());
   }
 
@@ -451,11 +463,7 @@ final class StreamingResponseAggregator {
     }
   }
 
-  /** Checks whether the response finish reason indicates the stream has finished with STOP. */
-  static boolean isStop(LlmResponse response) {
-    return response
-        .finishReason()
-        .map(reason -> reason.knownEnum() == FinishReason.Known.STOP)
-        .orElse(false);
+  private static boolean isStop(FinishReason reason) {
+    return reason.knownEnum() == FinishReason.Known.STOP;
   }
 }

@@ -23,7 +23,9 @@ import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.GroundingMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import java.util.List;
@@ -60,7 +62,6 @@ public final class StreamingResponseAggregatorTest {
 
     assertThat(aggregator.processResponse(LlmResponse.builder().usageMetadata(usage(5)).build()))
         .isEmpty();
-    assertThat(aggregator.hasAccumulatedContent()).isFalse();
   }
 
   @Test
@@ -323,45 +324,20 @@ public final class StreamingResponseAggregatorTest {
   }
 
   @Test
-  public void hasAccumulatedContent_textChunk_returnsTrue() {
-    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
-
-    process(aggregator, chunk(Part.fromText("Hello")));
-
-    assertThat(aggregator.hasAccumulatedContent()).isTrue();
-  }
-
-  @Test
-  public void hasAccumulatedContent_inProgressStreamedCall_returnsFalse() {
-    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
-
-    process(aggregator, chunk(streamedCallStart("tool", "$.x", "1")));
-
-    assertThat(aggregator.hasAccumulatedContent()).isFalse();
-  }
-
-  @Test
-  public void hasAccumulatedContent_completedStreamedCall_returnsTrue() {
-    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
-    process(aggregator, chunk(streamedCallStart("tool", "$.x", "1")));
-
-    process(
-        aggregator, chunk(functionCallPart(FunctionCall.builder().willContinue(false).build())));
-
-    assertThat(aggregator.hasAccumulatedContent()).isTrue();
-  }
-
-  @Test
   public void aggregate_noChunks_returnsEmpty() {
     assertThat(new StreamingResponseAggregator().aggregate()).isEmpty();
   }
 
   @Test
-  public void aggregate_noContentAndNoFinishReason_returnsEmpty() {
+  public void aggregate_noContentAndNoFinishReason_returnsFinalWithoutContent() {
     StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
-    process(aggregator, LlmResponse.builder().usageMetadata(usage(5)).build());
+    GenerateContentResponseUsageMetadata usage = usage(5);
+    process(aggregator, LlmResponse.builder().usageMetadata(usage).build());
 
-    assertThat(aggregator.aggregate()).isEmpty();
+    LlmResponse aggregated = aggregator.aggregate().get();
+
+    assertThat(aggregated.content()).isEmpty();
+    assertThat(aggregated.usageMetadata()).hasValue(usage);
   }
 
   @Test
@@ -374,6 +350,55 @@ public final class StreamingResponseAggregatorTest {
     assertThat(aggregated.content()).isEmpty();
     assertThat(aggregated.finishReason()).hasValue(STOP);
     assertThat(aggregated.errorCode()).isEmpty();
+  }
+
+  @Test
+  public void aggregate_onlyStreamTerminator_keepsTheChunkContent() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    LlmResponse terminatorOnly = chunk(Part.fromText("")).toBuilder().finishReason(STOP).build();
+    process(aggregator, terminatorOnly);
+
+    LlmResponse aggregated = aggregator.aggregate().get();
+
+    assertThat(aggregated.content()).isEqualTo(terminatorOnly.content());
+    assertThat(aggregated.finishReason()).hasValue(STOP);
+  }
+
+  @Test
+  public void aggregate_streamTerminatorThenUsageOnlyChunk_keepsTheTerminatorContent() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    LlmResponse terminator = chunk(Part.fromText("")).toBuilder().finishReason(STOP).build();
+    process(aggregator, terminator, trailingUsageChunk(usage(9)));
+
+    LlmResponse aggregated = aggregator.aggregate().get();
+
+    assertThat(aggregated.content()).isEqualTo(terminator.content());
+    assertThat(aggregated.usageMetadata()).hasValue(usage(9));
+  }
+
+  @Test
+  public void aggregate_namelessStreamedCallChunk_returnsFinalWithoutContent() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.x").stringValue("1").build())
+                    .build())));
+
+    assertThat(aggregator.aggregate().get().content()).isEmpty();
+  }
+
+  @Test
+  public void aggregate_namelessEndMarkerThenStop_returnsFinalWithoutContent() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(functionCallPart(FunctionCall.builder().willContinue(false).build())),
+        LlmResponse.builder().finishReason(STOP).build());
+
+    assertThat(aggregator.aggregate().get().content()).isEmpty();
   }
 
   @Test
@@ -422,6 +447,70 @@ public final class StreamingResponseAggregatorTest {
     assertThat(aggregated.errorCode()).hasValue(safety);
   }
 
+  @Test
+  public void aggregate_usageOnEarlierChunk_isKept() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    GenerateContentResponseUsageMetadata usage = usage(15);
+    process(
+        aggregator,
+        chunk(Part.fromText("Hello ")).toBuilder().usageMetadata(usage).build(),
+        chunk(Part.fromText("World!")).toBuilder().finishReason(STOP).build());
+
+    LlmResponse aggregated = aggregator.aggregate().get();
+
+    assertThat(aggregated.usageMetadata()).hasValue(usage);
+    assertThat(aggregated.finishReason()).hasValue(STOP);
+  }
+
+  @Test
+  public void aggregate_trailingUsageOnlyChunk_keepsFinishReason() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    GenerateContentResponseUsageMetadata usage = usage(42);
+    process(
+        aggregator,
+        chunk(Part.fromText("Hi")),
+        chunk(Part.fromText("!")).toBuilder().finishReason(STOP).build(),
+        trailingUsageChunk(usage));
+
+    LlmResponse aggregated = aggregator.aggregate().get();
+
+    assertThat(getOnlyElement(aggregated.content().get().parts().get()).text()).hasValue("Hi!");
+    assertThat(aggregated.finishReason()).hasValue(STOP);
+    assertThat(aggregated.usageMetadata()).hasValue(usage);
+    assertThat(aggregated.errorCode()).isEmpty();
+    assertThat(aggregated.errorMessage()).isEmpty();
+  }
+
+  @Test
+  public void aggregate_nonStopFinishReasonBeforeTrailingChunk_setsErrorCode() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    FinishReason maxTokens = new FinishReason(FinishReason.Known.MAX_TOKENS);
+    process(
+        aggregator,
+        chunk(Part.fromText("Cut sho")).toBuilder().finishReason(maxTokens).build(),
+        trailingUsageChunk(usage(7)));
+
+    LlmResponse aggregated = aggregator.aggregate().get();
+
+    assertThat(aggregated.finishReason()).hasValue(maxTokens);
+    assertThat(aggregated.errorCode()).hasValue(maxTokens);
+    assertThat(aggregated.errorMessage()).isEmpty();
+  }
+
+  @Test
+  public void aggregate_groundingOnEarlierChunk_isKept() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    GroundingMetadata grounding = GroundingMetadata.builder().webSearchQueries("weather").build();
+    process(
+        aggregator,
+        chunk(Part.fromText("Hello ")).toBuilder().groundingMetadata(grounding).build(),
+        chunk(Part.fromText("World!")).toBuilder().finishReason(STOP).build());
+
+    LlmResponse aggregated = aggregator.aggregate().get();
+
+    assertThat(aggregated.groundingMetadata()).hasValue(grounding);
+  }
+
   private static void process(StreamingResponseAggregator aggregator, LlmResponse... chunks) {
     for (LlmResponse chunk : chunks) {
       var unused = aggregator.processResponse(chunk);
@@ -461,5 +550,10 @@ public final class StreamingResponseAggregatorTest {
 
   private static GenerateContentResponseUsageMetadata usage(int totalTokenCount) {
     return GenerateContentResponseUsageMetadata.builder().totalTokenCount(totalTokenCount).build();
+  }
+
+  /** Returns what {@link LlmResponse#create} makes of a usage-only chunk without candidates. */
+  private static LlmResponse trailingUsageChunk(GenerateContentResponseUsageMetadata usage) {
+    return LlmResponse.create(GenerateContentResponse.builder().usageMetadata(usage).build());
   }
 }
