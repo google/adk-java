@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import org.jspecify.annotations.Nullable;
 
@@ -140,6 +141,8 @@ public final class ParallelWorkers {
       // Written by the item runs, which may finish on different threads.
       private final AtomicReferenceArray<Object> outputs;
       private final AtomicReferenceArray<DynamicNodeFailedException> failures;
+      // The first item error that is not a node's failure, such as an Error.
+      private final AtomicReference<@Nullable Throwable> fatal = new AtomicReference<>();
       private final AtomicBoolean interrupted = new AtomicBoolean();
 
       FanOut(Context context, List<?> items) {
@@ -197,14 +200,22 @@ public final class ParallelWorkers {
           interrupted.set(true);
           return Single.just(false);
         }
-        return Single.error(error);
+        // flatMapSingle passes an error on before it cancels the other items, so this goes through
+        // takeUntil, which cancels them first.
+        fatal.compareAndSet(null, error);
+        return Single.just(true);
       }
 
       /**
-       * Fails with the lowest-index failure, or else waits with the items that asked for input, or
-       * else outputs the items' results. Each failure's error event stays at its item.
+       * Fails with an item's error, or else with the lowest-index failure, or else waits with the
+       * items that asked for input, or else outputs the items' results. Each failure's error event
+       * stays at its item.
        */
       private Flowable<?> finish() {
+        Throwable error = fatal.get();
+        if (error != null) {
+          return Flowable.error(error);
+        }
         List<@Nullable Object> results = new ArrayList<>(items.size());
         for (int i = 0; i < items.size(); i++) {
           DynamicNodeFailedException failure = failures.get(i);

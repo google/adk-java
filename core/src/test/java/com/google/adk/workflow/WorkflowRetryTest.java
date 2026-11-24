@@ -49,6 +49,7 @@ import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.genai.types.FinishReason;
 import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
@@ -226,21 +227,39 @@ public final class WorkflowRetryTest {
   public void aTimeout_reportsTheFailureInTheCallersTraceContext() {
     ContextKey<String> key = ContextKey.named("caller");
     List<String> seen = new CopyOnWriteArrayList<>();
-    BasePlugin recorder =
-        new BasePlugin("recorder") {
-          @Override
-          public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
-            if (event.errorCode().isPresent()) {
-              seen.add(String.valueOf(io.opentelemetry.context.Context.current().get(key)));
-            }
-            return Maybe.empty();
-          }
-        };
     CountingNode slow =
         new CountingNode(
             "slow", NodeConfig.builder().timeout(SHORT_TIMEOUT).build(), (ctx, run) -> late());
     WorkflowSession session =
-        new WorkflowSession(workflow(new Edge(START, slow)), /* resumable= */ true, recorder);
+        new WorkflowSession(
+            workflow(new Edge(START, slow)), /* resumable= */ true, errorTraceRecorder(key, seen));
+
+    Throwable error;
+    try (Scope unused = io.opentelemetry.context.Context.current().with(key, "set").makeCurrent()) {
+      error = session.failingTurn(go()).error();
+    }
+
+    assertThat(error).isInstanceOf(NodeTimeoutException.class);
+    assertThat(seen).containsExactly("set");
+  }
+
+  @Test
+  public void aTimeoutThatWaitsForABody_reportsTheFailureInTheCallersTraceContext() {
+    // The body ignores the interrupt, so the failure comes once it returns, on another thread.
+    ContextKey<String> key = ContextKey.named("caller");
+    List<String> seen = new CopyOnWriteArrayList<>();
+    FunctionNode<Object, String> slow =
+        FunctionNodes.builder(Object.class, String.class)
+            .name("slow")
+            .config(NodeConfig.builder().timeout(Duration.ofMillis(200)).build())
+            .body((ctx, in) -> {
+              Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(500));
+              return "late";
+            })
+            .build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(new Edge(START, slow)), /* resumable= */ true, errorTraceRecorder(key, seen));
 
     Throwable error;
     try (Scope unused = io.opentelemetry.context.Context.current().with(key, "set").makeCurrent()) {
@@ -868,6 +887,22 @@ public final class WorkflowRetryTest {
     String sessionId =
         runner.sessionService().createSession("retry_app", "user").blockingGet().id();
     return runner.runAsync("user", sessionId, go()).timeout(30, SECONDS);
+  }
+
+  /**
+   * Returns a plugin that adds to {@code seen} the value of {@code key} as each error event
+   * arrives.
+   */
+  private static BasePlugin errorTraceRecorder(ContextKey<String> key, List<String> seen) {
+    return new BasePlugin("recorder") {
+      @Override
+      public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
+        if (event.errorCode().isPresent()) {
+          seen.add(String.valueOf(io.opentelemetry.context.Context.current().get(key)));
+        }
+        return Maybe.empty();
+      }
+    };
   }
 
   private static Flowable<Object> fail() {

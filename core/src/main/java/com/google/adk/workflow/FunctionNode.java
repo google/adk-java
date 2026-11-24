@@ -37,6 +37,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.FlowableEmitter;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.HashMap;
@@ -224,18 +225,8 @@ public final class FunctionNode<I, O> extends BaseNode {
     // create rather than defer, so that canceling the node reaches the body while it runs.
     Flowable<Object> outcome =
         Flowable.<Object>create(
-                emitter -> {
-                  // The timeout waits for the body to return, so a retry cannot overlap it.
-                  CompletableSubject returned = CompletableSubject.create();
-                  // Not on the body's thread, which may be interrupted, or the busy Runner.
-                  state.markBodyStarted(returned.observeOn(Schedulers.computation()));
-                  try {
-                    // Serialized, as the body's helper threads may emit at the same time.
-                    runBody(context, nodeInput, run, emitter.serialize());
-                  } finally {
-                    returned.onComplete();
-                  }
-                },
+                // Serialized, as the body's helper threads may emit at the same time.
+                emitter -> runBody(context, nodeInput, run, emitter.serialize()),
                 BackpressureStrategy.BUFFER)
             .compose(Tracing.withContext(traceContext));
     // Unlike subscribeOn, canceling this hop does not interrupt the handling of the body's output.
@@ -269,10 +260,28 @@ public final class FunctionNode<I, O> extends BaseNode {
             run.close();
           }
         });
-    events.setCancellable(worker::cancel);
+    ActivationScope scope = context.requireNodeState().scope();
+    events.setCancellable(() -> {
+      // Before the interrupt, so the body it wakes starts no child run. The emitter also calls this
+      // when the body's events end, after which the attempt takes no new work either.
+      scope.rejectNewWork();
+      worker.cancel();
+    });
+    // The attempt waits for the body to return, but not for its result to be sent.
+    CompletableSubject returned = CompletableSubject.create();
+    if (!scope.add(Disposable.fromAction(worker::cancel), returned)) {
+      // The attempt has ended, and its end cancels this run too; an error here could race that
+      // cancel and go undelivered.
+      return;
+    }
     Object output;
     try {
-      RunOutcome<O> outcome = worker.run();
+      RunOutcome<O> outcome;
+      try {
+        outcome = worker.run();
+      } finally {
+        returned.onComplete();
+      }
       if (outcome == null || events.isCancelled()) {
         return;
       }

@@ -21,11 +21,13 @@ import static com.google.adk.testing.WorkflowTestNodes.emitter;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
+import static com.google.adk.workflow.WorkflowResumeTesting.instantRetry;
 import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
 import static com.google.adk.workflow.WorkflowResumeTesting.onlyRequest;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.requestAnswer;
 import static com.google.adk.workflow.WorkflowResumeTesting.requestResult;
+import static com.google.adk.workflow.WorkflowResumeTesting.retrying;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.MoreCollectors.onlyElement;
@@ -78,6 +80,9 @@ import com.google.adk.sessions.ListSessionsResponse;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.FunctionTool;
+import com.google.adk.tools.ToolContext;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -95,6 +100,7 @@ import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.CompletableObserver;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
@@ -142,6 +148,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
@@ -1907,6 +1914,125 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void inlineScheduler_failingBodyWithRetry_retriesOnTheCallersThread() throws Exception {
+    // A failed attempt waits for its bodies, which must not move the retry off the caller's thread.
+    List<String> threads = new CopyOnWriteArrayList<>();
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> flaky =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("flaky")
+            .config(retrying(2))
+            .body((ctx, message) -> {
+              threads.add(Thread.currentThread().getName());
+              if (runs.incrementAndGet() == 1) {
+                throw new IllegalStateException("first run fails");
+              }
+              return "retried";
+            })
+            .build();
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor(task -> new Thread(task, "caller"));
+
+    try {
+      Future<Boolean> callerInterrupted =
+          runInline(caller, chain(flaky), /* interruptFirst= */ false, subscriber);
+      assertThat(callerInterrupted.get(10, SECONDS)).isFalse();
+      assertThat(subscriber.await(10, SECONDS)).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+
+    assertThat(threads).containsExactly("caller", "caller");
+    subscriber.assertComplete().assertNoErrors();
+  }
+
+  @Test
+  public void inlineScheduler_bodyLeavesAChildRunning_nextNodeRunsOnTheCallersThread()
+      throws Exception {
+    // The child stops as soon as the attempt's end cancels it, so the run needs no other thread.
+    List<String> threads = new CopyOnWriteArrayList<>();
+    BaseTool pending =
+        new BaseTool("pending", "Never answers.") {
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            return Single.never();
+          }
+        };
+    Node tool = ToolNodes.asNode(pending, "tool");
+    FunctionNode<Content, String> starter =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("starter")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              Disposable unused =
+                  ctx.runNode(tool, ImmutableMap.of()).subscribe(output -> {}, error -> {});
+              return "started";
+            })
+            .build();
+    FunctionNode<Object, String> next =
+        FunctionNodes.of(
+            "next",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              threads.add(Thread.currentThread().getName());
+              return "next out";
+            });
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor(task -> new Thread(task, "caller"));
+
+    try {
+      Future<Boolean> callerInterrupted =
+          runInline(caller, chain(starter, next), /* interruptFirst= */ false, subscriber);
+      assertThat(callerInterrupted.get(10, SECONDS)).isFalse();
+      assertThat(subscriber.await(10, SECONDS)).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+
+    assertThat(threads).containsExactly("caller");
+    subscriber.assertComplete().assertNoErrors();
+  }
+
+  @Test
+  public void inlineScheduler_toolThatThrowsWithRetry_retriesOnTheCallersThread() throws Exception {
+    // The failure leaves the tool call once it has returned, so the retry needs no other thread.
+    List<String> threads = new CopyOnWriteArrayList<>();
+    BaseTool flaky =
+        new BaseTool("flaky", "Throws on its first call.") {
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            threads.add(Thread.currentThread().getName());
+            if (threads.size() == 1) {
+              throw new IllegalStateException("first call throws");
+            }
+            return Single.just(ImmutableMap.of("result", "retried"));
+          }
+        };
+    Node tool = ToolNodes.asNode(flaky, "tool", retrying(2));
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor(task -> new Thread(task, "caller"));
+
+    try {
+      Future<Boolean> callerInterrupted =
+          runInline(
+              caller,
+              chain(emitter("args", ImmutableMap.of()), tool),
+              /* interruptFirst= */ false,
+              subscriber);
+      assertThat(callerInterrupted.get(10, SECONDS)).isFalse();
+      assertThat(subscriber.await(10, SECONDS)).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+
+    assertThat(threads).containsExactly("caller", "caller");
+    subscriber.assertComplete().assertNoErrors();
+  }
+
+  @Test
   public void nodeTimeout_sleepingBody_isInterruptedAndFailsWithNodeTimeoutException()
       throws InterruptedException {
     CountDownLatch interrupted = new CountDownLatch(1);
@@ -2071,6 +2197,959 @@ public final class FunctionNodeTest {
     assertThat(timeline).containsExactly("start 1", "inner refused", "end 1", "start 2").inOrder();
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/outer@1")).isEqualTo("retried");
+  }
+
+  @Test
+  public void nodeTimeoutWithRetry_bodyRunsAChildAfterTheInterrupt_childNeverStarts()
+      throws Exception {
+    // The first run ignores the interrupt, then runs a child as if it had not been canceled.
+    List<String> timeline = new CopyOnWriteArrayList<>();
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Object, String> child =
+        FunctionNodes.of(
+            "child",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              timeline.add("child " + in);
+              return "out " + in;
+            });
+    FunctionNode<Content, Object> caller =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .config(
+                NodeConfig.builder()
+                    .timeout(Duration.ofMillis(300))
+                    .retryConfig(instantRetry(2))
+                    .build())
+            .body((ctx, message) -> {
+              if (runs.incrementAndGet() > 1) {
+                return ctx.runNode(child, "retry").blockingGet();
+              }
+              Object unused = ctx.runNode(child, "before").blockingGet();
+              Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(600));
+              timeline.add("interrupted " + Thread.interrupted());
+              try {
+                unused = ctx.runNode(child, "after").blockingGet();
+              } catch (CancellationException e) {
+                timeline.add("rejected");
+              }
+              return "late";
+            })
+            .build();
+
+    RunResult result = runOnFreshThreads(chain(caller));
+
+    assertThat(timeline)
+        .containsExactly("child before", "interrupted true", "rejected", "child retry")
+        .inOrder();
+    result.assertCompleted();
+    // The rejected call took no run ID, so the retry's child is the second.
+    assertThat(result.outputAt("wf@1/caller@1/child@2")).isEqualTo("out retry");
+  }
+
+  @Test
+  public void nodeTimeoutWithRetry_bodyRunsAChildAsTheInterruptWakesIt_takesNoRunId()
+      throws Exception {
+    // Without the rejection before the interrupt, the late call often takes child@1 from the retry.
+    for (int round = 1; round <= 5; round++) {
+      List<Object> lateCalls = new CopyOnWriteArrayList<>();
+      AtomicInteger attempts = new AtomicInteger();
+      FunctionNode<Object, String> child =
+          FunctionNodes.of("child", Object.class, String.class, (ctx, in) -> "out " + in);
+      FunctionNode<Content, Object> caller =
+          FunctionNodes.builder(Content.class, Object.class)
+              .name("caller")
+              .rerunOnResume(true)
+              .config(
+                  NodeConfig.builder()
+                      .timeout(Duration.ofMillis(200))
+                      .retryConfig(instantRetry(2))
+                      .build())
+              .body((ctx, message) -> {
+                if (attempts.incrementAndGet() > 1) {
+                  return ctx.runNode(child, "retry").blockingGet();
+                }
+                try {
+                  Thread.sleep(10_000);
+                } catch (InterruptedException e) {
+                  try {
+                    lateCalls.add(ctx.runNode(child, "late").blockingGet());
+                  } catch (CancellationException rejected) {
+                    lateCalls.add(rejected);
+                  }
+                }
+                return "late";
+              })
+              .build();
+
+      RunResult result = runOnFreshThreads(chain(caller));
+
+      result.assertCompleted();
+      assertThat(lateCalls).hasSize(1);
+      assertThat(lateCalls.get(0)).isInstanceOf(CancellationException.class);
+      assertThat(result.outputAt("wf@1/caller@1/child@1")).isEqualTo("out retry");
+    }
+  }
+
+  @Test
+  public void nodeTimeout_bodyStartingChildrenInALoop_reportsNoUndeliverableError() {
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, (ctx, in) -> "out");
+    List<Edge> edges = new ArrayList<>();
+    for (int i = 0; i < 8; i++) {
+      FunctionNode<Content, Object> looper =
+          FunctionNodes.builder(Content.class, Object.class)
+              .name("looper" + i)
+              .rerunOnResume(true)
+              .config(NodeConfig.builder().timeout(Duration.ofMillis(3)).build())
+              .body((ctx, message) -> {
+                // Ends when a cancel interrupts a call or rejects the next one.
+                for (int call = 0; call < 100_000; call++) {
+                  var unused = ctx.runNode(child, null).blockingGet();
+                }
+                return "done";
+              })
+              .build();
+      edges.add(new Edge(Start.INSTANCE, looper));
+    }
+    Workflow parent = Workflow.builder().name("wf").edges(edges.toArray(new Edge[0])).build();
+    List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
+    var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+
+    try {
+      // A cancel lands as a child's attempt starts only in some rounds, so repeat it.
+      for (int round = 0; round < 200; round++) {
+        RunResult result = run(parent);
+
+        assertThat(result.error()).isInstanceOf(NodeTimeoutException.class);
+      }
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousErrorHandler);
+    }
+
+    assertThat(undeliverable).isEmpty();
+  }
+
+  @Test
+  public void failureWithRetry_childAwaitedThroughAFuture_isCanceledWithTheAttempt()
+      throws Exception {
+    // get(timeout) gives up on "inner" but leaves it running into the retry, which waits for it.
+    List<String> timeline = new CopyOnWriteArrayList<>();
+    CountDownLatch firstStarted = new CountDownLatch(1);
+    CountDownLatch secondStarted = new CountDownLatch(1);
+    CountDownLatch firstEnded = new CountDownLatch(1);
+    AtomicInteger attempts = new AtomicInteger();
+    Workflow inner =
+        firstThenSecond(Duration.ofMillis(500), timeline, firstStarted, firstEnded, secondStarted);
+    FunctionNode<Content, Object> caller =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .config(retrying(2))
+            .body((ctx, message) -> {
+              if (attempts.incrementAndGet() == 1) {
+                Future<Object> innerOutput = ctx.runNode(inner, null).toFuture();
+                firstStarted.await();
+                return innerOutput.get(300, MILLISECONDS);
+              }
+              var unused = secondStarted.await(400, MILLISECONDS);
+              return "retried";
+            })
+            .build();
+
+    RunResult result = runOnFreshThreads(chain(caller), firstEnded);
+
+    assertThat(timeline).containsExactly("first end");
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/caller@1")).isEqualTo("retried");
+  }
+
+  @Test
+  public void siblingFailure_callerWaitingOnAChild_isReleasedAndRunsNoMoreChildren()
+      throws Exception {
+    // Canceled by its sibling's failure, "caller" ignores the interrupt, then runs another child.
+    List<String> timeline = new CopyOnWriteArrayList<>();
+    CountDownLatch slowStarted = new CountDownLatch(1);
+    CountDownLatch slowEnded = new CountDownLatch(1);
+    FunctionNode<Object, String> slow =
+        FunctionNodes.of(
+            "slow",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              slowStarted.countDown();
+              Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(600));
+              timeline.add("slow end");
+              slowEnded.countDown();
+              return "slow out";
+            });
+    FunctionNode<Object, String> child =
+        FunctionNodes.of(
+            "child",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              timeline.add("child");
+              return "child out";
+            });
+    FunctionNode<Object, String> caller =
+        FunctionNodes.builder(Object.class, String.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .body((ctx, in) -> {
+              try {
+                Uninterruptibles.getUninterruptibly(ctx.runNode(slow, null).toFuture());
+              } catch (ExecutionException e) {
+                timeline.add("released by " + e.getCause().getClass().getSimpleName());
+              }
+              try {
+                Object unusedOutput = ctx.runNode(child, null).blockingGet();
+              } catch (CancellationException e) {
+                timeline.add("rejected");
+              }
+              return "late";
+            })
+            .build();
+    FunctionNode<Object, Void> failing =
+        FunctionNodes.of(
+            "failing",
+            Object.class,
+            Void.class,
+            (ctx, in) -> {
+              slowStarted.await();
+              throw new IllegalStateException("fails");
+            });
+    Workflow parent =
+        Workflow.builder()
+            .name("wf")
+            .edges(new Edge(Start.INSTANCE, caller), new Edge(Start.INSTANCE, failing))
+            .build();
+
+    List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
+    var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+
+    RunResult result;
+    try {
+      result = runOnFreshThreads(parent, slowEnded);
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousErrorHandler);
+    }
+
+    assertThat(timeline)
+        .containsExactly("released by CancellationException", "rejected", "slow end")
+        .inOrder();
+    assertThat(result.error()).isInstanceOf(IllegalStateException.class);
+    assertThat(undeliverable).isEmpty();
+  }
+
+  @Test
+  public void siblingFailure_callerBlockedOnAChild_reportsNoUndeliverableError() throws Exception {
+    // The interrupt makes blockingGet dispose its call just as the cancel fails the child run.
+    List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
+    var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+    try {
+      for (int round = 0; round < 15; round++) {
+        CountDownLatch childStarted = new CountDownLatch(1);
+        CountDownLatch childEnded = new CountDownLatch(1);
+        FunctionNode<Object, String> child =
+            FunctionNodes.of(
+                "child",
+                Object.class,
+                String.class,
+                (ctx, in) -> {
+                  childStarted.countDown();
+                  Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(50));
+                  childEnded.countDown();
+                  return "child out";
+                });
+        FunctionNode<Object, Object> caller =
+            FunctionNodes.builder(Object.class, Object.class)
+                .name("caller")
+                .rerunOnResume(true)
+                .body((ctx, in) -> ctx.runNode(child, null).blockingGet())
+                .build();
+        FunctionNode<Object, Void> failing =
+            FunctionNodes.of(
+                "failing",
+                Object.class,
+                Void.class,
+                (ctx, in) -> {
+                  childStarted.await();
+                  throw new IllegalStateException("fails");
+                });
+        Workflow parent =
+            Workflow.builder()
+                .name("wf")
+                .edges(new Edge(Start.INSTANCE, caller), new Edge(Start.INSTANCE, failing))
+                .build();
+
+        RunResult result = runOnFreshThreads(parent, childEnded);
+
+        assertThat(result.error()).isInstanceOf(IllegalStateException.class);
+      }
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousErrorHandler);
+    }
+
+    assertThat(undeliverable).isEmpty();
+  }
+
+  @Test
+  public void customNode_runNodeAfterItsAttemptEnded_isRejected() {
+    // For a node that is not a FunctionNode, only the attempt's close rejects new work.
+    AtomicInteger childRuns = new AtomicInteger();
+    FunctionNode<Object, String> child =
+        FunctionNodes.of(
+            "child",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              childRuns.incrementAndGet();
+              return "child out";
+            });
+    AtomicReference<Context> saved = new AtomicReference<>();
+    Node starter = contextSaver(saved);
+
+    RunResult result = run(chain(starter));
+
+    result.assertCompleted();
+    assertThrows(
+        CancellationException.class,
+        () -> saved.get().runNode(child, null).timeout(5, SECONDS).blockingGet());
+    assertThat(childRuns.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void runNodeAfterItsAttemptEnded_callAlreadyCanceled_reportsNoUndeliverableError() {
+    // A timer can fire after the call waiting on it was canceled, as RxJava's timers do.
+    AtomicReference<CompletableObserver> timer = new AtomicReference<>();
+    Completable lateTimer =
+        new Completable() {
+          @Override
+          protected void subscribeActual(CompletableObserver observer) {
+            observer.onSubscribe(Disposable.empty());
+            timer.set(observer);
+          }
+        };
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, (ctx, in) -> "child out");
+    AtomicReference<Context> saved = new AtomicReference<>();
+    Node starter = contextSaver(saved);
+    run(chain(starter)).assertCompleted();
+    List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
+    var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+
+    try {
+      Disposable call =
+          Flowable.just(1)
+              .flatMapMaybe(unused -> lateTimer.andThen(saved.get().runNode(child, null)))
+              .subscribe(output -> {}, error -> {});
+      call.dispose();
+      timer.get().onComplete();
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousErrorHandler);
+    }
+
+    assertThat(undeliverable).isEmpty();
+  }
+
+  @Test
+  public void callerEnds_childStillStartingOnAnotherThread_neverRunsAndReportsNoUndeliverableError()
+      throws Exception {
+    // "child" passes the caller's checks, then is held until the run ends, before its attempt.
+    CountDownLatch childStarting = new CountDownLatch(1);
+    CountDownLatch runEnded = new CountDownLatch(1);
+    AtomicInteger childRuns = new AtomicInteger();
+    Node child =
+        new Node() {
+          @Override
+          public String name() {
+            return "child";
+          }
+
+          // Called as the runner sets up the child's attempt.
+          @Override
+          public String description() {
+            childStarting.countDown();
+            var unused = Uninterruptibles.awaitUninterruptibly(runEnded, 10, SECONDS);
+            return "";
+          }
+
+          @Override
+          public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
+            childRuns.incrementAndGet();
+            return Flowable.just("child out");
+          }
+        };
+    AtomicReference<Thread> starter = new AtomicReference<>();
+    FunctionNode<Content, String> caller =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              Thread thread =
+                  new Thread(() -> {
+                    var unused = ctx.runNode(child, null).onErrorComplete().subscribe();
+                  });
+              starter.set(thread);
+              thread.start();
+              childStarting.await();
+              return "caller out";
+            })
+            .build();
+    List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
+    var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+
+    RunResult result;
+    try {
+      result = run(chain(caller));
+    } finally {
+      runEnded.countDown();
+      Thread thread = starter.get();
+      if (thread != null) {
+        thread.join(SECONDS.toMillis(10));
+      }
+      RxJavaPlugins.setErrorHandler(previousErrorHandler);
+    }
+
+    result.assertCompleted();
+    assertThat(starter.get().isAlive()).isFalse();
+    assertThat(childRuns.get()).isEqualTo(0);
+    assertThat(undeliverable).isEmpty();
+  }
+
+  @Test
+  public void parentFailureWithRetry_childLeftRunningByAFinishedNode_isCanceledWhenTheNodeEnds()
+      throws Exception {
+    // "caller" gives up on "inner" and returns, then "failing" fails "wf", which retries.
+    List<String> timeline = new CopyOnWriteArrayList<>();
+    CountDownLatch callerReturned = new CountDownLatch(1);
+    CountDownLatch firstStarted = new CountDownLatch(1);
+    CountDownLatch secondStarted = new CountDownLatch(1);
+    CountDownLatch firstEnded = new CountDownLatch(1);
+    AtomicInteger callerRuns = new AtomicInteger();
+    AtomicInteger failingRuns = new AtomicInteger();
+    Workflow inner =
+        firstThenSecond(Duration.ofMillis(300), timeline, firstStarted, firstEnded, secondStarted);
+    FunctionNode<Object, String> caller =
+        FunctionNodes.builder(Object.class, String.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .body((ctx, in) -> {
+              if (callerRuns.incrementAndGet() == 1) {
+                Future<Object> innerOutput = ctx.runNode(inner, null).toFuture();
+                firstStarted.await();
+                try {
+                  innerOutput.get(100, MILLISECONDS);
+                } catch (TimeoutException e) {
+                  timeline.add("gave up");
+                }
+                callerReturned.countDown();
+              }
+              return "caller out";
+            })
+            .build();
+    FunctionNode<Object, Void> failing =
+        FunctionNodes.of(
+            "failing",
+            Object.class,
+            Void.class,
+            (ctx, in) -> {
+              if (failingRuns.incrementAndGet() == 1) {
+                callerReturned.await();
+                throw new IllegalStateException("fails");
+              }
+              var unused = secondStarted.await(400, MILLISECONDS);
+              return null;
+            });
+    Workflow parent =
+        Workflow.builder()
+            .name("wf")
+            .edges(new Edge(Start.INSTANCE, caller), new Edge(Start.INSTANCE, failing))
+            .config(retrying(2))
+            .build();
+
+    RunResult result = runOnFreshThreads(parent, firstEnded);
+
+    assertThat(timeline).containsExactly("gave up", "first end").inOrder();
+    result.assertCompleted();
+  }
+
+  @Test
+  public void parentTimeout_childIgnoringTheInterrupt_failsOnlyAfterItReturns() throws Exception {
+    // No second run starts, so the child's body returns after 1 s.
+    StubbornBody body = new StubbornBody();
+    Workflow parent =
+        Workflow.builder()
+            .name("wf")
+            .edges(
+                new Edge(
+                    Start.INSTANCE, FunctionNodes.of("child", Object.class, String.class, body)))
+            .config(NodeConfig.builder().timeout(Duration.ofMillis(500)).build())
+            .build();
+
+    RunResult result =
+        run(
+            parent,
+            /* scheduler= */ null,
+            event -> {
+              if (event.errorCode().isPresent()) {
+                body.timeline.add("error event");
+              }
+            });
+    assertThat(body.firstReturned.await(10, SECONDS)).isTrue();
+
+    assertThat(body.timeline).containsExactly("start 1", "end 1", "error event").inOrder();
+    assertThat(result.errorMessage("NodeTimeoutException")).contains("'wf'");
+  }
+
+  @Test
+  public void parentTimeoutWithRetry_graphChildIgnoringTheInterrupt_retryStartsOnlyAfterItReturns()
+      throws Exception {
+    // The default scheduler can hand the retry's child the thread the canceled body still holds.
+    StubbornBody body = new StubbornBody();
+    Workflow parent =
+        Workflow.builder()
+            .name("wf")
+            .edges(
+                new Edge(
+                    Start.INSTANCE, FunctionNodes.of("child", Object.class, String.class, body)))
+            .config(
+                NodeConfig.builder()
+                    .timeout(Duration.ofMillis(500))
+                    .retryConfig(instantRetry(2))
+                    .build())
+            .build();
+
+    RunResult result = run(parent);
+    assertThat(body.firstReturned.await(10, SECONDS)).isTrue();
+
+    assertThat(body.timeline).containsExactly("start 1", "end 1", "start 2").inOrder();
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/child@1")).isEqualTo("retried");
+  }
+
+  @Test
+  public void parentTimeoutWithRetry_runNodeChildIgnoringTheInterrupt_retryStartsAfterIt()
+      throws Exception {
+    // The caller's own body returns at the interrupt; only its child ignores it.
+    StubbornBody body = new StubbornBody();
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, body);
+    FunctionNode<Content, Object> caller =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .config(
+                NodeConfig.builder()
+                    .timeout(Duration.ofMillis(500))
+                    .retryConfig(instantRetry(2))
+                    .build())
+            .body((ctx, message) -> ctx.runNode(child, null).blockingGet())
+            .build();
+
+    RunResult result = runOnFreshThreads(chain(caller), body.firstReturned);
+
+    assertThat(body.timeline).containsExactly("start 1", "end 1", "start 2").inOrder();
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/caller@1")).isEqualTo("retried");
+  }
+
+  @Test
+  public void toolNodeTimeoutWithRetry_callStillRunning_retryStartsOnlyAfterItReturns()
+      throws Exception {
+    // The tool blocks as its Single is subscribed, and a timeout does not interrupt it.
+    StubbornTool target = new StubbornTool();
+    Node tool =
+        ToolNodes.asNode(
+            FunctionTool.create(target, "call"),
+            "tool",
+            NodeConfig.builder()
+                .timeout(Duration.ofMillis(500))
+                .retryConfig(instantRetry(2))
+                .build());
+
+    RunResult result =
+        runOnFreshThreads(
+            chain(emitter("args", ImmutableMap.of()), tool), target.body.firstReturned);
+
+    assertThat(target.body.timeline).containsExactly("start 1", "end 1", "start 2").inOrder();
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/tool@1")).isEqualTo(ImmutableMap.of("result", "retried"));
+  }
+
+  @Test
+  public void toolNodeTimeoutWithRetry_callThatStopsOnDispose_isCanceledAtTheTimeout()
+      throws Exception {
+    // The first call blocks as it is subscribed until a dispose releases it.
+    CancelableTool target = new CancelableTool();
+    Node tool =
+        ToolNodes.asNode(
+            FunctionTool.create(target, "call"),
+            "tool",
+            NodeConfig.builder()
+                .timeout(Duration.ofMillis(300))
+                .retryConfig(instantRetry(2))
+                .build());
+
+    RunResult result = runOnFreshThreads(chain(emitter("args", ImmutableMap.of()), tool));
+
+    assertThat(target.timeline)
+        .containsExactly("start 1", "canceled 1", "released 1", "start 2")
+        .inOrder();
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/tool@1")).isEqualTo(ImmutableMap.of("result", "retried"));
+  }
+
+  @Test
+  public void toolNodeTimeout_callThatThrowsAfterTheTimeout_reportsNoUndeliverableError()
+      throws Exception {
+    // runAsync itself blocks past the timeout, then throws instead of returning a Single.
+    CountDownLatch thrown = new CountDownLatch(1);
+    BaseTool target =
+        new BaseTool("call", "Blocks, then throws.") {
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(400));
+            thrown.countDown();
+            throw new IllegalStateException("thrown after the timeout");
+          }
+        };
+    Node tool =
+        ToolNodes.asNode(
+            target, "tool", NodeConfig.builder().timeout(Duration.ofMillis(100)).build());
+    List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
+    var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+
+    RunResult result;
+    try {
+      result = runOnFreshThreads(chain(emitter("args", ImmutableMap.of()), tool), thrown);
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousErrorHandler);
+    }
+
+    assertThat(result.errorMessage("NodeTimeoutException")).contains("'tool'");
+    assertThat(undeliverable).isEmpty();
+  }
+
+  @Test
+  public void siblingFailureWithRetry_childIgnoringTheInterrupt_retryStartsOnlyAfterItReturns()
+      throws Exception {
+    // "failing" fails its first run once "child" has started, which cancels "child".
+    StubbornBody body = new StubbornBody();
+    AtomicInteger failingRuns = new AtomicInteger();
+    FunctionNode<Object, Void> failing =
+        FunctionNodes.of(
+            "failing",
+            Object.class,
+            Void.class,
+            (ctx, in) -> {
+              if (failingRuns.incrementAndGet() == 1) {
+                body.firstStarted.await();
+                throw new IllegalStateException("first run fails");
+              }
+              return null;
+            });
+    Workflow parent =
+        Workflow.builder()
+            .name("wf")
+            .edges(
+                new Edge(
+                    Start.INSTANCE, FunctionNodes.of("child", Object.class, String.class, body)),
+                new Edge(Start.INSTANCE, failing))
+            .config(retrying(2))
+            .build();
+
+    RunResult result = runOnFreshThreads(parent, body.firstReturned);
+
+    assertThat(body.timeline).containsExactly("start 1", "end 1", "start 2").inOrder();
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/child@1")).isEqualTo("retried");
+  }
+
+  @Test
+  public void caughtChildFailure_siblingIgnoringTheInterrupt_fallbackStartsOnlyAfterItReturns()
+      throws Exception {
+    // "inner" fails once "failing" throws, which cancels "child"; "caller" then runs a fallback.
+    StubbornBody body = new StubbornBody();
+    FunctionNode<Object, Void> failing =
+        FunctionNodes.of(
+            "failing",
+            Object.class,
+            Void.class,
+            (ctx, in) -> {
+              body.firstStarted.await();
+              throw new IllegalStateException("fails");
+            });
+    Workflow inner =
+        Workflow.builder()
+            .name("inner")
+            .edges(
+                new Edge(
+                    Start.INSTANCE, FunctionNodes.of("child", Object.class, String.class, body)),
+                new Edge(Start.INSTANCE, failing))
+            .build();
+    FunctionNode<Object, String> fallback =
+        FunctionNodes.of(
+            "fallback",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              body.timeline.add("fallback");
+              return "fallback";
+            });
+    FunctionNode<Content, Object> caller =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              try {
+                return ctx.runNode(inner, null).blockingGet();
+              } catch (DynamicNodeFailedException e) {
+                body.timeline.add("caught");
+                return ctx.runNode(fallback, null).blockingGet();
+              }
+            })
+            .build();
+
+    RunResult result = runOnFreshThreads(chain(caller), body.firstReturned);
+
+    assertThat(body.timeline).containsExactly("start 1", "end 1", "caught", "fallback").inOrder();
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/caller@1")).isEqualTo("fallback");
+  }
+
+  @Test
+  public void successfulBody_childItDidNotWaitFor_isCanceledBeforeTheSuccessorRuns()
+      throws Exception {
+    // "caller" starts "child" without waiting for it and returns.
+    List<String> timeline = new CopyOnWriteArrayList<>();
+    CountDownLatch childStarted = new CountDownLatch(1);
+    FunctionNode<Object, String> child =
+        FunctionNodes.of(
+            "child",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              childStarted.countDown();
+              try {
+                Thread.sleep(5_000);
+                timeline.add("child finished");
+              } catch (InterruptedException e) {
+                timeline.add("child canceled");
+              }
+              return "child out";
+            });
+    FunctionNode<Content, String> caller =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              Disposable unused = ctx.runNode(child, null).subscribe(output -> {}, error -> {});
+              childStarted.await();
+              return "caller out";
+            })
+            .build();
+    FunctionNode<Object, String> next =
+        FunctionNodes.of(
+            "next",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              timeline.add("next");
+              return "next out";
+            });
+
+    RunResult result = runOnFreshThreads(chain(caller, next));
+
+    assertThat(timeline).containsExactly("child canceled", "next").inOrder();
+    result.assertCompleted();
+  }
+
+  @Test
+  public void failureWithRetry_childTheBodyLeftRunning_retryStartsOnlyAfterItReturns()
+      throws Exception {
+    // The first run starts "child" without waiting for it, then fails.
+    StubbornBody body = new StubbornBody();
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, body);
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> caller =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .config(retrying(2))
+            .body((ctx, message) -> {
+              if (runs.incrementAndGet() > 1) {
+                body.timeline.add("retry");
+                return "retried";
+              }
+              Disposable unused = ctx.runNode(child, null).subscribe(output -> {}, error -> {});
+              body.firstStarted.await();
+              throw new IllegalStateException("first run fails");
+            })
+            .build();
+
+    RunResult result = runOnFreshThreads(chain(caller), body.firstReturned);
+
+    assertThat(body.timeline).containsExactly("start 1", "end 1", "retry").inOrder();
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/caller@1")).isEqualTo("retried");
+  }
+
+  @Test
+  public void failureWithRetry_childLeftRunningUnderARunId_isCanceledAndRunsAgainInTheRetry()
+      throws Exception {
+    // As in Kotlin, the retry does not join the run its failed attempt left behind.
+    List<String> timeline = new CopyOnWriteArrayList<>();
+    CountDownLatch childStarted = new CountDownLatch(1);
+    AtomicInteger childRuns = new AtomicInteger();
+    FunctionNode<Object, String> child =
+        FunctionNodes.of(
+            "child",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              int run = childRuns.incrementAndGet();
+              if (run == 1) {
+                childStarted.countDown();
+                try {
+                  Thread.sleep(2_000);
+                } catch (InterruptedException e) {
+                  timeline.add("child 1 canceled");
+                  throw e;
+                }
+              }
+              timeline.add("child " + run);
+              return "out " + run;
+            });
+    RunNodeConfig sameRun = RunNodeConfig.builder().runId("k").build();
+    AtomicInteger attempts = new AtomicInteger();
+    FunctionNode<Content, Object> caller =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .config(retrying(2))
+            .body((ctx, message) -> {
+              if (attempts.incrementAndGet() == 1) {
+                Future<Object> unused = ctx.runNode(child, null, sameRun).toFuture();
+                childStarted.await();
+                throw new IllegalStateException("first attempt fails");
+              }
+              return ctx.runNode(child, null, sameRun).blockingGet();
+            })
+            .build();
+
+    RunResult result = runOnFreshThreads(chain(caller));
+
+    assertThat(timeline).containsExactly("child 1 canceled", "child 2").inOrder();
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/caller@1")).isEqualTo("out 2");
+  }
+
+  @Test
+  public void pause_childLeftRunning_isCanceledAndRunsAgainOnResume() {
+    // As in Kotlin, the pause ends the attempt, so the resume runs "worker" from the start.
+    List<String> timeline = new CopyOnWriteArrayList<>();
+    CountDownLatch workerStarted = new CountDownLatch(1);
+    AtomicInteger workerRuns = new AtomicInteger();
+    FunctionNode<Object, String> worker =
+        FunctionNodes.of(
+            "worker",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              int run = workerRuns.incrementAndGet();
+              if (run == 1) {
+                workerStarted.countDown();
+                try {
+                  Thread.sleep(2_000);
+                } catch (InterruptedException e) {
+                  timeline.add("worker 1 canceled");
+                  throw e;
+                }
+              }
+              timeline.add("worker " + run);
+              return "w" + run;
+            });
+    FunctionNode<Content, Object> asker =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("asker")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              if (!ctx.resumeInputs().containsKey("q_1")) {
+                Disposable unused = ctx.runNode(worker).subscribe(output -> {}, error -> {});
+                workerStarted.await();
+                return FunctionNodes.requestInput("q_1");
+              }
+              return ctx.runNode(worker).blockingGet();
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(asker, captureInput("reply")));
+
+    var unused = session.turn(go());
+    ImmutableList<Event> events = session.turn(requestResult("q_1", "yes"));
+
+    assertThat(timeline).containsExactly("worker 1 canceled", "worker 2").inOrder();
+    assertThat(replyInput(events)).isEqualTo("w2");
+  }
+
+  @Test
+  public void runDisposed_childABodyDidNotWaitFor_isCanceled() throws Exception {
+    // "caller" starts "child" without waiting for it, then sleeps until the run is disposed.
+    CountDownLatch childStarted = new CountDownLatch(1);
+    CountDownLatch childEnded = new CountDownLatch(1);
+    AtomicReference<String> childOutcome = new AtomicReference<>();
+    FunctionNode<Object, String> child =
+        FunctionNodes.of(
+            "child",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              childStarted.countDown();
+              try {
+                Thread.sleep(5_000);
+                childOutcome.set("finished");
+              } catch (InterruptedException e) {
+                childOutcome.set("canceled");
+              }
+              childEnded.countDown();
+              return "child out";
+            });
+    FunctionNode<Content, String> caller =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("caller")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              Disposable unused = ctx.runNode(child, null).subscribe(output -> {}, error -> {});
+              Thread.sleep(60_000);
+              return "caller out";
+            })
+            .build();
+    ExecutorService executor = Executors.newCachedThreadPool();
+    try {
+      Runner runner = runner(chain(caller), Schedulers.from(executor));
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run =
+          runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+      assertThat(childStarted.await(10, SECONDS)).isTrue();
+
+      run.dispose();
+
+      assertThat(childEnded.await(10, SECONDS)).isTrue();
+      assertThat(childOutcome.get()).isEqualTo("canceled");
+    } finally {
+      executor.shutdownNow();
+    }
   }
 
   @Test
@@ -7641,6 +8720,27 @@ public final class FunctionNodeTest {
     return Workflow.builder().name("wf").edges(edges.toArray(new Edge[0])).build();
   }
 
+  /** Returns a node {@code starter} that saves its context into {@code saved}, then outputs. */
+  private static Node contextSaver(AtomicReference<Context> saved) {
+    return new Node() {
+      @Override
+      public String name() {
+        return "starter";
+      }
+
+      @Override
+      public boolean rerunOnResume() {
+        return true;
+      }
+
+      @Override
+      public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
+        saved.set(context);
+        return Flowable.just("starter out");
+      }
+    };
+  }
+
   /** Returns a node {@code asker} with a {@code type} output that asks for input as {@code id}. */
   private static <O> FunctionNode<Content, O> asker(Class<O> type, String id) {
     return FunctionNodes.of(
@@ -7702,6 +8802,25 @@ public final class FunctionNodeTest {
       @Nullable Scheduler scheduler,
       BaseSessionService sessionService,
       Content message) {
+    return run(root, scheduler, sessionService, message, event -> {});
+  }
+
+  /** Like {@link #run(Node, Scheduler)}, passing each event to {@code onEvent} as it arrives. */
+  private static RunResult run(Node root, @Nullable Scheduler scheduler, Consumer<Event> onEvent) {
+    return run(
+        root,
+        scheduler,
+        new InMemorySessionService(),
+        Content.fromParts(Part.fromText("go")),
+        onEvent);
+  }
+
+  private static RunResult run(
+      Node root,
+      @Nullable Scheduler scheduler,
+      BaseSessionService sessionService,
+      Content message,
+      Consumer<Event> onEvent) {
     Runner runner = runner(root, scheduler, sessionService);
     Session session = runner.sessionService().createSession(APP, USER).blockingGet();
     List<Event> events = new ArrayList<>();
@@ -7709,6 +8828,7 @@ public final class FunctionNodeTest {
     runner
         .runAsync(USER, session.id(), message)
         .timeout(30, SECONDS)
+        .doOnNext(onEvent::accept)
         .blockingSubscribe(events::add, error::set);
     return new RunResult(ImmutableList.copyOf(events), error.get());
   }
@@ -7902,6 +9022,130 @@ public final class FunctionNodeTest {
     @Override
     public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
       return delegate.listEvents(appName, userId, sessionId);
+    }
+  }
+
+  /**
+   * Runs {@code root} as {@link #run(Node, Scheduler)} does on threads started as needed, then
+   * waits up to 10 s for each of {@code awaited}, and up to 10 s more for the threads to stop.
+   */
+  private static RunResult runOnFreshThreads(Node root, CountDownLatch... awaited)
+      throws InterruptedException {
+    ExecutorService executor = Executors.newCachedThreadPool();
+    try {
+      RunResult result = run(root, Schedulers.from(executor));
+      for (CountDownLatch latch : awaited) {
+        assertThat(latch.await(10, SECONDS)).isTrue();
+      }
+      return result;
+    } finally {
+      executor.shutdownNow();
+      // So the test sees all the threads did, such as an error they report as they finish.
+      var unused = executor.awaitTermination(10, SECONDS);
+    }
+  }
+
+  /**
+   * Returns a workflow "inner" whose node "first" sleeps through any interrupt for {@code
+   * firstSleep} before "second" runs; both record themselves in {@code timeline}.
+   */
+  private static Workflow firstThenSecond(
+      Duration firstSleep,
+      List<String> timeline,
+      CountDownLatch firstStarted,
+      CountDownLatch firstEnded,
+      CountDownLatch secondStarted) {
+    FunctionNode<Object, String> first =
+        FunctionNodes.of(
+            "first",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              firstStarted.countDown();
+              Uninterruptibles.sleepUninterruptibly(firstSleep);
+              timeline.add("first end");
+              firstEnded.countDown();
+              return "first out";
+            });
+    FunctionNode<Object, String> second =
+        FunctionNodes.of(
+            "second",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              timeline.add("second");
+              secondStarted.countDown();
+              return "second out";
+            });
+    return Workflow.builder()
+        .name("inner")
+        .edges(new Edge(Start.INSTANCE, first), new Edge(first, second))
+        .build();
+  }
+
+  /** The target of a {@link FunctionTool} whose first call blocks on subscribe until disposed. */
+  public static final class CancelableTool {
+    final List<String> timeline = new CopyOnWriteArrayList<>();
+    private final AtomicInteger calls = new AtomicInteger();
+
+    public Single<String> call() {
+      int call = calls.incrementAndGet();
+      if (call > 1) {
+        return Single.fromCallable(() -> {
+          timeline.add("start " + call);
+          return "retried";
+        });
+      }
+      return Single.create(emitter -> {
+        timeline.add("start 1");
+        CountDownLatch disposed = new CountDownLatch(1);
+        emitter.setCancellable(() -> {
+          timeline.add("canceled 1");
+          disposed.countDown();
+        });
+        boolean released = Uninterruptibles.awaitUninterruptibly(disposed, 5, SECONDS);
+        timeline.add(released ? "released 1" : "not released 1");
+      });
+    }
+  }
+
+  /** The target of a {@link FunctionTool} whose calls run a {@link StubbornBody} on subscribe. */
+  public static final class StubbornTool {
+    final StubbornBody body = new StubbornBody();
+
+    public Single<String> call() {
+      return Single.fromCallable(body::run);
+    }
+  }
+
+  /**
+   * A body that records "start N" and "end 1". Its first run ignores the interrupt and returns once
+   * a second run starts, or after 1 s, so a second run that overlaps it records its start first.
+   */
+  private static final class StubbornBody implements NodeBody<Object, String> {
+    final List<String> timeline = new CopyOnWriteArrayList<>();
+    final CountDownLatch firstStarted = new CountDownLatch(1);
+    final CountDownLatch firstReturned = new CountDownLatch(1);
+    private final CountDownLatch secondStarted = new CountDownLatch(1);
+    private final AtomicInteger runs = new AtomicInteger();
+
+    @Override
+    public String apply(Context context, @Nullable Object input) {
+      return run();
+    }
+
+    String run() {
+      int run = runs.incrementAndGet();
+      timeline.add("start " + run);
+      if (run > 1) {
+        secondStarted.countDown();
+        return "retried";
+      }
+      firstStarted.countDown();
+      var unused = Uninterruptibles.awaitUninterruptibly(secondStarted, 1, SECONDS);
+      timeline.add("end 1");
+      firstReturned.countDown();
+      return "late";
     }
   }
 

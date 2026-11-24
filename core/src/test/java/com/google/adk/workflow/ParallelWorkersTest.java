@@ -59,10 +59,12 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.observers.TestObserver;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.math.BigInteger;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -504,6 +506,41 @@ public final class ParallelWorkersTest {
 
     assertThat(thrown).hasMessageThat().isEqualTo("fatal");
     assertThat(siblingCancelled.await(10, SECONDS)).isTrue();
+  }
+
+  @Test
+  public void runNode_itemThrowsAnErrorBesideRunningSiblings_reportsNoUndeliverableError() {
+    List<Object> items = new ArrayList<>();
+    items.add("fatal");
+    for (int i = 0; i < 16; i++) {
+      items.add(i % 2 == 0 ? "fast" : "slow");
+    }
+    List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
+    var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+
+    try {
+      // The race is between the error and the siblings' cancel, so repeat it.
+      for (int round = 0; round < 100; round++) {
+        AssertionError fatal = new AssertionError("fatal");
+        Node worker =
+            node(item ->
+                switch ((String) item) {
+                  case "fatal" -> Flowable.error(fatal);
+                  case "slow" -> Flowable.timer(10, SECONDS);
+                  default -> Flowable.just(item);
+                });
+
+        start(ParallelWorkers.parallelNode(worker), items)
+            .test()
+            .awaitDone(10, SECONDS)
+            .assertError(fatal);
+      }
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousErrorHandler);
+    }
+
+    assertThat(undeliverable).isEmpty();
   }
 
   @Test
