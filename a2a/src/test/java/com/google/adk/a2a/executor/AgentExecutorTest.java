@@ -32,7 +32,10 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
+import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.Session;
+import com.google.adk.sessions.SessionException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -52,6 +55,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.Before;
@@ -66,6 +70,10 @@ public final class AgentExecutorTest {
   /** A throwable message shaped like the ones that leak host detail. */
   private static final String SECRET_ERROR =
       "Runner error: /home/victim/.config/adk/credentials.json (No such file)";
+
+  private static final String APP_NAME = "test_app";
+  private static final String CONTEXT_ID = "context-1";
+  private static final String CONTEXT_USER_ID = "A2A_USER_" + CONTEXT_ID;
 
   private EventQueue eventQueue;
   private List<Object> enqueuedEvents;
@@ -163,7 +171,7 @@ public final class AgentExecutorTest {
     Object lastEvent = Iterables.getLast(enqueuedEvents);
     assertThat(lastEvent).isInstanceOf(TaskStatusUpdateEvent.class);
     TaskStatusUpdateEvent statusEvent = (TaskStatusUpdateEvent) lastEvent;
-    assertThat(statusEvent.getStatus().state().toString()).isEqualTo("FAILED");
+    assertThat(statusEvent.getStatus().state()).isEqualTo(TaskState.FAILED);
     assertThat(statusEvent.getStatus().message().getParts().get(0)).isInstanceOf(TextPart.class);
     TextPart textPart = (TextPart) statusEvent.getStatus().message().getParts().get(0);
     // The remote peer gets a correlation id for the logged throwable, not its
@@ -477,6 +485,184 @@ public final class AgentExecutorTest {
     when(ctx.getTaskId()).thenReturn("task-" + UUID.randomUUID());
     when(ctx.getContextId()).thenReturn("ctx-" + UUID.randomUUID());
     return ctx;
+  }
+
+  /**
+   * Builds the real SDK {@link RequestContext} from {@link MessageSendParams}, the way a JSON-RPC
+   * transport does: the context id is read off the message, and a UUID is generated when it is
+   * absent. A2A generates a task id per request, so the turns of one conversation differ there.
+   */
+  private static RequestContext requestContext(String text, String contextId) {
+    Message message =
+        new Message.Builder()
+            .role(Message.Role.USER)
+            .contextId(contextId)
+            .parts(ImmutableList.of(new TextPart(text)))
+            .build();
+    return new RequestContext.Builder()
+        .setParams(new MessageSendParams.Builder().message(message).build())
+        .build();
+  }
+
+  private AgentExecutor executorWith(BaseSessionService sessionService) {
+    return new AgentExecutor.Builder()
+        .app(App.builder().name(APP_NAME).rootAgent(testAgent).build())
+        .sessionService(sessionService)
+        .artifactService(new InMemoryArtifactService())
+        .agentExecutorConfig(AgentExecutorConfig.builder().build())
+        .build();
+  }
+
+  /** Makes the next turn emit one model event; a fresh id keeps turns distinguishable. */
+  private void emitOneResponse() {
+    Event response =
+        Event.builder()
+            .id("event-" + UUID.randomUUID())
+            .author("test_agent")
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(ImmutableList.of(Part.builder().text("ok").build()))
+                    .build())
+            .build();
+    testAgent.setEventsToEmit(Flowable.just(response));
+  }
+
+  private TaskState lastFinalState() {
+    return enqueuedEvents.stream()
+        .filter(e -> e instanceof TaskStatusUpdateEvent)
+        .map(e -> (TaskStatusUpdateEvent) e)
+        .filter(TaskStatusUpdateEvent::isFinal)
+        .map(e -> e.getStatus().state())
+        .reduce((first, second) -> second)
+        .orElseThrow();
+  }
+
+  @Test
+  public void execute_secondTurnWithSameContextId_reusesTheFirstTurnSession() {
+    AgentExecutor executor = executorWith(new InMemorySessionService());
+
+    emitOneResponse();
+    executor.execute(requestContext("turn one", CONTEXT_ID), eventQueue);
+    String firstTurnSessionId = testAgent.lastInvocationContext.session().id();
+
+    emitOneResponse();
+    executor.execute(requestContext("turn two", CONTEXT_ID), eventQueue);
+
+    assertThat(testAgent.lastInvocationContext.session().id()).isEqualTo(firstTurnSessionId);
+  }
+
+  @Test
+  public void execute_secondTurnWithSameContextId_seesTheFirstTurnHistory() {
+    AgentExecutor executor = executorWith(new InMemorySessionService());
+
+    emitOneResponse();
+    executor.execute(requestContext("turn one", CONTEXT_ID), eventQueue);
+    int firstTurnEventCount = testAgent.lastInvocationContext.session().immutableEvents().size();
+
+    emitOneResponse();
+    executor.execute(requestContext("turn two", CONTEXT_ID), eventQueue);
+
+    assertThat(testAgent.lastInvocationContext.session().immutableEvents().size())
+        .isGreaterThan(firstTurnEventCount);
+  }
+
+  @Test
+  public void execute_firstTurn_storesTheSessionUnderTheContextId() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    AgentExecutor executor = executorWith(sessionService);
+
+    emitOneResponse();
+    executor.execute(requestContext("turn one", CONTEXT_ID), eventQueue);
+
+    assertThat(
+            sessionService
+                .getSession(APP_NAME, CONTEXT_USER_ID, CONTEXT_ID, Optional.empty())
+                .map(Session::id)
+                .defaultIfEmpty("")
+                .blockingGet())
+        .isEqualTo(CONTEXT_ID);
+  }
+
+  @Test
+  public void execute_twoTurnsWithoutAContextId_getSeparateSessions() {
+    AgentExecutor executor = executorWith(new InMemorySessionService());
+
+    emitOneResponse();
+    RequestContext firstCtx = requestContext("turn one", null);
+    executor.execute(firstCtx, eventQueue);
+    String firstTurnSessionId = testAgent.lastInvocationContext.session().id();
+
+    emitOneResponse();
+    RequestContext secondCtx = requestContext("turn two", null);
+    executor.execute(secondCtx, eventQueue);
+
+    // Each request got its own generated context id, and that id anchors its session; neither
+    // turn sees the other.
+    assertThat(firstCtx.getContextId()).isNotNull();
+    assertThat(secondCtx.getContextId()).isNotNull();
+    assertThat(firstTurnSessionId).isEqualTo(firstCtx.getContextId());
+    assertThat(testAgent.lastInvocationContext.session().id()).isEqualTo(secondCtx.getContextId());
+    assertThat(testAgent.lastInvocationContext.session().id()).isNotEqualTo(firstTurnSessionId);
+  }
+
+  @Test
+  public void execute_secondTurnEchoingTheGeneratedContextId_continuesTheSameSession() {
+    AgentExecutor executor = executorWith(new InMemorySessionService());
+
+    emitOneResponse();
+    RequestContext firstCtx = requestContext("remember the code word", null);
+    executor.execute(firstCtx, eventQueue);
+    String generatedContextId = firstCtx.getContextId();
+    int firstTurnEventCount = testAgent.lastInvocationContext.session().immutableEvents().size();
+
+    // The typical handshake: turn 2 echoes back the context id turn 1 was answered with.
+    emitOneResponse();
+    executor.execute(requestContext("what was the code word?", generatedContextId), eventQueue);
+
+    assertThat(testAgent.lastInvocationContext.session().id()).isEqualTo(generatedContextId);
+    assertThat(testAgent.lastInvocationContext.session().immutableEvents().size())
+        .isGreaterThan(firstTurnEventCount);
+  }
+
+  /**
+   * Two first turns with the same new context id can both miss {@code getSession}. A service that
+   * rejects duplicate ids fails the loser; the turn must recover by re-reading the session the
+   * winner created, instead of handing the peer a failed task.
+   */
+  @Test
+  public void execute_losingTheRaceToAnotherTurn_fallsBackToTheSessionItCreated() {
+    Session winner = Session.builder(CONTEXT_ID).appName(APP_NAME).userId(CONTEXT_USER_ID).build();
+    BaseSessionService racing = mock(BaseSessionService.class);
+    // The first read misses, so the executor tries to create and loses the race. Every read after
+    // that -- the fallback's, and the one Runner does before running -- finds the winner's session.
+    when(racing.getSession(APP_NAME, CONTEXT_USER_ID, CONTEXT_ID, Optional.empty()))
+        .thenReturn(Maybe.empty())
+        .thenReturn(Maybe.just(winner));
+    when(racing.createSession(APP_NAME, CONTEXT_USER_ID, (Map<String, Object>) null, CONTEXT_ID))
+        .thenReturn(Single.error(new SessionException(SessionException.SESSION_ALREADY_EXISTS)));
+    when(racing.appendEvent(any(), any()))
+        .thenAnswer(invocation -> Single.just(invocation.getArgument(1)));
+
+    emitOneResponse();
+    executorWith(racing).execute(requestContext("turn one", CONTEXT_ID), eventQueue);
+
+    assertThat(testAgent.lastInvocationContext.session().id()).isEqualTo(CONTEXT_ID);
+  }
+
+  /** A creation failure that is not "already exists" must still surface. */
+  @Test
+  public void execute_failingForAnotherReason_failsTheTurn() {
+    BaseSessionService failing = mock(BaseSessionService.class);
+    when(failing.getSession(APP_NAME, CONTEXT_USER_ID, CONTEXT_ID, Optional.empty()))
+        .thenReturn(Maybe.empty());
+    when(failing.createSession(APP_NAME, CONTEXT_USER_ID, (Map<String, Object>) null, CONTEXT_ID))
+        .thenReturn(Single.error(new SessionException("backend unavailable")));
+
+    executorWith(failing).execute(requestContext("turn one", CONTEXT_ID), eventQueue);
+
+    assertThat(testAgent.lastInvocationContext).isNull();
+    assertThat(lastFinalState()).isEqualTo(TaskState.FAILED);
   }
 
   @Test
