@@ -40,6 +40,7 @@ import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
+import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -47,6 +48,8 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Single;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
@@ -665,6 +668,19 @@ public class RequestConfirmationLlmRequestProcessorTest {
     assertThat(resumedEvents(agent, session)).isEmpty();
   }
 
+  @Test
+  public void runAsync_confirmedToolFailsOutsideAWorkflow_resumesWithNoEvents() {
+    LlmAgent agent =
+        createTestAgentBuilder(TestLlm.create(ImmutableList.of()))
+            .tools(new FailingTool(ECHO_TOOL_NAME))
+            .build();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    ImmutableList<Event> resumed = resumedEvents(agent, session);
+
+    assertThat(resumed).isEmpty();
+  }
+
   private static ImmutableList<Event> resumedEvents(LlmAgent agent, Session session) {
     return ImmutableList.copyOf(
         processor
@@ -735,6 +751,18 @@ public class RequestConfirmationLlmRequestProcessorTest {
                 buildInvocationContext(agent, session, branch), LlmRequest.builder().build())
             .blockingGet()
             .events());
+  }
+
+  /** A tool that fails every call. */
+  private static final class FailingTool extends BaseTool {
+    FailingTool(String name) {
+      super(name, "Fails every call.");
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+      return Single.error(new IllegalStateException("failed after approval"));
+    }
   }
 
   private static LlmAgent createAgentWithEchoTool() {

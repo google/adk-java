@@ -153,13 +153,18 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
               ImmutableMap.copyOf(toolsToResumeWithConfirmation))
           .map(assembledEvent ->
               RequestProcessingResult.create(llmRequest, ImmutableList.of(assembledEvent)))
-          .toSingle()
+          .defaultIfEmpty(RequestProcessingResult.create(llmRequest, ImmutableList.of()))
           .onErrorResumeNext(e -> {
             // A confirmed call whose child node waits makes the agent wait too; the flow saves the
             // finished calls' responses first, so they do not run again on resume.
             Throwable wait =
                 e instanceof Functions.WaitWithFinishedResponses kept ? kept.getCause() : e;
             if (NodeRunner.isWaitSignal(wait)) {
+              return Single.error(e);
+            }
+            // Python fails every agent; limit to workflow nodes to keep other agents unchanged.
+            if (invocationContext.nodePath().isPresent()) {
+              // Drops other confirmed calls' responses; a retry reruns them (like Python, Kotlin).
               return Single.error(e);
             }
             logger.error("Error processing request confirmation", e);

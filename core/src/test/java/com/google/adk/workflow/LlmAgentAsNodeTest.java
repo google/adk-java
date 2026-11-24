@@ -54,10 +54,12 @@ import com.google.adk.models.LlmResponse;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.testing.ResumabilityTestUtils;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.LongRunningFunctionTool;
 import com.google.adk.tools.ToolContext;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
@@ -1292,6 +1294,69 @@ public final class LlmAgentAsNodeTest {
     assertThat(thrown).hasMessageThat().doesNotContain("secret-day");
   }
 
+  @Test
+  public void runAsync_toolFailingAfterConfirmation_failsTheNode() {
+    TestLlm model =
+        TestLlm.create(
+            createFunctionCallLlmResponse("call_1", "remove_file", ImmutableMap.of()),
+            createTextLlmResponse("removed"));
+    LlmAgent worker =
+        LlmAgent.builder().name("worker").model(model).tools(new ConfirmThenFailTool()).build();
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, worker)).build());
+    FunctionCall request =
+        session.turn(go()).stream()
+            .flatMap(event -> Functions.getAskUserConfirmationFunctionCalls(event).stream())
+            .collect(onlyElement());
+
+    WorkflowResumeTesting.FailedTurn turn =
+        session.failingTurn(
+            answer(
+                request.id().orElseThrow(),
+                ImmutableMap.of("confirmed", true),
+                Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME));
+
+    // As in ADK Kotlin and Python, the tool's error fails the run before the model is called.
+    assertThat(turn.error()).hasMessageThat().contains("failed after approval");
+    assertThat(model.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void runAsync_confirmedToolGivingNoResult_keepsTheNodeRunning() {
+    TestLlm model =
+        TestLlm.create(
+            createFunctionCallLlmResponse("call_1", "pendingTool", ImmutableMap.of("message", "x")),
+            createTextLlmResponse("waiting"));
+    LlmAgent worker =
+        LlmAgent.builder()
+            .name("worker")
+            .model(model)
+            .tools(
+                LongRunningFunctionTool.create(
+                    ResumabilityTestUtils.Tools.class,
+                    "pendingTool",
+                    /* requireConfirmation= */ true))
+            .build();
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, worker)).build());
+    FunctionCall request =
+        session.turn(go()).stream()
+            .flatMap(event -> Functions.getAskUserConfirmationFunctionCalls(event).stream())
+            .collect(onlyElement());
+
+    ImmutableList<Event> events =
+        session.turn(
+            answer(
+                request.id().orElseThrow(),
+                ImmutableMap.of("confirmed", true),
+                Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME));
+
+    assertThat(model.getRequests()).hasSize(2);
+    assertThat(events.stream().map(Event::stringifyContent)).contains("waiting");
+  }
+
   /** Returns a node that runs both agents on its own branch at once, each on its own input. */
   private static Node runningAtOnce(
       LlmAgent first, Object firstInput, LlmAgent second, Object secondInput) {
@@ -1528,6 +1593,27 @@ public final class LlmAgentAsNodeTest {
       return calls.incrementAndGet() == 1
           ? firstCall
           : Single.just(ImmutableMap.of("result", "found"));
+    }
+  }
+
+  /** A tool that asks for confirmation and, once approved, fails. */
+  private static final class ConfirmThenFailTool extends BaseTool {
+    ConfirmThenFailTool() {
+      super("remove_file", "Removes a file.");
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(FunctionDeclaration.builder().name("remove_file").build());
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+      if (toolContext.toolConfirmation().isEmpty()) {
+        toolContext.requestConfirmation("Remove the file?");
+        return Single.just(ImmutableMap.of("error", "needs confirmation"));
+      }
+      return Single.error(new IllegalStateException("failed after approval"));
     }
   }
 
