@@ -43,7 +43,11 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -82,6 +86,17 @@ public class FirestoreSessionService implements BaseSessionService {
   private static final String ID_KEY = Constants.KEY_ID;
   private static final String UPDATE_TIME_KEY = Constants.KEY_UPDATE_TIME;
   private static final String TIMESTAMP_KEY = Constants.KEY_TIMESTAMP;
+
+  /**
+   * Formats stored event timestamps with exactly three fraction digits, so text order is time
+   * order. The field stays text, unlike the timestamp in ADK Python, because Firestore orders
+   * timestamp values before strings, so switching types would misorder existing sessions.
+   */
+  private static final DateTimeFormatter TIMESTAMP_FORMATTER =
+      new DateTimeFormatterBuilder().appendInstant(3).toFormatter();
+
+  /** The latest timestamp an event can have, since {@link Event#timestamp()} is epoch millis. */
+  private static final Instant LATEST_EVENT_TIMESTAMP = Instant.ofEpochMilli(Long.MAX_VALUE);
 
   /** Random token each create stores, so a retried create can detect its own write. */
   static final String CREATE_TOKEN_KEY = "createToken";
@@ -209,78 +224,86 @@ public class FirestoreSessionService implements BaseSessionService {
     ApiFuture<DocumentSnapshot> future = getSessionsCollection(userId).document(sessionId).get();
 
     return ApiFutureUtils.toMaybe(future)
-        .flatMap(
-            document -> {
-              if (!document.exists()) {
-                logger.warn("Session not found for sessionId: {}", sessionId);
-                return Maybe.error(new SessionNotFoundException("Session not found: " + sessionId));
-              }
+        .flatMap(document -> {
+          if (!document.exists()) {
+            logger.warn("Session not found for sessionId: {}", sessionId);
+            return Maybe.error(new SessionNotFoundException("Session not found: " + sessionId));
+          }
 
-              Map<String, Object> data = document.getData();
-              if (data == null) {
-                logger.warn("Session data is null for sessionId: {}", sessionId);
-                return Maybe.empty();
-              }
+          Map<String, Object> data = document.getData();
+          if (data == null) {
+            logger.warn("Session data is null for sessionId: {}", sessionId);
+            return Maybe.empty();
+          }
 
-              // Enforce the (appName, userId, sessionId) scope. The Firestore
-              // document is keyed only by (userId, sessionId), so without this
-              // check a caller could read a session that belongs to a different
-              // application for the same user. Treat an appName mismatch as
-              // "not found" so cross-application existence is not leaked.
-              if (!appName.equals(data.get(APP_NAME_KEY))) {
-                logger.warn("Session {} does not belong to app {}", sessionId, appName);
-                return Maybe.error(new SessionNotFoundException("Session not found: " + sessionId));
-              }
+          // Enforce the (appName, userId, sessionId) scope. The Firestore
+          // document is keyed only by (userId, sessionId), so without this
+          // check a caller could read a session that belongs to a different
+          // application for the same user. Treat an appName mismatch as
+          // "not found" so cross-application existence is not leaked.
+          if (!appName.equals(data.get(APP_NAME_KEY))) {
+            logger.warn("Session {} does not belong to app {}", sessionId, appName);
+            return Maybe.error(new SessionNotFoundException("Session not found: " + sessionId));
+          }
 
-              // Fetch events based on config
-              GetSessionConfig config =
-                  configOpt.orElseGet(() -> GetSessionConfig.builder().build());
-              CollectionReference eventsCollection =
-                  document.getReference().collection(EVENTS_SUBCOLLECTION_NAME);
-              Query eventsQuery = eventsCollection.orderBy(TIMESTAMP_KEY);
+          // Fetch events based on config
+          GetSessionConfig config = configOpt.orElseGet(() -> GetSessionConfig.builder().build());
+          CollectionReference eventsCollection =
+              document.getReference().collection(EVENTS_SUBCOLLECTION_NAME);
+          Query eventsQuery = eventsCollection.orderBy(TIMESTAMP_KEY);
 
-              if (config.afterTimestamp().isPresent()) {
-                eventsQuery =
-                    eventsQuery.whereGreaterThan(
-                        TIMESTAMP_KEY, config.afterTimestamp().get().toString());
-              }
+          // No event can be at or after a later afterTimestamp, and rounding it up below could
+          // overflow near Instant.MAX.
+          boolean afterLatestEvent =
+              config.afterTimestamp().filter(t -> t.isAfter(LATEST_EVENT_TIMESTAMP)).isPresent();
 
-              if (config.numRecentEvents().isPresent()) {
-                eventsQuery = eventsQuery.limitToLast(config.numRecentEvents().get());
-              }
+          if (config.afterTimestamp().isPresent() && !afterLatestEvent) {
+            // Round up to whole milliseconds, the precision of stored event timestamps.
+            Instant cursor =
+                config.afterTimestamp().get().plusNanos(999_999).truncatedTo(ChronoUnit.MILLIS);
+            eventsQuery =
+                eventsQuery.whereGreaterThanOrEqualTo(
+                    TIMESTAMP_KEY, TIMESTAMP_FORMATTER.format(cursor));
+          }
 
-              ApiFuture<List<QueryDocumentSnapshot>> eventsFuture =
-                  ApiFutures.transform(
+          if (config.numRecentEvents().isPresent()) {
+            eventsQuery = eventsQuery.limitToLast(config.numRecentEvents().get());
+          }
+
+          ApiFuture<List<QueryDocumentSnapshot>> eventsFuture =
+              afterLatestEvent
+                  ? ApiFutures.immediateFuture(List.of())
+                  : ApiFutures.transform(
                       eventsQuery.get(),
                       com.google.cloud.firestore.QuerySnapshot::getDocuments,
                       MoreExecutors.directExecutor());
 
-              return ApiFutureUtils.toSingle(eventsFuture)
-                  .map(
-                      eventDocs -> {
-                        List<Event> events = new ArrayList<>();
-                        for (DocumentSnapshot eventDoc : eventDocs) {
-                          Event event = eventFromMap(eventDoc.getData(), userId);
-                          if (event != null) {
-                            events.add(event);
-                          }
-                        }
-                        return events;
-                      })
-                  .map(
-                      events -> {
-                        ConcurrentMap<String, Object> state =
-                            new ConcurrentHashMap<>((Map<String, Object>) data.get(STATE_KEY));
-                        return Session.builder((String) data.get(ID_KEY))
-                            .appName((String) data.get(APP_NAME_KEY))
-                            .userId((String) data.get(USER_ID_KEY))
-                            .lastUpdateTime(Instant.parse((String) data.get(UPDATE_TIME_KEY)))
-                            .state(state)
-                            .events(events)
-                            .build();
-                      })
-                  .toMaybe();
-            });
+          return ApiFutureUtils.toSingle(eventsFuture)
+              .map(eventDocs -> {
+                List<Event> events = new ArrayList<>();
+                for (DocumentSnapshot eventDoc : eventDocs) {
+                  Event event = eventFromMap(eventDoc.getData(), userId);
+                  if (event != null) {
+                    events.add(event);
+                  }
+                }
+                // Events stored before fixed-width timestamps can come back out of order.
+                events.sort(Comparator.comparingLong(Event::timestamp));
+                return events;
+              })
+              .map(events -> {
+                ConcurrentMap<String, Object> state =
+                    new ConcurrentHashMap<>((Map<String, Object>) data.get(STATE_KEY));
+                return Session.builder((String) data.get(ID_KEY))
+                    .appName((String) data.get(APP_NAME_KEY))
+                    .userId((String) data.get(USER_ID_KEY))
+                    .lastUpdateTime(Instant.parse((String) data.get(UPDATE_TIME_KEY)))
+                    .state(state)
+                    .events(events)
+                    .build();
+              })
+              .toMaybe();
+        });
   }
 
   /**
@@ -426,7 +449,7 @@ public class FirestoreSessionService implements BaseSessionService {
     } else {
       data.put("author", event.author());
     }
-    data.put(TIMESTAMP_KEY, Instant.ofEpochMilli(event.timestamp()).toString());
+    data.put(TIMESTAMP_KEY, TIMESTAMP_FORMATTER.format(Instant.ofEpochMilli(event.timestamp())));
     data.put(APP_NAME_KEY, session.appName()); // Persist appName with the event
 
     Map<String, Object> contentData = new HashMap<>();
@@ -611,48 +634,49 @@ public class FirestoreSessionService implements BaseSessionService {
   /** Lists all events for a given appName, userId, and sessionId. */
   @Override
   public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
-    return Single.fromCallable(
-        () -> {
-          Objects.requireNonNull(appName, "appName cannot be null");
-          Objects.requireNonNull(userId, "userId cannot be null");
-          Objects.requireNonNull(sessionId, "sessionId cannot be null");
+    return Single.fromCallable(() -> {
+      Objects.requireNonNull(appName, "appName cannot be null");
+      Objects.requireNonNull(userId, "userId cannot be null");
+      Objects.requireNonNull(sessionId, "sessionId cannot be null");
 
-          logger.info("Listing events for userId: {} with sessionId: {}", userId, sessionId);
+      logger.info("Listing events for userId: {} with sessionId: {}", userId, sessionId);
 
-          // First, check if the session document exists.
-          ApiFuture<DocumentSnapshot> sessionFuture =
-              getSessionsCollection(userId).document(sessionId).get();
-          DocumentSnapshot sessionDocument = sessionFuture.get(); // Block for the result
+      // First, check if the session document exists.
+      ApiFuture<DocumentSnapshot> sessionFuture =
+          getSessionsCollection(userId).document(sessionId).get();
+      DocumentSnapshot sessionDocument = sessionFuture.get(); // Block for the result
 
-          if (!sessionDocument.exists() || !appName.equals(sessionDocument.get(APP_NAME_KEY))) {
-            logger.warn(
-                "Session not found for sessionId: {} in app {}. Returning empty list of events.",
-                sessionId,
-                appName);
-            throw new SessionNotFoundException(appName + "," + userId + "," + sessionId);
-          }
+      if (!sessionDocument.exists() || !appName.equals(sessionDocument.get(APP_NAME_KEY))) {
+        logger.warn(
+            "Session not found for sessionId: {} in app {}. Returning empty list of events.",
+            sessionId,
+            appName);
+        throw new SessionNotFoundException(appName + "," + userId + "," + sessionId);
+      }
 
-          // Session exists, now fetch the events.
-          CollectionReference eventsCollection =
-              sessionDocument.getReference().collection(EVENTS_SUBCOLLECTION_NAME);
-          Query eventsQuery = eventsCollection.orderBy(TIMESTAMP_KEY);
+      // Session exists, now fetch the events.
+      CollectionReference eventsCollection =
+          sessionDocument.getReference().collection(EVENTS_SUBCOLLECTION_NAME);
+      Query eventsQuery = eventsCollection.orderBy(TIMESTAMP_KEY);
 
-          ApiFuture<List<QueryDocumentSnapshot>> eventsFuture =
-              ApiFutures.transform(
-                  eventsQuery.get(),
-                  querySnapshot -> querySnapshot.getDocuments(),
-                  MoreExecutors.directExecutor());
+      ApiFuture<List<QueryDocumentSnapshot>> eventsFuture =
+          ApiFutures.transform(
+              eventsQuery.get(),
+              querySnapshot -> querySnapshot.getDocuments(),
+              MoreExecutors.directExecutor());
 
-          List<Event> events = new ArrayList<>();
-          for (DocumentSnapshot eventDoc : eventsFuture.get()) {
-            Event event = eventFromMap(eventDoc.getData(), userId);
-            if (event != null) {
-              events.add(event);
-            }
-          }
-          logger.info("Returning {} events for sessionId: {}", events.size(), sessionId);
-          return ListEventsResponse.builder().events(events).build();
-        });
+      List<Event> events = new ArrayList<>();
+      for (DocumentSnapshot eventDoc : eventsFuture.get()) {
+        Event event = eventFromMap(eventDoc.getData(), userId);
+        if (event != null) {
+          events.add(event);
+        }
+      }
+      // Events stored before fixed-width timestamps can come back out of order.
+      events.sort(Comparator.comparingLong(Event::timestamp));
+      logger.info("Returning {} events for sessionId: {}", events.size(), sessionId);
+      return ListEventsResponse.builder().events(events).build();
+    });
   }
 
   /** Appends an event to a session, updating the session state and persisting to Firestore. */
