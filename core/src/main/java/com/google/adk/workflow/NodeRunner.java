@@ -91,6 +91,7 @@ public final class NodeRunner {
   private final @Nullable String overrideBranch;
   private final @Nullable String overrideIsolationScope;
   private final Map<String, @Nullable Object> resumeInputs;
+  private final ImmutableSet<String> openInterrupts;
 
   private NodeRunner(Builder builder) {
     checkState(builder.node != null, "A node runner needs a node.");
@@ -115,6 +116,7 @@ public final class NodeRunner {
     this.overrideBranch = builder.overrideBranch;
     this.overrideIsolationScope = builder.overrideIsolationScope;
     this.resumeInputs = builder.resumeInputs;
+    this.openInterrupts = builder.openInterrupts;
   }
 
   /**
@@ -355,6 +357,7 @@ public final class NodeRunner {
                 ? recovered.isolationScope
                 : config.overrideIsolationScope().orElse(null))
         .resumeInputs(interception.resumeInputs())
+        .openInterrupts(interception.interrupts())
         .build()
         .run(nodeInput);
   }
@@ -457,21 +460,36 @@ public final class NodeRunner {
     io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
     // concatMap loops instead of recursing, so many instant retries keep the stack flat.
     return Flowable.range(1, maxAttempts)
-        .concatMapSingle(
-            attempt ->
-                backoff(policy, attempt)
-                    .andThen(
-                        Single.defer(
-                                () -> {
-                                  Context context = newContext(resumeInputs, previousAttempt.get());
-                                  previousAttempt.set(context.requireNodeState());
-                                  Activation activation = new Activation(context);
-                                  return activation.run(nodeInput).toSingleDefault(activation);
-                                })
-                            .compose(Tracing.withContext(traceContext))))
+        .concatMapSingle(attempt ->
+            backoff(policy, attempt)
+                .andThen(
+                    Single.defer(
+                            () -> {
+                              Context context = newContext(resumeInputs, previousAttempt.get());
+                              previousAttempt.set(context.requireNodeState());
+                              Activation activation = new Activation(context);
+                              return activation.run(nodeInput).toSingleDefault(activation);
+                            })
+                        .compose(Tracing.withContext(traceContext))))
         .takeUntil(activation -> !activation.retries(policy))
         .lastOrError()
-        .map(activation -> activation.context);
+        .map(activation -> keepOpenInterrupts(activation.context));
+  }
+
+  /**
+   * Keeps {@code context} waiting on the interrupts this rerun started with if it finishes without
+   * a failure, output, or route, since only an answer closes them.
+   */
+  private Context keepOpenInterrupts(Context context) {
+    NodeExecutionState state = context.requireNodeState();
+    boolean hasResult =
+        state.failure().isPresent()
+            || state.output().isPresent()
+            || state.selectedRoutes().isPresent();
+    if (!openInterrupts.isEmpty() && !hasResult) {
+      state.addInterruptIds(openInterrupts);
+    }
+    return context;
   }
 
   /** Returns the wait before attempt {@code attempt}; there is none before the first. */
@@ -913,6 +931,7 @@ public final class NodeRunner {
     private @Nullable String overrideBranch;
     private @Nullable String overrideIsolationScope;
     private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
+    private ImmutableSet<String> openInterrupts = ImmutableSet.of();
 
     private Builder() {}
 
@@ -995,6 +1014,16 @@ public final class NodeRunner {
     @CanIgnoreReturnValue
     Builder resumeInputs(Map<String, @Nullable Object> resumeInputs) {
       this.resumeInputs = checkNotNull(resumeInputs);
+      return this;
+    }
+
+    /**
+     * Sets the unanswered interrupts that a rerun child keeps waiting on if it ends without a
+     * result (a failure, output, or route).
+     */
+    @CanIgnoreReturnValue
+    Builder openInterrupts(ImmutableSet<String> openInterrupts) {
+      this.openInterrupts = checkNotNull(openInterrupts);
       return this;
     }
 

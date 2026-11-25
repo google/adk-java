@@ -22,12 +22,15 @@ import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
+import static com.google.adk.testing.WorkflowTestNodes.dispatcher;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.callContent;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
 import static com.google.adk.workflow.WorkflowResumeTesting.interrupt;
 import static com.google.adk.workflow.WorkflowResumeTesting.modelText;
+import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
+import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.retrying;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -947,6 +950,189 @@ public final class LlmAgentAsNodeTest {
   }
 
   @Test
+  public void runAsync_agentWithTwoOpenCallsOneAnswered_keepsWaitingOnTheOther() {
+    TestLlm model =
+        TestLlm.create(createLlmResponse(twoOpenCalls()), createTextLlmResponse("all done"));
+    LlmAgent worker =
+        LlmAgent.builder().name("worker").model(model).tools(pendingFunctionTool()).build();
+    List<@Nullable Object> afterInputs = new ArrayList<>();
+    Node after =
+        new TestNode(
+            "after",
+            (context, input) -> {
+              afterInputs.add(input);
+              return Flowable.just("after ran");
+            });
+    WorkflowSession session = new WorkflowSession(chain(worker, after));
+    session.advance(go());
+
+    ImmutableList<Event> first =
+        session.turn(answer("p1", ImmutableMap.of("ok", true), "pendingTool"));
+    int requestsAfterFirst = model.getRequests().size();
+    int afterRunsAfterFirst = afterInputs.size();
+    ImmutableList<Event> second =
+        session.turn(answer("p2", ImmutableMap.of("ok", true), "pendingTool"));
+
+    // As in ADK Kotlin, the node waits on p2 and calls its model once both calls are answered.
+    assertThat(requestsAfterFirst).isEqualTo(1);
+    assertThat(afterRunsAfterFirst).isEqualTo(0);
+    assertThat(workflowEnds(first)).isEmpty();
+    assertThat(model.getRequests()).hasSize(2);
+    assertThat(functionResponseIds(model.getLastRequest())).containsExactly("p1", "p2");
+    assertThat(second.stream().map(Event::stringifyContent)).contains("all done");
+    assertThat(afterInputs).hasSize(1);
+  }
+
+  @Test
+  public void runAsync_chatAgentWithTwoOpenCallsOneAnswered_keepsWaitingOnTheOther() {
+    TestLlm model =
+        TestLlm.create(createLlmResponse(twoOpenCalls()), createTextLlmResponse("all done"));
+    LlmAgent guide =
+        LlmAgent.builder()
+            .name("guide")
+            .model(model)
+            .mode(AgentMode.CHAT)
+            .tools(pendingFunctionTool())
+            .build();
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, guide)).build());
+    session.advance(go());
+
+    ImmutableList<Event> first =
+        session.turn(answer("p1", ImmutableMap.of("ok", true), "pendingTool"));
+    int requestsAfterFirst = model.getRequests().size();
+    ImmutableList<Event> second =
+        session.turn(answer("p2", ImmutableMap.of("ok", true), "pendingTool"));
+
+    assertThat(requestsAfterFirst).isEqualTo(1);
+    assertThat(workflowEnds(first)).isEmpty();
+    assertThat(model.getRequests()).hasSize(2);
+    assertThat(functionResponseIds(model.getLastRequest())).containsExactly("p1", "p2");
+    assertThat(second.stream().map(Event::stringifyContent)).contains("all done");
+  }
+
+  @Test
+  public void runAsync_taskAgentWithTwoOpenCallsOneAnswered_finishesOnceBothAreAnswered() {
+    TestLlm model =
+        TestLlm.create(
+            createLlmResponse(twoOpenCalls()),
+            createFunctionCallLlmResponse(
+                "finish_1", "finish_task", ImmutableMap.of("result", "Done.")));
+    LlmAgent task =
+        LlmAgent.builder()
+            .name("task")
+            .model(model)
+            .mode(AgentMode.TASK)
+            .tools(pendingFunctionTool())
+            .build();
+    Node after = captureInput("after");
+    WorkflowSession session = new WorkflowSession(chain(task, after));
+    session.advance(go());
+
+    ImmutableList<Event> first =
+        session.turn(answer("p1", ImmutableMap.of("ok", true), "pendingTool"));
+    int requestsAfterFirst = model.getRequests().size();
+    ImmutableList<Event> second =
+        session.turn(answer("p2", ImmutableMap.of("ok", true), "pendingTool"));
+
+    assertThat(requestsAfterFirst).isEqualTo(1);
+    assertThat(workflowEnds(first)).isEmpty();
+    assertThat(pathsOf(first)).doesNotContain("wf@1/after@1");
+    assertThat(functionResponseIds(model.getLastRequest())).containsExactly("p1", "p2");
+    assertThat(outputEventAt(second, "wf@1/after@1").output())
+        .hasValue(ImmutableMap.of("received", ImmutableMap.of("result", "Done.")));
+  }
+
+  @Test
+  public void runAsync_singleTurnAgentWithTwoOpenCallsOneAnswered_keepsWaitingOnTheOther() {
+    TestLlm model =
+        TestLlm.create(createLlmResponse(twoOpenCalls()), createTextLlmResponse("all done"));
+    LlmAgent worker =
+        LlmAgent.builder()
+            .name("worker")
+            .model(model)
+            .mode(AgentMode.SINGLE_TURN)
+            .tools(pendingFunctionTool())
+            .build();
+    Node after = captureInput("after");
+    WorkflowSession session = new WorkflowSession(chain(worker, after));
+    session.advance(go());
+
+    ImmutableList<Event> first =
+        session.turn(answer("p1", ImmutableMap.of("ok", true), "pendingTool"));
+    int requestsAfterFirst = model.getRequests().size();
+    ImmutableList<Event> second =
+        session.turn(answer("p2", ImmutableMap.of("ok", true), "pendingTool"));
+
+    assertThat(requestsAfterFirst).isEqualTo(1);
+    assertThat(pathsOf(first)).doesNotContain("wf@1/after@1");
+    assertThat(functionResponseIds(model.getLastRequest())).containsExactly("p1", "p2");
+    assertThat(outputEventAt(second, "wf@1/after@1").output())
+        .hasValue(ImmutableMap.of("received", "all done"));
+  }
+
+  @Test
+  public void
+      runAsync_singleTurnAgentWithTwoOpenCallsOneAnsweredInANonResumableApp_endsOnItsReply() {
+    TestLlm model =
+        TestLlm.create(createLlmResponse(twoOpenCalls()), createTextLlmResponse("all done"));
+    LlmAgent worker =
+        LlmAgent.builder()
+            .name("worker")
+            .model(model)
+            .mode(AgentMode.SINGLE_TURN)
+            .tools(pendingFunctionTool())
+            .build();
+    List<@Nullable Object> afterInputs = new ArrayList<>();
+    Node after =
+        new TestNode(
+            "after",
+            (context, input) -> {
+              afterInputs.add(input);
+              return Flowable.just("after ran");
+            });
+    WorkflowSession session = new WorkflowSession(chain(worker, after), /* resumable= */ false);
+    session.advance(go());
+
+    session.advance(answer("p1", ImmutableMap.of("ok", true), "pendingTool"));
+
+    // As in ADK Kotlin, the model answers before p2 does, and that reply is the node's output.
+    assertThat(model.getRequests()).hasSize(2);
+    assertThat(afterInputs).containsExactly("all done");
+  }
+
+  @Test
+  public void runAsync_childAgentWithTwoOpenCallsOneAnswered_keepsItsParentWaiting() {
+    TestLlm model =
+        TestLlm.create(createLlmResponse(twoOpenCalls()), createTextLlmResponse("all done"));
+    LlmAgent worker =
+        LlmAgent.builder().name("worker").model(model).tools(pendingFunctionTool()).build();
+    List<@Nullable Object> afterInputs = new ArrayList<>();
+    Node parent =
+        dispatcher("parent", (context, input) -> context.runNode(worker, "go").toFlowable());
+    Node after =
+        new TestNode(
+            "after",
+            (context, input) -> {
+              afterInputs.add(input);
+              return Flowable.just("after ran");
+            });
+    WorkflowSession session = new WorkflowSession(chain(parent, after));
+    session.advance(go());
+
+    session.advance(answer("p1", ImmutableMap.of("ok", true), "pendingTool"));
+    int requestsAfterFirst = model.getRequests().size();
+    int afterRunsAfterFirst = afterInputs.size();
+    session.advance(answer("p2", ImmutableMap.of("ok", true), "pendingTool"));
+
+    assertThat(requestsAfterFirst).isEqualTo(1);
+    assertThat(afterRunsAfterFirst).isEqualTo(0);
+    assertThat(model.getRequests()).hasSize(2);
+    assertThat(afterInputs).hasSize(1);
+  }
+
+  @Test
   public void runAsync_singleTurnNodesRunningAtOnce_doNotSeeEachOthersInput() {
     CountDownLatch otherAsked = new CountDownLatch(1);
     // The other node's model answers only once this node asked, so both inputs exist at once.
@@ -1387,6 +1573,40 @@ public final class LlmAgentAsNodeTest {
         .author(Role.USER)
         .content(answer(callId, ImmutableMap.of("ok", true), "pendingTool"))
         .build();
+  }
+
+  /** Returns a model part that calls {@code pendingTool} with ID {@code callId}. */
+  private static Part pendingCallPart(String callId) {
+    return Part.builder()
+        .functionCall(
+            FunctionCall.builder()
+                .name("pendingTool")
+                .id(callId)
+                .args(ImmutableMap.of("message", "approve?")))
+        .build();
+  }
+
+  /** Returns a model turn that calls {@code pendingTool} twice, with IDs p1 and p2. */
+  private static Content twoOpenCalls() {
+    return Content.builder()
+        .role("model")
+        .parts(pendingCallPart("p1"), pendingCallPart("p2"))
+        .build();
+  }
+
+  /** Returns the events of {@code events} in which the workflow {@code wf} ends its turn. */
+  private static ImmutableList<Event> workflowEnds(List<Event> events) {
+    return events.stream()
+        .filter(event -> event.author().equals("wf") && event.actions().endOfAgent())
+        .collect(toImmutableList());
+  }
+
+  /** Returns the IDs of the function responses in {@code request}, in order. */
+  private static ImmutableList<String> functionResponseIds(LlmRequest request) {
+    return request.contents().stream()
+        .flatMap(content -> content.parts().orElse(ImmutableList.of()).stream())
+        .flatMap(part -> part.functionResponse().flatMap(FunctionResponse::id).stream())
+        .collect(toImmutableList());
   }
 
   /** Returns the only part of the user's answer to the {@code name} call {@code callId}. */

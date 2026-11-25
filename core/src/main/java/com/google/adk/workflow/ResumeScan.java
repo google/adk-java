@@ -120,9 +120,12 @@ final class ResumeScan {
     ImmutableSet<String> unresolved = recovered.unresolved();
 
     if (!unresolved.isEmpty()) {
-      return node.rerunOnResume() && !resolved.isEmpty()
-          ? Interception.run(resolved)
-          : Interception.waitOn(branch, unresolved, transfer);
+      if (node.rerunOnResume() && !resolved.isEmpty()) {
+        // Agents must wait on open calls; other nodes may proceed without them, as in Kotlin.
+        return Interception.run(
+            resolved, node instanceof LlmAgent ? unresolved : ImmutableSet.of());
+      }
+      return Interception.waitOn(branch, unresolved, transfer);
     }
     // A node that takes on a child's failure leaves no error event, so this turn records it.
     if (recovered.failed || failedThisTurn) {
@@ -314,6 +317,7 @@ final class ResumeScan {
   /**
    * How a node that already ran resumes: whether it runs again with {@code resumeInputs}, keyed by
    * interrupt ID, or replays its result on {@code branch}, where null keeps its scheduled branch.
+   * When a node reruns, it keeps waiting on {@code interrupts} if it ends without a result.
    */
   record Interception(
       boolean shouldRun,
@@ -326,12 +330,17 @@ final class ResumeScan {
 
     /** The node runs again and reads {@code resumeInputs}. */
     static Interception run(Map<String, @Nullable Object> resumeInputs) {
+      return run(resumeInputs, ImmutableSet.of());
+    }
+
+    /** The node reruns, reads {@code resumeInputs}, and keeps waiting on {@code open}. */
+    static Interception run(Map<String, @Nullable Object> resumeInputs, ImmutableSet<String> open) {
       return new Interception(
           /* shouldRun= */ true,
           /* output= */ null,
           /* route= */ null,
           /* branch= */ null,
-          ImmutableSet.of(),
+          open,
           resumeInputs,
           /* transferToAgent= */ null);
     }

@@ -268,6 +268,7 @@ final class Scheduler {
                       .useSubBranch(trigger.useSubBranch())
                       .overrideBranch(trigger.branch())
                       .resumeInputs(interception.resumeInputs())
+                      .openInterrupts(interception.interrupts())
                       .build()
                       .run(trigger.input())
                       .compose(Tracing.withContext(traceContext)))

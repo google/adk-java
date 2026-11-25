@@ -29,6 +29,7 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
@@ -488,10 +489,35 @@ public final class ResumeScanTest {
 
     assertThat(rerunWithProgress.shouldRun()).isTrue();
     assertThat(rerunWithProgress.resumeInputs()).containsExactly("a", 1);
+    assertThat(rerunWithProgress.interrupts()).isEmpty();
     assertThat(rerunWithoutProgress.shouldRun()).isFalse();
     assertThat(rerunWithoutProgress.interrupts()).containsExactly("a", "b");
     assertThat(staticWithProgress.shouldRun()).isFalse();
     assertThat(staticWithProgress.interrupts()).containsExactly("b");
+  }
+
+  @Test
+  public void intercept_agentWithPartialProgress_runsAndKeepsWaitingOnTheRest() {
+    RecoveredNode partialProgress = new RecoveredNode();
+    partialProgress.interruptIds.addAll(ImmutableList.of("a", "b"));
+    partialProgress.resolvedResponses.put("a", 1);
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(TestUtils.createTestLlm(TestUtils.createTextLlmResponse("unused")))
+            .build();
+
+    Interception interception =
+        ResumeScan.intercept(
+            agent,
+            partialProgress,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
+
+    assertThat(interception.shouldRun()).isTrue();
+    assertThat(interception.resumeInputs()).containsExactly("a", 1);
+    assertThat(interception.interrupts()).containsExactly("b");
   }
 
   @Test
