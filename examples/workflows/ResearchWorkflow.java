@@ -54,10 +54,8 @@ public final class ResearchWorkflow {
 
   /** Builds the workflow, with every agent on {@code model}. */
   public static Workflow create(String model) {
-    // START hands the first node the user's message as Content.
     Node saveQuestion =
-        FunctionNodes.of(
-            "save_question", Content.class, Void.class, ResearchWorkflow::saveQuestion);
+        FunctionNodes.of("save_question", String.class, Void.class, ResearchWorkflow::saveQuestion);
     Node briefPublisher =
         FunctionNodes.of("publisher", Void.class, Object.class, ResearchWorkflow::publishBrief);
     LlmAgent plan = plannerAgent(model);
@@ -107,8 +105,8 @@ public final class ResearchWorkflow {
   }
 
   /** Stores the user's question in state, where the planner, writer and reviewer read it. */
-  private static Void saveQuestion(Context context, Content message) {
-    context.state().put("question", message.text());
+  private static Void saveQuestion(Context context, String question) {
+    context.state().put("question", question);
     return null;
   }
 

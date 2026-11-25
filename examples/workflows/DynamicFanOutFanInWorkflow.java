@@ -73,18 +73,17 @@ public final class DynamicFanOutFanInWorkflow {
 
   /** Returns the node that runs {@code generator} on each topic. */
   private static Node orchestrator(Node generator) {
-    return FunctionNodes.builder(Content.class, Event.class)
+    return FunctionNodes.builder(String.class, Event.class)
         .name("orchestrator")
         // Calls runNode, so it reruns on resume to collect a child's output after a pause.
         .rerunOnResume(true)
-        .body((context, message) -> orchestrate(context, message, generator))
+        .body((context, topicList) -> orchestrate(context, topicList, generator))
         .build();
   }
 
   /** Runs {@code generator} once per topic concurrently and tabulates the headlines. */
-  private static Event orchestrate(Context context, Content message, Node generator) {
-    List<String> topics =
-        Splitter.on(',').trimResults().omitEmptyStrings().splitToList(message.text());
+  private static Event orchestrate(Context context, String topicList, Node generator) {
+    List<String> topics = Splitter.on(',').trimResults().omitEmptyStrings().splitToList(topicList);
     context.emit(message(context, "Processing " + topics.size() + " topics in parallel."));
     // Fans out: each run gets its own sub-branch, so it sees only its own topic.
     Flowable<String> headlines =

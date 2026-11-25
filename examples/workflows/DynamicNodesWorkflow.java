@@ -46,12 +46,12 @@ public final class DynamicNodesWorkflow {
     LlmAgent generateHeadline = generateHeadlineAgent(model);
     LlmAgent evaluateHeadline = evaluateHeadlineAgent(model);
     Node orchestrate =
-        FunctionNodes.builder(Content.class, String.class)
+        FunctionNodes.builder(String.class, String.class)
             .name("orchestrate")
             // Calls runNode, so it reruns on resume to collect a child's output after a pause.
             .rerunOnResume(true)
-            .body((context, message) ->
-                orchestrate(context, message, generateHeadline, evaluateHeadline))
+            .body(
+                (context, topic) -> orchestrate(context, topic, generateHeadline, evaluateHeadline))
             .build();
     return Workflow.builder()
         .name("dynamic_nodes")
@@ -89,9 +89,9 @@ public final class DynamicNodesWorkflow {
    * of rounds.
    */
   private static String orchestrate(
-      Context context, Content message, Node generateHeadline, Node evaluateHeadline) {
+      Context context, String topic, Node generateHeadline, Node evaluateHeadline) {
     // The agents' instructions read the topic from state.
-    context.state().put("topic", message.text());
+    context.state().put("topic", topic);
     String headline;
     Map<?, ?> feedback;
     do {

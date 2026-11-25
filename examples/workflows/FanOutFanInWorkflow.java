@@ -81,9 +81,8 @@ public final class FanOutFanInWorkflow {
 
   /** Returns a step that outputs what {@code transform} makes of the text of the user's message. */
   private static Node textStep(String name, Function<String, Object> transform) {
-    // START hands each branch the user's message as Content.
     return FunctionNodes.of(
-        name, Content.class, Object.class, (context, message) -> transform.apply(message.text()));
+        name, String.class, Object.class, (context, text) -> transform.apply(text));
   }
 
   /** Combines the three outputs, which the join passes on keyed by node name. */

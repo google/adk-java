@@ -49,10 +49,9 @@ public final class ParallelWorkerWorkflow {
 
   /** Builds the workflow, with both agents on {@code model}. */
   public static Workflow create(String model) {
-    // START hands the first node the user's message as Content.
     Node processInput =
         FunctionNodes.of(
-            "process_input", Content.class, Void.class, ParallelWorkerWorkflow::processInput);
+            "process_input", String.class, Void.class, ParallelWorkerWorkflow::processInput);
     Node makeUpperCase =
         ParallelWorkers.parallelNode(
             FunctionNodes.of(
@@ -101,8 +100,8 @@ public final class ParallelWorkerWorkflow {
   }
 
   /** Stores the user's topic in state, where both agents' instructions read it. */
-  private static Void processInput(Context context, Content message) {
-    context.state().put("topic", message.text());
+  private static Void processInput(Context context, String topic) {
+    context.state().put("topic", topic);
     return null;
   }
 

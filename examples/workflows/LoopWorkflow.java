@@ -44,9 +44,8 @@ public final class LoopWorkflow {
   /** Builds the workflow, with both agents on {@code model}. */
   public static Workflow create(String model) {
     LlmAgent generateHeadline = generateHeadlineAgent(model);
-    // START hands the first node the user's message as Content.
     Node processInput =
-        FunctionNodes.of("process_input", Content.class, Void.class, LoopWorkflow::processInput);
+        FunctionNodes.of("process_input", String.class, Void.class, LoopWorkflow::processInput);
     Node routeHeadline =
         FunctionNodes.of("route_headline", Feedback.class, Void.class, LoopWorkflow::routeHeadline);
     return Workflow.builder()
@@ -79,8 +78,8 @@ public final class LoopWorkflow {
   }
 
   /** Stores the user's topic in state, where the headline agent's instruction reads it. */
-  private static Void processInput(Context context, Content message) {
-    context.state().put("topic", message.text());
+  private static Void processInput(Context context, String topic) {
+    context.state().put("topic", topic);
     return null;
   }
 

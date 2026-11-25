@@ -54,7 +54,7 @@ public final class RequestInputWorkflow {
     LlmAgent draftEmail = draftEmailAgent(model);
     Node processInput =
         FunctionNodes.of(
-            "process_input", Content.class, Void.class, RequestInputWorkflow::processInput);
+            "process_input", String.class, Void.class, RequestInputWorkflow::processInput);
     Node requestHumanReview =
         FunctionNodes.of(
             "request_human_review",
@@ -147,8 +147,8 @@ public final class RequestInputWorkflow {
   /**
    * Stores the complaint in state, where the agent's instruction reads it, with no feedback yet.
    */
-  private static Void processInput(Context context, Content message) {
-    context.state().put("complaint", message.text());
+  private static Void processInput(Context context, String complaint) {
+    context.state().put("complaint", complaint);
     context.state().put("feedback", "");
     return null;
   }

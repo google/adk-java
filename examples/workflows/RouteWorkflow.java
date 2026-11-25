@@ -44,9 +44,8 @@ public final class RouteWorkflow {
 
   /** Builds the workflow, with every agent on {@code model}. */
   public static Workflow create(String model) {
-    // START hands the first node the user's message as Content.
     Node processInput =
-        FunctionNodes.of("process_input", Content.class, Void.class, RouteWorkflow::processInput);
+        FunctionNodes.of("process_input", String.class, Void.class, RouteWorkflow::processInput);
     Node routeOnCategory =
         FunctionNodes.of(
             "route_on_category", InputCategory.class, Void.class, RouteWorkflow::routeOnCategory);
@@ -96,8 +95,8 @@ public final class RouteWorkflow {
   }
 
   /** Stores the user's input in state, where the agents' instructions read it. */
-  private static Void processInput(Context context, Content message) {
-    context.state().put("input", message.text());
+  private static Void processInput(Context context, String input) {
+    context.state().put("input", input);
     return null;
   }
 

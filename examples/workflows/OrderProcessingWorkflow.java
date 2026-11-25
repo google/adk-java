@@ -95,7 +95,7 @@ public final class OrderProcessingWorkflow {
     Node parseOrder =
         FunctionNodes.of(
             "parse_order",
-            Content.class,
+            String.class,
             new TypeReference<Map<String, Object>>() {},
             OrderProcessingWorkflow::parseOrder);
     Node creditCheck = ToolNodes.asNode(FunctionTool.create(new CreditBureau(), "creditCheck"));
@@ -204,9 +204,8 @@ public final class OrderProcessingWorkflow {
    * Parses the order's {@code key=value} fields into state, where the steps and agents read them,
    * and outputs the credit check's arguments.
    */
-  private static Map<String, Object> parseOrder(Context context, Content message) {
-    for (String token :
-        Splitter.on(CharMatcher.whitespace()).omitEmptyStrings().split(message.text())) {
+  private static Map<String, Object> parseOrder(Context context, String order) {
+    for (String token : Splitter.on(CharMatcher.whitespace()).omitEmptyStrings().split(order)) {
       // Splits at first '=' and never fails: a token without '=' maps to itself.
       int separator = token.indexOf('=');
       String key = separator < 0 ? token : token.substring(0, separator);

@@ -55,10 +55,9 @@ public final class SupportTriageWorkflow {
     LlmAgent billing = billingAgent(model);
     LlmAgent tech = techAgent(model);
     LlmAgent summarize = summaryAgent(model);
-    // START hands the first node the user's message as Content.
     Node saveRequest =
         FunctionNodes.of(
-            "save_request", Content.class, String.class, SupportTriageWorkflow::saveRequest);
+            "save_request", String.class, String.class, SupportTriageWorkflow::saveRequest);
     Node requestCategory =
         FunctionNodes.of(
             "request_category", Triage.class, Void.class, SupportTriageWorkflow::requestCategory);
@@ -150,8 +149,7 @@ public final class SupportTriageWorkflow {
    * Stores the customer's request in state so the specialists and the summarizer can read it. After
    * a specialist runs, the summarizer sees only that specialist's notes.
    */
-  private static String saveRequest(Context context, Content message) {
-    String request = message.text();
+  private static String saveRequest(Context context, String request) {
     context.state().put("request", request);
     return request;
   }

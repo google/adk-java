@@ -53,7 +53,7 @@ public final class NestedWorkflow {
             .edges(g -> g.fromStart().chain(findNameAgent(model), generateBioAgent(model)))
             .build();
     Node processInput =
-        FunctionNodes.of("process_input", Content.class, Void.class, NestedWorkflow::processInput);
+        FunctionNodes.of("process_input", String.class, Void.class, NestedWorkflow::processInput);
     Node aggregateResults =
         FunctionNodes.of(
             "aggregate_results",
@@ -92,8 +92,8 @@ public final class NestedWorkflow {
   }
 
   /** Stores the year from the user's message in state, and fails the run if there is none. */
-  private static Void processInput(Context context, Content message) {
-    Matcher year = YEAR.matcher(message.text());
+  private static Void processInput(Context context, String text) {
+    Matcher year = YEAR.matcher(text);
     if (!year.find()) {
       context.emit(message(context, "Please provide a valid 4-digit year (e.g., 1955)."));
       throw new IllegalArgumentException("Invalid year format.");

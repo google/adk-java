@@ -77,9 +77,8 @@ public final class MultiTriggersWorkflow {
 
   /** Returns a step that outputs what {@code transform} makes of the text of the user's message. */
   private static Node textStep(String name, Function<String, Object> transform) {
-    // ADK Java applies no workflow input schema, so START hands each branch Content, not text.
     return FunctionNodes.of(
-        name, Content.class, Object.class, (context, message) -> transform.apply(message.text()));
+        name, String.class, Object.class, (context, text) -> transform.apply(text));
   }
 
   /** Reports the output of whichever predecessor triggered this run. */

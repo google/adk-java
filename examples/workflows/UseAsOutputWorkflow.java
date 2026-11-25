@@ -42,11 +42,11 @@ public final class UseAsOutputWorkflow {
   public static Workflow create(String model) {
     LlmAgent summarizer = summarizerAgent(model);
     Node orchestrate =
-        FunctionNodes.builder(Content.class, String.class)
+        FunctionNodes.builder(String.class, String.class)
             .name("orchestrate")
             // Calls runNode, so it reruns on resume to collect a child's output after a pause.
             .rerunOnResume(true)
-            .body((context, message) -> orchestrate(context, message, summarizer))
+            .body((context, text) -> orchestrate(context, text, summarizer))
             .build();
     Node finalize =
         FunctionNodes.of(
@@ -84,10 +84,10 @@ public final class UseAsOutputWorkflow {
   }
 
   /** Runs {@code summarizer} on the user's text and makes the summary this node's output. */
-  private static String orchestrate(Context context, Content message, Node summarizer) {
+  private static String orchestrate(Context context, String text, Node summarizer) {
     RunNodeConfig config = RunNodeConfig.builder().useAsOutput(true).build();
     // The summary is already this node's output, so returning it emits no second output.
-    return (String) context.runNode(summarizer, message.text(), config).blockingGet();
+    return (String) context.runNode(summarizer, text, config).blockingGet();
   }
 
   /** Receives the summary that {@code useAsOutput} made {@code orchestrate}'s output. */

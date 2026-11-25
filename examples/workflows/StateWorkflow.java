@@ -47,7 +47,7 @@ public final class StateWorkflow {
                 .chain(
                     FunctionNodes.of(
                         "process_initial_input",
-                        Content.class,
+                        String.class,
                         String.class,
                         StateWorkflow::processInitialInput),
                     FunctionNodes.of(
@@ -90,8 +90,7 @@ public final class StateWorkflow {
   }
 
   /** Stores the user's text in state through the context, and outputs it. */
-  private static String processInitialInput(Context context, Content message) {
-    String text = message.text();
+  private static String processInitialInput(Context context, String text) {
     context.state().put("original_text", text);
     return text;
   }

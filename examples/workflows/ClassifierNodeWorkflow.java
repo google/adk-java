@@ -76,10 +76,9 @@ public final class ClassifierNodeWorkflow {
             .threshold(0.7)
             .answerKey(URGENCY_KEY)
             .build();
-    // START hands the first node the user's message as Content.
     Node processInput =
         FunctionNodes.of(
-            "process_input", Content.class, String.class, ClassifierNodeWorkflow::processInput);
+            "process_input", String.class, String.class, ClassifierNodeWorkflow::processInput);
 
     Node pageOncall =
         FunctionNodes.of(
@@ -136,8 +135,7 @@ public final class ClassifierNodeWorkflow {
   }
 
   /** Stores the ticket in state for the agents' instructions to read, and outputs it to triage. */
-  private static String processInput(Context context, Content message) {
-    String ticket = message.text();
+  private static String processInput(Context context, String ticket) {
     context.state().put("ticket", ticket);
     return ticket;
   }

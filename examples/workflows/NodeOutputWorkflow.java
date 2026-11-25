@@ -47,10 +47,9 @@ public final class NodeOutputWorkflow {
         .edges(g ->
             g.fromStart()
                 .chain(
-                    // START hands the first node the user's message as Content.
                     FunctionNodes.of(
                         "generate_string_output",
-                        Content.class,
+                        String.class,
                         String.class,
                         NodeOutputWorkflow::generateStringOutput),
                     FunctionNodes.of(
@@ -91,8 +90,8 @@ public final class NodeOutputWorkflow {
   }
 
   /** Returns a string, which becomes the node's output. */
-  private static String generateStringOutput(Context context, Content message) {
-    return "Processed input: " + message.text();
+  private static String generateStringOutput(Context context, String input) {
+    return "Processed input: " + input;
   }
 
   /** Returns an {@link Event}, which passes through as is and could also carry routes or state. */

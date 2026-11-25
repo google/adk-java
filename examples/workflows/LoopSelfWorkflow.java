@@ -41,7 +41,7 @@ public final class LoopSelfWorkflow {
   public static Workflow create() {
     Node validateInput =
         FunctionNodes.of(
-            "validate_input", Content.class, Void.class, LoopSelfWorkflow::validateInput);
+            "validate_input", String.class, Void.class, LoopSelfWorkflow::validateInput);
     Node guessNumber =
         FunctionNodes.of("guess_number", Void.class, Void.class, LoopSelfWorkflow::guessNumber);
     return Workflow.builder()
@@ -72,8 +72,8 @@ public final class LoopSelfWorkflow {
   }
 
   /** Stores the user's number in state, and fails the run if it is out of range. */
-  private static Void validateInput(Context context, Content message) {
-    int number = Integer.parseInt(message.text().trim());
+  private static Void validateInput(Context context, String text) {
+    int number = Integer.parseInt(text.trim());
     if (number < 0 || number > 10) {
       context.emit(message(context, "Please provide a number between 0 and 10."));
       throw new IllegalArgumentException("Invalid input.");
