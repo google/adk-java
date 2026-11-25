@@ -45,7 +45,10 @@ public interface Plugin {
   String getName();
 
   /**
-   * Callback executed when a user message is received before an invocation starts.
+   * Callback executed before initial user input or an accepted steering message is persisted.
+   *
+   * <p>Initial input is processed before agent execution. Steering messages are processed at a step
+   * boundary in the active invocation, so this callback can run multiple times per invocation.
    *
    * @param invocationContext The context for the entire invocation.
    * @param userMessage The message content input by user.
