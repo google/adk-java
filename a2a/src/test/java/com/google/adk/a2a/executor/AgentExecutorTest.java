@@ -43,6 +43,8 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.a2a.server.agentexecution.RequestContext;
 import io.a2a.server.events.EventQueue;
+import io.a2a.spec.FilePart;
+import io.a2a.spec.FileWithUri;
 import io.a2a.spec.Message;
 import io.a2a.spec.MessageSendParams;
 import io.a2a.spec.TaskArtifactUpdateEvent;
@@ -450,6 +452,36 @@ public final class AgentExecutorTest {
     RunConfig runConfig = testAgent.lastInvocationContext.runConfig();
     assertThat(runConfig.customMetadata())
         .containsEntry("a2a_metadata", ImmutableMap.of("key", "value"));
+  }
+
+  @Test
+  public void execute_withNeverSafeCallerFileUri_doesNotPassUriToAgent() {
+    testAgent.setEventsToEmit(Flowable.empty());
+    AgentExecutor executor = executorWith(new InMemorySessionService());
+    Message message =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.USER)
+            .parts(
+                ImmutableList.of(
+                    new TextPart("Summarize this"),
+                    new FilePart(
+                        new FileWithUri(
+                            "text/plain",
+                            "secret.txt",
+                            "http://metadata.google.internal/computeMetadata/v1/token"))))
+            .build();
+    RequestContext ctx = mock(RequestContext.class);
+    when(ctx.getMessage()).thenReturn(message);
+    when(ctx.getTaskId()).thenReturn("task-1");
+    when(ctx.getContextId()).thenReturn(CONTEXT_ID);
+
+    executor.execute(ctx, eventQueue);
+
+    List<Part> parts = testAgent.lastInvocationContext.userContent().get().parts().get();
+    assertThat(parts.stream().filter(part -> part.fileData().isPresent())).isEmpty();
+    assertThat(parts.get(1).text())
+        .hasValue("[A2A file reference not loaded: name=\"secret.txt\", mime=\"text/plain\"]");
   }
 
   @Test

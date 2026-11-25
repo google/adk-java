@@ -17,6 +17,7 @@
 package com.google.adk.a2a.agent;
 
 import static com.google.common.truth.Truth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -74,6 +75,7 @@ import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Instant;
 import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -306,13 +308,12 @@ public final class RemoteA2AAgentTest {
   @Test
   public void runAsync_aggregatesFiles() {
     RemoteA2AAgent agent = createAgent();
-    mockStreamResponse(
-        consumer -> {
-          consumer.accept(createPartialEvent("Here is a file: ", true, false), agentCard);
-          consumer.accept(
-              createPartialFileEvent("http://example.com/file.txt", "text/plain"), agentCard);
-          consumer.accept(createFinalEvent("Done"), agentCard);
-        });
+    byte[] bytes = "file content".getBytes(UTF_8);
+    mockStreamResponse(consumer -> {
+      consumer.accept(createPartialEvent("Here is a file: ", true, false), agentCard);
+      consumer.accept(createPartialBytesFileEvent(bytes, "text/plain"), agentCard);
+      consumer.accept(createFinalEvent("Done"), agentCard);
+    });
 
     List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
 
@@ -322,15 +323,41 @@ public final class RemoteA2AAgentTest {
     assertAggregated(events.get(1)); // Flushed Aggregation
     assertText(events.get(1), "Here is a file: ");
     Part filePart = events.get(2).content().get().parts().get().get(0);
-    assertThat(filePart.fileData()).isPresent();
-    assertThat(filePart.fileData().get().fileUri().orElse(""))
-        .isEqualTo("http://example.com/file.txt");
+    assertThat(filePart.inlineData()).isPresent();
+    assertThat(filePart.inlineData().get().data().get()).isEqualTo(bytes);
     assertRequestMetadata(events.get(2));
     assertResponseMetadata(events.get(2));
 
     assertText(events.get(3), "Done");
     assertRequestMetadata(events.get(3));
     assertResponseMetadata(events.get(3));
+  }
+
+  @Test
+  public void runAsync_replacesNeverSafePeerFileUriWithPlaceholder() {
+    RemoteA2AAgent agent = createAgent();
+    mockStreamResponse(consumer -> {
+      consumer.accept(
+          createPartialFileEvent(
+              "http://metadata.google.internal/computeMetadata/v1/token", "text/plain"),
+          agentCard);
+      consumer.accept(createFinalEvent("Done"), agentCard);
+    });
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    String placeholder = "[A2A file reference not loaded: name=\"file\", mime=\"text/plain\"]";
+    List<Part> parts =
+        events.stream()
+            .flatMap(event ->
+                event.content().flatMap(Content::parts).orElse(ImmutableList.of()).stream())
+            .toList();
+    assertThat(parts.stream().filter(part -> part.fileData().isPresent())).isEmpty();
+    assertText(events.get(0), placeholder);
+    assertNotAggregated(events.get(0));
+    // A peer placeholder is buffered like streamed text and flushed before the final event.
+    assertAggregated(events.get(1));
+    assertText(events.get(1), placeholder);
   }
 
   @Test
@@ -1333,6 +1360,15 @@ public final class RemoteA2AAgentTest {
   private ClientEvent createPartialFileEvent(String uri, String mimeType) {
     return createTestEvent(
         new FilePart(new FileWithUri(mimeType, "file", uri)), TaskState.WORKING, true, false);
+  }
+
+  private ClientEvent createPartialBytesFileEvent(byte[] bytes, String mimeType) {
+    return createTestEvent(
+        new FilePart(
+            new FileWithBytes(mimeType, "file", Base64.getEncoder().encodeToString(bytes))),
+        TaskState.WORKING,
+        true,
+        false);
   }
 
   private ClientEvent createFinalEvent(String text) {
