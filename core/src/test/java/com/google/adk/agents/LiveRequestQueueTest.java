@@ -59,6 +59,24 @@ public final class LiveRequestQueueTest {
   }
 
   @Test
+  public void get_keepsRequestsNotTakenForTheNextSubscriber() {
+    LiveRequestQueue queue = new LiveRequestQueue();
+    TestSubscriber<LiveRequest> first = queue.get().test(1);
+    // More than a busy subscriber consumes, and more than the default buffer size.
+    for (int i = 0; i < 300; i++) {
+      queue.content(Content.fromParts(Part.fromText("request " + i)));
+    }
+
+    first.cancel();
+    TestSubscriber<LiveRequest> next = queue.get().test();
+
+    first.assertValueCount(1).assertNoErrors();
+    next.assertNoErrors();
+    assertThat(next.values()).hasSize(299);
+    assertThat(next.values().get(0).content().get().text()).isEqualTo("request 1");
+  }
+
+  @Test
   public void liveRequest_jsonRoundTrip_preservesPartialTrue() {
     LiveRequest request = LiveRequest.builder().content(CONTENT).partial(true).build();
 

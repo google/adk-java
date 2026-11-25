@@ -32,6 +32,9 @@ import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.models.BaseLlm;
+import com.google.adk.models.BaseLlmConnection;
+import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.runner.InMemoryRunner;
@@ -41,6 +44,7 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
@@ -172,6 +176,32 @@ public final class BaseLlmFlowCancelTest {
         .containsExactly(LiveRequest.builder().close(true).build());
     // The connection closes before completion reaches downstream, so afterRun sees the close.
     assertThat(sentBeforeAfterRun).containsExactly(LiveRequest.builder().close(true).build());
+  }
+
+  @Test
+  public void runLive_closedWhileSending_leavesUnsentRequestsQueued() throws Exception {
+    LlmAgent agent =
+        createTestAgentBuilder(new NeverSendingModel()).executor(Runnable::run).build();
+    InMemoryRunner runner = new InMemoryRunner(agent);
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    Disposable subscription =
+        runner
+            .runLive(session, liveRequestQueue, RunConfig.builder().build())
+            .subscribe(event -> {}, error -> {});
+    // The connection never finishes sending the first request.
+    liveRequestQueue.content(Content.fromParts(Part.fromText("first")));
+    liveRequestQueue.content(Content.fromParts(Part.fromText("second")));
+    liveRequestQueue.content(Content.fromParts(Part.fromText("third")));
+    subscription.dispose();
+
+    // What a later connection's send loop reads from the queue.
+    assertThat(
+            liveRequestQueue.get().test().values().stream()
+                .map(request -> request.content().get().text()))
+        .containsExactly("second", "third")
+        .inOrder();
   }
 
   @Test
@@ -324,6 +354,49 @@ public final class BaseLlmFlowCancelTest {
 
   private static BaseLlmFlow createBaseLlmFlow() {
     return new BaseLlmFlow(ImmutableList.of(), ImmutableList.of(), Optional.empty()) {};
+  }
+
+  /** A live model whose connection never finishes sending content. */
+  private static final class NeverSendingModel extends BaseLlm {
+    NeverSendingModel() {
+      super("never-sending-model");
+    }
+
+    @Override
+    public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+      return Flowable.empty();
+    }
+
+    @Override
+    public BaseLlmConnection connect(LlmRequest llmRequest) {
+      return new BaseLlmConnection() {
+        @Override
+        public Completable sendHistory(List<Content> history) {
+          return Completable.complete();
+        }
+
+        @Override
+        public Completable sendContent(Content content) {
+          return Completable.never();
+        }
+
+        @Override
+        public Completable sendRealtime(Blob blob) {
+          return Completable.complete();
+        }
+
+        @Override
+        public Flowable<LlmResponse> receive() {
+          return Flowable.never();
+        }
+
+        @Override
+        public void close() {}
+
+        @Override
+        public void close(Throwable throwable) {}
+      };
+    }
   }
 
   /** A model whose stream never completes and reports when it is subscribed to and cancelled. */

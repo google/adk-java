@@ -19,6 +19,7 @@ package com.google.adk.tools.streaming;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequest;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
@@ -26,6 +27,7 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.StreamingMode;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.plugins.BasePlugin;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
@@ -38,6 +40,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Duration;
@@ -46,6 +49,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -87,6 +91,20 @@ public final class StreamingToolTest {
           .map(detection -> ImmutableMap.<String, Object>of("people_count_alert", detection));
     }
 
+    public static Flowable<ImmutableMap<String, Object>> countFrames(LiveRequestQueue inputStream) {
+      return inputStream.get().map(request -> ImmutableMap.<String, Object>of("frame", "seen"));
+    }
+
+    public static Flowable<ImmutableMap<String, Object>> failOnFirstFrame(
+        LiveRequestQueue inputStream) {
+      return inputStream
+          .get()
+          .filter(request -> request.blob().isPresent())
+          .flatMap(request ->
+              Flowable.<ImmutableMap<String, Object>>error(
+                  new IllegalStateException("Camera disconnected")));
+    }
+
     public static ImmutableMap<String, Object> stopStreaming(String functionName) {
       return ImmutableMap.of("status", "stopped " + functionName);
     }
@@ -100,6 +118,38 @@ public final class StreamingToolTest {
 
     public Flowable<ImmutableMap<String, Object>> watchForever() {
       return Flowable.<ImmutableMap<String, Object>>never().doOnCancel(canceled::countDown);
+    }
+  }
+
+  /** A streaming tool that sends a video frame while subscribing to its input stream. */
+  public static final class FrameAtStartTool {
+    private final LiveRequestQueue liveRequestQueue;
+    private final TestLlm testLlm;
+
+    FrameAtStartTool(LiveRequestQueue liveRequestQueue, TestLlm testLlm) {
+      this.liveRequestQueue = liveRequestQueue;
+      this.testLlm = testLlm;
+    }
+
+    public Flowable<ImmutableMap<String, Object>> readFirstFrame(LiveRequestQueue inputStream) {
+      return inputStream
+          .get()
+          .doOnSubscribe(unused -> sendFrameAndAwaitSend())
+          .filter(request -> request.blob().isPresent())
+          .take(1)
+          .map(request -> ImmutableMap.<String, Object>of("frame", "received"));
+    }
+
+    // Returns once the frame reaches the model, so the send loop has already decided whether the
+    // tool's stream receives it while the tool is still subscribing.
+    private void sendFrameAndAwaitSend() throws InterruptedException {
+      sendVideoFrames(liveRequestQueue, 1);
+      Instant deadline = Instant.now().plusSeconds(10);
+      while (Instant.now().isBefore(deadline)
+          && testLlm.getLiveRequestHistory().stream()
+              .noneMatch(request -> request.blob().isPresent())) {
+        Thread.sleep(10);
+      }
     }
   }
 
@@ -348,6 +398,166 @@ public final class StreamingToolTest {
             "Function monitorVideoStream returned: {people_count_alert=Processed frame: detected 2"
                 + " people}")
         .inOrder();
+  }
+
+  @Test
+  public void runLive_inputStreamTools_onlyRunningToolReceivesRequests() throws Exception {
+    Part functionCall =
+        Part.builder()
+            .functionCall(
+                FunctionCall.builder().name("monitorVideoStream").args(ImmutableMap.of()).build())
+            .build();
+    CompletableSubject modelDone = CompletableSubject.create();
+    TestLlm testLlm =
+        openModelStream(
+            modelDone,
+            LlmResponse.builder()
+                .content(
+                    Content.builder().role("model").parts(ImmutableList.of(functionCall)).build())
+                .turnComplete(false)
+                .build(),
+            LlmResponse.builder().turnComplete(true).build());
+    LlmAgent rootAgent =
+        LlmAgent.builder()
+            .name("root_agent")
+            .model(testLlm)
+            .tools(
+                ImmutableList.of(
+                    FunctionTool.create(StreamingTools.class, "monitorVideoStream"),
+                    FunctionTool.create(StreamingTools.class, "countFrames")))
+            .build();
+    AtomicReference<InvocationContext> runContext = new AtomicReference<>();
+    BasePlugin captureContext =
+        new BasePlugin("capture_context") {
+          @Override
+          public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
+            runContext.set(invocationContext);
+            return Maybe.empty();
+          }
+        };
+    InMemoryRunner runner =
+        new InMemoryRunner(rootAgent, "test-app", ImmutableList.of(captureContext));
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    liveRequestQueue.content(Content.fromParts(Part.fromText("Monitor the video stream")));
+
+    TestSubscriber<Event> run =
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).test();
+    assertThat(awaitToolStarted(run, "monitorVideoStream")).isTrue();
+    LiveRequestQueue idleToolStream =
+        runContext.get().activeStreamingTools().get("countFrames").stream();
+    sendVideoFrames(liveRequestQueue, 3);
+
+    assertThat(testLlm.waitForStreamingToolResults("monitorVideoStream", 3, Duration.ofSeconds(20)))
+        .isTrue();
+    idleToolStream.get().test().assertNoValues();
+    List<Event> unused = finishRun(run, liveRequestQueue, modelDone);
+  }
+
+  @Test
+  public void runLive_streamingToolReadingInputAtStart_receivesRequestSentWhileStarting()
+      throws Exception {
+    Part functionCall =
+        Part.builder()
+            .functionCall(
+                FunctionCall.builder().name("readFirstFrame").args(ImmutableMap.of()).build())
+            .build();
+    CompletableSubject modelDone = CompletableSubject.create();
+    TestLlm testLlm =
+        openModelStream(
+            modelDone,
+            LlmResponse.builder()
+                .content(
+                    Content.builder().role("model").parts(ImmutableList.of(functionCall)).build())
+                .turnComplete(false)
+                .build());
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    LlmAgent rootAgent =
+        LlmAgent.builder()
+            .name("root_agent")
+            .model(testLlm)
+            .tools(
+                ImmutableList.of(
+                    FunctionTool.create(
+                        new FrameAtStartTool(liveRequestQueue, testLlm), "readFirstFrame")))
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(rootAgent);
+    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+
+    TestSubscriber<Event> run =
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).test();
+
+    assertThat(testLlm.waitForStreamingToolResults("readFirstFrame", 1, Duration.ofSeconds(20)))
+        .isTrue();
+    List<Event> unused = finishRun(run, liveRequestQueue, modelDone);
+  }
+
+  @Test
+  public void runLive_failedInputStreamTool_receivesNoMoreRequests() throws Exception {
+    Part functionCall =
+        Part.builder()
+            .functionCall(
+                FunctionCall.builder().name("failOnFirstFrame").args(ImmutableMap.of()).build())
+            .build();
+    CompletableSubject modelDone = CompletableSubject.create();
+    TestLlm testLlm =
+        openModelStream(
+            modelDone,
+            LlmResponse.builder()
+                .content(
+                    Content.builder().role("model").parts(ImmutableList.of(functionCall)).build())
+                .turnComplete(false)
+                .build(),
+            LlmResponse.builder().turnComplete(true).build());
+    LlmAgent rootAgent =
+        LlmAgent.builder()
+            .name("root_agent")
+            .model(testLlm)
+            .tools(ImmutableList.of(FunctionTool.create(StreamingTools.class, "failOnFirstFrame")))
+            .build();
+    AtomicReference<InvocationContext> runContext = new AtomicReference<>();
+    BasePlugin captureContext =
+        new BasePlugin("capture_context") {
+          @Override
+          public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
+            runContext.set(invocationContext);
+            return Maybe.empty();
+          }
+        };
+    InMemoryRunner runner =
+        new InMemoryRunner(rootAgent, "test-app", ImmutableList.of(captureContext));
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    liveRequestQueue.content(Content.fromParts(Part.fromText("Watch the camera")));
+
+    TestSubscriber<Event> run =
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).test();
+    assertThat(awaitToolStarted(run, "failOnFirstFrame")).isTrue();
+    LiveRequestQueue failedToolStream =
+        runContext.get().activeStreamingTools().get("failOnFirstFrame").stream();
+    // The first frame causes the tool to fail; the rest are sent after the failure.
+    sendVideoFrames(liveRequestQueue, 4);
+
+    assertThat(awaitFramesSent(testLlm, 4)).isTrue();
+    assertThat(runContext.get().activeStreamingTools().get("failOnFirstFrame").task().isDisposed())
+        .isTrue();
+    failedToolStream.get().test().assertNoValues();
+    List<Event> unused = finishRun(run, liveRequestQueue, modelDone);
+  }
+
+  /** Waits for the model to receive {@code count} video frames, and returns whether it did. */
+  private static boolean awaitFramesSent(TestLlm testLlm, int count) throws InterruptedException {
+    Instant deadline = Instant.now().plusSeconds(20);
+    while (Instant.now().isBefore(deadline) && framesSent(testLlm) < count) {
+      Thread.sleep(10);
+    }
+    return framesSent(testLlm) >= count;
+  }
+
+  private static long framesSent(TestLlm testLlm) {
+    return testLlm.getLiveRequestHistory().stream()
+        .filter(request -> request.blob().isPresent())
+        .count();
   }
 
   /**

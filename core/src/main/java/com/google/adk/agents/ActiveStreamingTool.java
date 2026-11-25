@@ -21,8 +21,8 @@ import org.jspecify.annotations.Nullable;
 
 /** Manages streaming tool related resources during invocation. */
 public class ActiveStreamingTool {
-  private @Nullable Disposable task;
-  private @Nullable LiveRequestQueue stream;
+  private volatile @Nullable Disposable task;
+  private volatile @Nullable LiveRequestQueue stream;
 
   public ActiveStreamingTool(Disposable task) {
     this(task, null);

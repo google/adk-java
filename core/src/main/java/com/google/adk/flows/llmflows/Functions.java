@@ -55,7 +55,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
-import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.disposables.SerialDisposable;
 import io.reactivex.rxjava3.functions.Function;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
@@ -395,12 +395,20 @@ public final class Functions {
     // Case 2: Handle a streaming-capable tool (FunctionTool with Flowable return type)
     if (tool instanceof FunctionTool functionTool) {
       if (functionTool.isStreaming()) {
+        SerialDisposable task = new SerialDisposable();
         try {
           Flowable<Map<String, Object>> toolOutputStream =
               functionTool.callLive(args, toolContext, invocationContext);
 
+          // Set before subscribing so the send loop copies requests sent while the tool is
+          // starting.
+          invocationContext
+              .activeStreamingTools()
+              .computeIfAbsent(tool.name(), unused -> new ActiveStreamingTool())
+              .task(task);
+
           // Subscribe to the tool's output to process results in the background.
-          Disposable subscription =
+          task.set(
               toolOutputStream.subscribe(
                   result -> {
                     String resultText = "Function " + tool.name() + " returned: " + result;
@@ -408,24 +416,26 @@ public final class Functions {
                         Content.builder().role(Role.USER).parts(Part.fromText(resultText)).build();
                     invocationContext.liveRequestQueue().get().content(updateContent);
                   },
-                  error -> logger.error("Error in streaming tool " + tool.name(), error.getCause()),
+                  error -> {
+                    logger.error("Error in streaming tool " + tool.name(), error);
+                    // Marks the call as stopped so the send loop no longer copies requests into
+                    // its input stream. A SerialDisposable reports isDisposed() as true only once
+                    // it is disposed itself, not when the subscription it holds ends.
+                    task.dispose();
+                  },
                   () -> {
                     logger.info("Streaming tool {} completed.", tool.name());
                     invocationContext.activeStreamingTools().remove(tool.name());
-                  });
-
-          ActiveStreamingTool activeTool =
-              invocationContext
-                  .activeStreamingTools()
-                  .computeIfAbsent(tool.name(), unused -> new ActiveStreamingTool(subscription));
-          activeTool.task(subscription);
-          invocationContext.activeStreamingTools().put(tool.name(), activeTool);
+                  }));
 
           return Maybe.just(
               ImmutableMap.of(
                   "status", "The function is running asynchronously and the results are pending."));
 
         } catch (Exception e) {
+          // Marks the call as stopped so the send loop does not copy requests into the tool's input
+          // stream after startup fails.
+          task.dispose();
           logger.error("Failed to start streaming tool: " + tool.name(), e);
           return Maybe.error(e);
         }

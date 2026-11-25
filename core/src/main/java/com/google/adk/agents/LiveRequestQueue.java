@@ -28,7 +28,9 @@ public final class LiveRequestQueue {
 
   public LiveRequestQueue() {
     MulticastProcessor<LiveRequest> processor = MulticastProcessor.<LiveRequest>create();
-    processor.start();
+    // Unbounded, as in ADK Python, so requests waiting on a slow send are buffered rather than
+    // rejected.
+    processor.startUnbounded();
     this.processor = processor.toSerialized();
   }
 

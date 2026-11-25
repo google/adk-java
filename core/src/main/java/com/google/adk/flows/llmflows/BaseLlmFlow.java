@@ -690,12 +690,15 @@ public abstract class BaseLlmFlow implements BaseFlow {
                   .get()
                   .get()
                   .doOnNext(request -> {
-                    if (!invocationContext.activeStreamingTools().isEmpty()) {
-                      for (ActiveStreamingTool activeStreamingTool :
-                          invocationContext.activeStreamingTools().values()) {
-                        if (activeStreamingTool.stream() != null) {
-                          activeStreamingTool.stream().send(request);
-                        }
+                    for (ActiveStreamingTool activeStreamingTool :
+                        invocationContext.activeStreamingTools().values()) {
+                      // Only a running tool reads its stream, so as in ADK Python, nothing
+                      // accumulates in the stream of a tool that has not started or has stopped.
+                      Disposable task = activeStreamingTool.task();
+                      if (activeStreamingTool.stream() != null
+                          && task != null
+                          && !task.isDisposed()) {
+                        activeStreamingTool.stream().send(request);
                       }
                     }
                   });
@@ -707,8 +710,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                   .observeOn(Functions.resolveWorkerScheduler(invocationContext))
                   .andThen(
                       liveRequests
-                          .onBackpressureBuffer()
-                          .concatMapCompletable(request -> {
+                          // Sends one request at a time so unsent requests stay queued for the
+                          // next connection when this one closes.
+                          .flatMapCompletable(
+                          request -> {
                             if (request.content().isPresent()) {
                               Content content = request.content().get();
                               return connection
@@ -722,7 +727,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
                               return connection.sendRealtime(request.blob().get());
                             }
                             return Completable.fromAction(connection::close);
-                          }))
+                          },
+                          /* delayErrors= */ false,
+                          /* maxConcurrency= */ 1))
                   .subscribeWith(
                       new DisposableCompletableObserver() {
                         @Override
