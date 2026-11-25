@@ -18,6 +18,7 @@ package com.google.adk.workflow;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Context;
@@ -555,8 +556,10 @@ final class ResumeScan {
     private static Object asMessage(Object value) {
       if (value instanceof Map<?, ?> map && MESSAGE_KEYS.containsAll(map.keySet())) {
         try {
-          return JsonBaseModel.getMapper().convertValue(map, Content.class);
-        } catch (IllegalArgumentException e) {
+          // Parse JSON text so numbers in parts decode as genai does, not as the map's Long.
+          return JsonBaseModel.getMapper()
+              .readValue(JsonBaseModel.getMapper().writeValueAsString(map), Content.class);
+        } catch (JsonProcessingException e) {
           return value;
         }
       }

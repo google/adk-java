@@ -17,7 +17,10 @@
 package com.google.adk.events;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
+import com.fasterxml.jackson.databind.util.RawValue;
+import com.google.adk.JsonBaseModel;
 import com.google.adk.models.CacheMetadata;
 import com.google.adk.workflow.NodeInfo;
 import com.google.common.collect.ImmutableList;
@@ -30,7 +33,9 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.Transcription;
+import java.math.BigInteger;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Test;
@@ -226,9 +231,86 @@ public final class EventTest {
   @Test
   public void outputAndNodeInfo_roundTripThroughJson() {
     Event event =
-        EVENT.toBuilder().output(ImmutableMap.of("answer", 42)).nodeInfo(NODE_INFO).build();
+        EVENT.toBuilder().output(ImmutableMap.of("answer", 42L)).nodeInfo(NODE_INFO).build();
 
     assertThat(Event.fromJson(event.toJson())).isEqualTo(event);
+  }
+
+  @Test
+  public void fromJson_readsWholeNumbersInOutputAsLong() {
+    BigInteger pastLong = BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE);
+    Event event =
+        EVENT.toBuilder()
+            .output(ImmutableMap.of("count", 3, "items", ImmutableList.of(-1, pastLong, 2.5)))
+            .build();
+
+    Map<?, ?> output = (Map<?, ?>) Event.fromJson(event.toJson()).output().orElseThrow();
+
+    assertThat(output)
+        .isEqualTo(ImmutableMap.of("count", 3L, "items", ImmutableList.of(-1L, pastLong, 2.5)));
+  }
+
+  @Test
+  public void fromJsonNodeAndConvertValue_readOutputLikeFromJson() {
+    ImmutableMap<String, Object> output =
+        ImmutableMap.of(
+            "short",
+            (short) 3,
+            "float",
+            0.1f,
+            "bytes",
+            new byte[] {1, 2},
+            "raw",
+            new RawValue("{\"c\": 3}"));
+    ImmutableMap<String, Object> stored = ImmutableMap.of("author", "a", "output", output);
+    ImmutableMap<String, Object> expected =
+        ImmutableMap.of(
+            "short", 3L, "float", 0.1, "bytes", "AQI=", "raw", ImmutableMap.of("c", 3L));
+
+    Event fromMap = JsonBaseModel.getMapper().convertValue(stored, Event.class);
+    Event fromNode =
+        JsonBaseModel.fromJsonNode(JsonBaseModel.getMapper().valueToTree(stored), Event.class);
+
+    assertThat(fromMap.output()).hasValue(expected);
+    assertThat(fromNode.output()).hasValue(expected);
+  }
+
+  @Test
+  public void convertValue_outputWithRawJsonThatDoesNotParse_fails() {
+    for (String raw : ImmutableList.of("{not json", "{\"c\": 3} {\"x\": 1}", "3 garbage", "")) {
+      ImmutableMap<String, Object> stored =
+          ImmutableMap.of("author", "a", "output", ImmutableMap.of("raw", new RawValue(raw)));
+
+      IllegalArgumentException error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> JsonBaseModel.getMapper().convertValue(stored, Event.class));
+
+      assertThat(error).hasMessageThat().contains("Output holds raw JSON that does not parse.");
+      if (!raw.isEmpty()) {
+        assertThat(error).hasMessageThat().doesNotContain(raw);
+      }
+    }
+  }
+
+  @Test
+  public void fromJson_outputWithNulls_keepsThem() {
+    Event event = Event.fromJson("{\"author\":\"a\",\"output\":{\"k\":null,\"items\":[1,null]}}");
+
+    Map<?, ?> output = (Map<?, ?>) event.output().orElseThrow();
+    assertThat(output).containsEntry("k", null);
+    assertThat((List<?>) output.get("items")).containsExactly(1L, null).inOrder();
+  }
+
+  @Test
+  public void fromJson_outputMapsAndLists_areUnmodifiable() {
+    Event event = EVENT.toBuilder().output(ImmutableMap.of("items", ImmutableList.of(1))).build();
+
+    Map<?, ?> output = (Map<?, ?>) Event.fromJson(event.toJson()).output().orElseThrow();
+    List<?> items = (List<?>) output.get("items");
+
+    assertThrows(UnsupportedOperationException.class, output::clear);
+    assertThrows(UnsupportedOperationException.class, items::clear);
   }
 
   @Test

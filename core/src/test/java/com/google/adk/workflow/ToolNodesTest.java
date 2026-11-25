@@ -739,6 +739,26 @@ public final class ToolNodesTest {
   }
 
   @Test
+  public void turn_toolAfterAFunctionNodeRequestsConfirmation_asksAsTheStoredSessionReadsIt() {
+    record Transfer(int amount) {}
+    Node amounts =
+        FunctionNodes.of("amounts", Content.class, Transfer.class, (ctx, input) -> new Transfer(5));
+    Node toolNode = ToolNodes.asNode(transferTool(new ArrayList<>()));
+    Workflow workflow =
+        workflow(
+            new Edge(START, amounts),
+            new Edge(amounts, toolNode),
+            new Edge(toolNode, captureInput("reply")));
+
+    ImmutableList<Event> events = new WorkflowSession(workflow).turn(go());
+
+    Event request =
+        events.stream().filter(event -> !event.functionCalls().isEmpty()).collect(onlyElement());
+    // Whole numbers in the live event keep the same types when read back from JSON.
+    assertThat(Event.fromJson(request.toJson()).functionCalls()).isEqualTo(request.functionCalls());
+  }
+
+  @Test
   public void turn_toolRequestsConfirmation_asksWithItsHintAndPayload() {
     List<Object> transferred = new ArrayList<>();
 

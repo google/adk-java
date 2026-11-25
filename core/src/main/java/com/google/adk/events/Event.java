@@ -21,7 +21,13 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.models.CacheMetadata;
@@ -38,8 +44,13 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
 import com.google.genai.types.Transcription;
+import java.io.IOException;
 import java.time.InstantSource;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -332,8 +343,9 @@ public class Event extends JsonBaseModel {
   /**
    * For a workflow node, returns the value handed to successors, distinct from {@link #content()},
    * or empty when the event carries no node output. Holds any value Jackson can serialize, such as
-   * a JSON-native value or a {@link Content}. An event read from JSON holds the JSON-native form (a
-   * map with string keys, a list, a string, a number, or a boolean).
+   * a JSON-native value or a {@link Content}. An event read from JSON holds the JSON-native form:
+   * an unmodifiable map with string keys, an unmodifiable list, a string, a boolean, or a number; a
+   * whole number that fits a long is a {@code Long}.
    */
   @Experimental
   @JsonProperty("output")
@@ -694,6 +706,7 @@ public class Event extends JsonBaseModel {
     @Experimental
     @CanIgnoreReturnValue
     @JsonProperty("output")
+    @JsonDeserialize(using = OutputDeserializer.class)
     public Builder output(@Nullable Object value) {
       this.output = value;
       return this;
@@ -853,5 +866,70 @@ public class Event extends JsonBaseModel {
         nodeInfo,
         cacheMetadata,
         timestamp);
+  }
+
+  /**
+   * Reads an event's output as JSON-native values. Maps and lists are unmodifiable. Whole numbers
+   * are {@code Long} as in ADK Kotlin, or {@code BigInteger} outside the long range.
+   */
+  private static final class OutputDeserializer extends StdDeserializer<Object> {
+
+    OutputDeserializer() {
+      super(Object.class);
+    }
+
+    @Override
+    public @Nullable Object deserialize(JsonParser p, DeserializationContext ctxt)
+        throws IOException {
+      return jsonNative(ctxt.readTree(p));
+    }
+
+    private static @Nullable Object jsonNative(JsonNode node) {
+      if (node.isObject()) {
+        Map<String, @Nullable Object> map = new LinkedHashMap<>();
+        node.properties().forEach(field -> map.put(field.getKey(), jsonNative(field.getValue())));
+        return Collections.unmodifiableMap(map);
+      }
+      if (node.isArray()) {
+        List<@Nullable Object> list = new ArrayList<>(node.size());
+        node.forEach(item -> list.add(jsonNative(item)));
+        return Collections.unmodifiableList(list);
+      }
+      if (node.isIntegralNumber()) {
+        return node.canConvertToLong() ? node.longValue() : node.bigIntegerValue();
+      }
+      if (node.isNumber()) {
+        // Widening a float adds digits it never had.
+        return node.isFloat()
+            ? Double.parseDouble(Float.toString(node.floatValue()))
+            : node.doubleValue();
+      }
+      if (node.isBoolean()) {
+        return node.booleanValue();
+      }
+      if (node.isNull() || node.isMissingNode()) {
+        return null;
+      }
+      return node.isPojo() ? rawJsonNative(node) : node.asText();
+    }
+
+    // A @JsonRawValue property is held as an embedded value that writes its JSON text.
+    private static @Nullable Object rawJsonNative(JsonNode node) {
+      JsonNode raw;
+      try {
+        raw =
+            getMapper()
+                .reader()
+                .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                .readTree(getMapper().writeValueAsString(node));
+      } catch (JsonProcessingException unused) {
+        // Jackson's message can quote the value, so no cause.
+        throw new IllegalArgumentException("Output holds raw JSON that does not parse.");
+      }
+      if (raw.isMissingNode()) {
+        throw new IllegalArgumentException("Output holds raw JSON that does not parse.");
+      }
+      return jsonNative(raw);
+    }
   }
 }

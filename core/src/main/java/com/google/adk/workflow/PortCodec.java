@@ -18,6 +18,7 @@ package com.google.adk.workflow;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.BeanDescription;
@@ -566,15 +567,18 @@ final class PortCodec<T> {
 
   /**
    * Returns {@code value} in JSON form, with the value types a stored session reads back: maps and
-   * lists (unmodifiable here), strings, booleans, nulls, {@code Integer}, {@code Long} or {@code
-   * BigInteger} for a whole number, and {@code Double} for any other number, a {@code BigDecimal}
-   * included.
+   * lists (unmodifiable here), strings, booleans, nulls, {@code Long} or {@code BigInteger} for a
+   * whole number, and {@code Double} for any other number, a {@code BigDecimal} included.
    *
    * @throws IllegalArgumentException if {@code value} is not of this port's type, has no JSON form,
    *     holds a NaN or infinite number, or writes null
    */
-  @SuppressWarnings("UnusedException")
   @Nullable Object encode(@Nullable Object value, String what) {
+    return encode(value, what, /* intWhereItFits= */ false);
+  }
+
+  @SuppressWarnings("UnusedException")
+  private @Nullable Object encode(@Nullable Object value, String what, boolean intWhereItFits) {
     if (value == null) {
       return null;
     }
@@ -604,11 +608,20 @@ final class PortCodec<T> {
       // Jackson's and genai's messages can quote the value, so no cause.
       throw new IllegalArgumentException(what + " has no JSON form as " + type.toCanonical() + ".");
     }
-    Object json = jsonNative(tree, what);
+    Object json = jsonNative(tree, what, intWhereItFits);
     if (json == null) {
       throw new IllegalArgumentException(what + " writes null as " + type.toCanonical() + ".");
     }
     return json;
+  }
+
+  /**
+   * Like {@link #encode(Object, String)}, but for a request payload: a whole number that fits in an
+   * {@code int} is an {@code Integer}, because a stored session reads the payload back from genai's
+   * {@code FunctionCall.args} that way.
+   */
+  @Nullable Object encodePayload(@Nullable Object value, String what) {
+    return encode(value, what, /* intWhereItFits= */ true);
   }
 
   /** Returns the port's class, with a primitive boxed. */
@@ -670,23 +683,32 @@ final class PortCodec<T> {
     return !type.isContainerType() && (trustGenericFields || !type.hasGenericTypes());
   }
 
-  /** Returns {@code node} as the values a stored session reads back, collections unmodifiable. */
-  private static @Nullable Object jsonNative(JsonNode node, String what) {
+  /**
+   * Returns {@code node} as the values a stored session reads back, with unmodifiable collections.
+   * If {@code intWhereItFits} is true, whole numbers that fit in an {@code int} become {@code
+   * Integer}.
+   *
+   * @throws IllegalArgumentException if {@code node} holds a NaN or infinite number, or raw JSON
+   *     that fails to parse
+   */
+  private static @Nullable Object jsonNative(JsonNode node, String what, boolean intWhereItFits) {
     if (node.isObject()) {
       Map<String, @Nullable Object> map = new LinkedHashMap<>();
       node.properties()
-          .forEach(field -> map.put(field.getKey(), jsonNative(field.getValue(), what)));
+          .forEach(
+              field -> map.put(field.getKey(), jsonNative(field.getValue(), what, intWhereItFits)));
       return Collections.unmodifiableMap(map);
     }
     if (node.isArray()) {
       List<@Nullable Object> list = new ArrayList<>(node.size());
-      node.forEach(item -> list.add(jsonNative(item, what)));
+      node.forEach(item -> list.add(jsonNative(item, what, intWhereItFits)));
       return Collections.unmodifiableList(list);
     }
     if (node.isIntegralNumber()) {
-      return node.canConvertToInt()
-          ? node.intValue()
-          : node.canConvertToLong() ? node.longValue() : node.bigIntegerValue();
+      if (intWhereItFits && node.canConvertToInt()) {
+        return node.intValue();
+      }
+      return node.canConvertToLong() ? node.longValue() : node.bigIntegerValue();
     }
     if (node.isNumber()) {
       // Widening a float adds digits it never had.
@@ -705,6 +727,24 @@ final class PortCodec<T> {
     }
     if (node.isNull() || node.isMissingNode()) {
       return null;
+    }
+    if (node.isPojo()) {
+      // A @JsonRawValue property is held as an embedded value that writes its JSON text.
+      JsonNode raw;
+      try {
+        raw =
+            MAPPER
+                .reader()
+                .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                .readTree(MAPPER.writeValueAsString(node));
+      } catch (JsonProcessingException unused) {
+        // Jackson's message can quote the value, so no cause.
+        throw new IllegalArgumentException(what + " has no JSON form.");
+      }
+      if (raw.isMissingNode()) {
+        throw new IllegalArgumentException(what + " has no JSON form.");
+      }
+      return jsonNative(raw, what, intWhereItFits);
     }
     return node.asText();
   }
@@ -793,7 +833,7 @@ final class PortCodec<T> {
     ObjectMapper mapper =
         JsonSerializable.objectMapper().copy().registerModule(PortScalars.module());
     rejectScalarsAsText(mapper.coercionConfigFor(LogicalType.Textual));
-    return mapper.reader();
+    return mapper.reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
   }
 
   private static void rejectScalarsAsText(MutableCoercionConfig config) {
@@ -818,7 +858,8 @@ final class PortCodec<T> {
           ctxt.isEnabled(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
               ? STRICT_GENAI_READER
               : GENAI_READER;
-      return reader.treeToValue(ctxt.readTree(p), handledType());
+      // Parse JSON text so genai maps like FunctionCall.args get the number types genai produces.
+      return reader.forType(handledType()).readValue(MAPPER.writeValueAsString(ctxt.readTree(p)));
     }
   }
 

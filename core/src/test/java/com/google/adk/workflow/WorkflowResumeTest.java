@@ -1035,7 +1035,7 @@ public final class WorkflowResumeTest {
                 "chat",
                 modelText("agent said hi"),
                 "first",
-                ImmutableMap.of("v", 1),
+                ImmutableMap.of("v", 1L),
                 "second",
                 ImmutableMap.of("v", 2)));
   }
@@ -1104,6 +1104,35 @@ public final class WorkflowResumeTest {
     assertThat(received.get())
         .isEqualTo(
             ImmutableMap.of("chat", modelText("agent said hi"), "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_messageOutputWithAFunctionCallFromJsonStore_equalsTheLiveMessage() {
+    Content message =
+        Content.builder()
+            .role("model")
+            .parts(Part.fromFunctionCall("lookup", ImmutableMap.<String, Object>of("n", 3)))
+            .build();
+    Node chat =
+        new TestNode("chat", (ctx, input) -> Flowable.just(newEvent().output(message).build()));
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    AtomicReference<@Nullable Object> received = new AtomicReference<>();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, chat),
+                new Edge(START, ask),
+                new Edge(chat, join),
+                new Edge(ask, join),
+                new Edge(join, recordInput(received))),
+            new JsonSessionService());
+
+    session.advance(go());
+    session.advance(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    // The stored message reads back with numbers in its parts decoded as genai does.
+    assertThat(((Map<?, ?>) received.get()).get("chat")).isEqualTo(message);
   }
 
   @Test
