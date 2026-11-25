@@ -79,6 +79,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.time.InstantSource;
 import java.util.ArrayList;
@@ -92,11 +93,16 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** The main class for the GenAI Agents runner. */
 public class Runner {
+  private static final Logger logger = LoggerFactory.getLogger(Runner.class);
+
   private final BaseAgent agent;
   private final @Nullable Node node;
   private final String appName;
@@ -1527,6 +1533,15 @@ public class Runner {
         .node(node);
   }
 
+  /**
+   * Runs the agent in live mode.
+   *
+   * <p>Canceling the returned stream still runs plugin afterRun callbacks once the agent has
+   * stopped. They run on the canceling thread, and cancellation does not wait for an asynchronous
+   * afterRun to finish.
+   *
+   * @return stream of events from the agent.
+   */
   public Flowable<Event> runLive(
       Session session, LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
     return runLiveImpl(session, liveRequestQueue, runConfig).compose(Tracing.trace("invocation"));
@@ -1534,6 +1549,10 @@ public class Runner {
 
   /**
    * Retrieves the session and runs the agent in live mode.
+   *
+   * <p>Canceling the returned stream still runs plugin afterRun callbacks once the agent has
+   * stopped. They run on the canceling thread, and cancellation does not wait for an asynchronous
+   * afterRun to finish.
    *
    * @return stream of events from the agent.
    * @throws IllegalArgumentException if the session is not found.
@@ -1561,6 +1580,10 @@ public class Runner {
 
   /**
    * Retrieves the session and runs the agent in live mode.
+   *
+   * <p>Canceling the returned stream still runs plugin afterRun callbacks once the agent has
+   * stopped. They run on the canceling thread, and cancellation does not wait for an asynchronous
+   * afterRun to finish.
    *
    * @return stream of events from the agent.
    * @throws IllegalArgumentException if the session is not found.
@@ -1600,15 +1623,7 @@ public class Runner {
         invocationContextSingle = Single.just(invocationContext);
       }
       return invocationContextSingle
-          .flatMapPublisher(updatedInvocationContext ->
-              updatedInvocationContext
-                  .agent()
-                  .runLive(updatedInvocationContext)
-                  // As in runAsync, partial events are streamed but not persisted.
-                  .concatMapSingle(event ->
-                      event.partial().orElse(false)
-                          ? Single.just(event)
-                          : this.sessionService.appendEvent(session, event)))
+          .flatMapPublisher(context -> runLiveWithPluginCallbacks(context, capturedContext))
           .doOnError(throwable -> {
             Span span = Span.current();
             span.setStatus(StatusCode.ERROR, "Error in runLive Flowable execution");
@@ -1617,6 +1632,51 @@ public class Runner {
           })
           .compose(Tracing.<Event>withContext(capturedContext));
     });
+  }
+
+  /**
+   * Runs the agent live between the before-run and after-run plugin callbacks, persisting and
+   * passing each event to the on-event callbacks as runAsync does.
+   */
+  private Flowable<Event> runLiveWithPluginCallbacks(
+      InvocationContext context, Context capturedContext) {
+    // Cached so a cancel during an afterRun that already started keeps it running and joins it,
+    // instead of abandoning it.
+    Completable afterRun = Completable.defer(() -> pluginManager.afterRunCallback(context)).cache();
+    // As in ADK Python, canceling before beforeRun finishes cancels normally without invoking
+    // afterRun.
+    AtomicBoolean started = new AtomicBoolean();
+    AtomicBoolean cancelled = new AtomicBoolean();
+    return beforeRunEventFor(context)
+        .doOnSuccess(unused -> started.set(true))
+        .doOnComplete(() -> started.set(true))
+        .toFlowable()
+        .switchIfEmpty(
+            Flowable.defer(() ->
+                context
+                    .agent()
+                    .runLive(context)
+                    .concatMapSingle(event ->
+                        processEvent(
+                            context, context.session(), /* onEachPersisted= */ null, event))))
+        .concatWith(afterRun)
+        .doOnCancel(() -> cancelled.set(true))
+        // Live runs usually end when the caller cancels the stream. As in ADK Python,
+        // afterRun still runs on cancellation, after the agent has stopped.
+        .doFinally(() -> {
+          if (cancelled.get() && started.get()) {
+            // Cancellation arrives on the caller's thread without the run's trace context.
+            Disposable unused =
+                afterRun
+                    .compose(Tracing.withContext(capturedContext))
+                    .subscribe(
+                        () -> {},
+                        error -> {
+                          logger.warn("An afterRun callback failed.", error);
+                          runOnRunError(context, error);
+                        });
+          }
+        });
   }
 
   /**
