@@ -47,13 +47,13 @@ public final class AppTest {
   }
 
   @Test
-  public void build_withAnAgentAsTheRootNode_makesItTheRootAgent() {
+  public void build_withAnAgentAsTheRootNode_keepsItAsTheRootNode() {
     BaseAgent agent = TestUtils.createSubAgent("worker");
 
     App app = App.builder().name("agent_app").rootNode(agent).build();
 
-    assertThat(app.rootAgent()).isSameInstanceAs(agent);
-    assertThat(app.rootNode()).isEmpty();
+    assertThat(app.rootNode()).hasValue(agent);
+    assertThat(((NodeViewAgent) app.rootAgent()).node()).isSameInstanceAs(agent);
   }
 
   @Test
@@ -136,6 +136,17 @@ public final class AppTest {
 
     assertThat(copy.rootNode()).hasValue(NODE);
     assertThat(((NodeViewAgent) copy.rootAgent()).node()).isSameInstanceAs(NODE);
+  }
+
+  @Test
+  public void toBuilder_ofAnAppWithAnAgentAsTheRootNode_keepsItAsTheRootNode() {
+    BaseAgent agent = TestUtils.createSubAgent("worker");
+    App app = App.builder().name("agent_app").rootNode(agent).build();
+
+    App copy = app.toBuilder().build();
+
+    assertThat(copy.rootNode()).hasValue(agent);
+    assertThat(((NodeViewAgent) copy.rootAgent()).node()).isSameInstanceAs(agent);
   }
 
   @Test

@@ -24,9 +24,9 @@ import com.google.adk.workflow.Node;
 import io.reactivex.rxjava3.core.Flowable;
 
 /**
- * A read-only agent that stands in for a non-agent workflow node so code reading the agent of an
- * app, runner, or invocation keeps working when they run a node. It never runs; the runner runs the
- * node itself.
+ * A read-only agent representing any workflow node, including an agent, so code reading the agent
+ * of an app, runner, or invocation still works when it runs a node. This agent never runs; the
+ * runner runs the node directly.
  */
 @Experimental
 public final class NodeViewAgent extends BaseAgent {
@@ -36,8 +36,8 @@ public final class NodeViewAgent extends BaseAgent {
   /**
    * Creates an agent that stands in for {@code node}, using its name and description.
    *
-   * @throws IllegalArgumentException if {@code node} is an agent, or if its name is not a valid
-   *     agent name.
+   * @throws IllegalArgumentException if {@code node} is a {@code NodeViewAgent} or its name is
+   *     invalid for an agent.
    */
   public NodeViewAgent(Node node) {
     super(
@@ -46,7 +46,7 @@ public final class NodeViewAgent extends BaseAgent {
         /* subAgents= */ null,
         /* beforeAgentCallback= */ null,
         /* afterAgentCallback= */ null);
-    checkArgument(!(node instanceof BaseAgent), "An agent needs no node view.");
+    checkArgument(!(node instanceof NodeViewAgent), "A node view agent needs no node view.");
     this.node = node;
   }
 

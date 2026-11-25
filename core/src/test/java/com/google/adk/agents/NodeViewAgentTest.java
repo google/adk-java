@@ -59,10 +59,20 @@ public final class NodeViewAgentTest {
   }
 
   @Test
-  public void constructor_withAnAgent_throwsIllegalArgumentException() {
+  public void constructor_withAnAgent_standsInForIt() {
     BaseAgent agent = TestUtils.createSubAgent("worker");
 
-    assertThrows(IllegalArgumentException.class, () -> new NodeViewAgent(agent));
+    NodeViewAgent view = new NodeViewAgent(agent);
+
+    assertThat(view.name()).isEqualTo("worker");
+    assertThat(view.node()).isSameInstanceAs(agent);
+  }
+
+  @Test
+  public void constructor_withANodeViewAgent_throwsIllegalArgumentException() {
+    NodeViewAgent view = new NodeViewAgent(NODE);
+
+    assertThrows(IllegalArgumentException.class, () -> new NodeViewAgent(view));
   }
 
   @Test

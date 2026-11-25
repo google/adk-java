@@ -76,8 +76,9 @@ public class App {
   }
 
   /**
-   * Returns the workflow node the app runs, or empty when it runs an agent tree. When it runs a
-   * node, {@link #rootAgent()} returns a {@link NodeViewAgent} that stands in for it.
+   * Returns the workflow node the app runs (which may be an agent), or empty when the app has a
+   * root agent instead. When it runs a node, {@link #rootAgent()} returns a {@link NodeViewAgent}
+   * that stands in for it.
    */
   @Experimental
   public Optional<Node> rootNode() {
@@ -148,7 +149,7 @@ public class App {
 
     /**
      * Sets the workflow node the app runs in place of a root agent, or clears it when {@code null}.
-     * If the given node is an agent, it becomes the root agent.
+     * Passing an agent sets it as the root node, like any other node.
      */
     @CanIgnoreReturnValue
     @Experimental
@@ -197,8 +198,7 @@ public class App {
       return new App(
           name,
           buildRootAgent,
-          // An agent set as the root node is the root agent, so the app has no root node.
-          rootNode instanceof BaseAgent ? null : rootNode,
+          rootNode,
           plugins,
           eventsCompactionConfig,
           contextCacheConfig,
@@ -222,7 +222,7 @@ public class App {
         throw new IllegalStateException(
             "Set a root agent or a root node, not both; clear the other with null.");
       }
-      return rootNode instanceof BaseAgent agent ? agent : new NodeViewAgent(rootNode);
+      return new NodeViewAgent(rootNode);
     }
   }
 
