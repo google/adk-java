@@ -18,6 +18,8 @@ package com.google.adk.workflow;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Context;
@@ -229,15 +231,18 @@ final class ResumeScan {
   }
 
   /**
-   * Unwraps and validates the answer {@code response} to interrupt {@code interruptId}. A {@code
-   * {"result": value}} envelope is unwrapped, and a string value inside it is read as JSON unless
-   * {@code schema} accepts a string.
+   * Unwraps and validates the answer {@code response} to interrupt {@code interruptId}, and returns
+   * it in JSON form, as a stored session reads it back: maps and lists unmodifiable, and whole
+   * numbers as {@code Long} ({@code BigInteger} past the long range). A {@code {"result": value}}
+   * envelope is unwrapped, and a string value inside it is read as JSON unless {@code schema}
+   * accepts a string.
    *
-   * @throws IllegalArgumentException if the answer does not match {@code schema}
+   * @throws IllegalArgumentException if the answer has no JSON form or does not match {@code
+   *     schema}
    */
   static @Nullable Object validateAnswer(
       @Nullable Schema schema, @Nullable Object response, String interruptId) {
-    Object answer = unwrapAnswer(schema, response);
+    Object answer = jsonForm(unwrapAnswer(schema, response), interruptId);
     if (schema == null) {
       return answer;
     }
@@ -259,6 +264,22 @@ final class ResumeScan {
       return value;
     }
     return MessageReader.jsonOrText(text);
+  }
+
+  /**
+   * Returns {@code answer} in JSON form, as a stored session reads it back, so that a live answer
+   * equals its stored form.
+   */
+  @SuppressWarnings("UnusedException") // Jackson's message can quote the answer, so no cause.
+  private static @Nullable Object jsonForm(@Nullable Object answer, String interruptId) {
+    String what = "Validation failed for interrupt " + interruptId + ": the answer";
+    JsonNode tree;
+    try {
+      tree = JsonBaseModel.getMapper().valueToTree(answer);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(what + " has no JSON form.");
+    }
+    return PortCodec.jsonNative(tree, what);
   }
 
   /** Reads the response schema that an {@value RequestInput#FUNCTION_CALL_NAME} call carried. */
@@ -555,8 +576,10 @@ final class ResumeScan {
     private static Object asMessage(Object value) {
       if (value instanceof Map<?, ?> map && MESSAGE_KEYS.containsAll(map.keySet())) {
         try {
-          return JsonBaseModel.getMapper().convertValue(map, Content.class);
-        } catch (IllegalArgumentException e) {
+          // Parse JSON text so numbers in parts decode as genai does, not as the map's Long.
+          return JsonBaseModel.getMapper()
+              .readValue(JsonBaseModel.getMapper().writeValueAsString(map), Content.class);
+        } catch (JsonProcessingException e) {
           return value;
         }
       }

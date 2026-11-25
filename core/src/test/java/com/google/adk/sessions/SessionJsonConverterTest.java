@@ -744,6 +744,23 @@ public final class SessionJsonConverterTest {
   }
 
   @Test
+  public void convertEventToJson_thenFromApiEvent_readsWholeNumbersInOutputAsLong()
+      throws Exception {
+    Event event =
+        Event.builder()
+            .author("agent")
+            .invocationId("inv-1")
+            .timestamp(1_700_000_000_123L)
+            .output(ImmutableMap.of("count", 3, "items", ImmutableList.of(-1)))
+            .build();
+
+    Map<?, ?> output =
+        (Map<?, ?>) SessionJsonConverter.fromApiEvent(asStoredEvent(event)).output().orElseThrow();
+
+    assertThat(output).isEqualTo(ImmutableMap.of("count", 3L, "items", ImmutableList.of(-1L)));
+  }
+
+  @Test
   public void convertEventToJson_thenFromApiEventWithoutTypedContent_readsInlineDataFromRawEvent()
       throws Exception {
     byte[] data = {(byte) 0xfb, (byte) 0xff, 0x01};

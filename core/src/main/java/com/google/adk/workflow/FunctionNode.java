@@ -311,7 +311,7 @@ public final class FunctionNode<I, O> extends BaseNode {
           ToolConfirmations.request(
               context,
               name(),
-              inputCodec.encode(input, what),
+              inputCodec.encodePayload(input, what),
               /* hint= */ null,
               /* confirmationPayload= */ null);
       return new RunOutcome<>(null, request, null);
