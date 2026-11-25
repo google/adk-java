@@ -37,6 +37,9 @@ import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.disposables.CompositeDisposable;
+import io.reactivex.rxjava3.subjects.CompletableSubject;
+import io.reactivex.rxjava3.subjects.SingleSubject;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -135,6 +138,39 @@ public final class ToolNodes {
     }
 
     /**
+     * Calls the tool as work of the node's attempt while {@code runAsync} or the subscription to
+     * its result blocks, so the attempt waits for a call that blocks. A cancel reaches a call that
+     * blocks as it is subscribed, and the result is sent once the attempt no longer waits for the
+     * call.
+     */
+    private Single<Map<String, Object>> trackedCall(
+        ActivationScope scope, Map<String, Object> args, ToolContext toolContext) {
+      return Single.create(emitter -> {
+        CompositeDisposable call = new CompositeDisposable();
+        emitter.setDisposable(call);
+        CompletableSubject returned = CompletableSubject.create();
+        if (!scope.add(call, returned)) {
+          // The attempt has ended, and its end cancels this call too; an error here could race
+          // that cancel and go undelivered.
+          return;
+        }
+        SingleSubject<Map<String, Object>> result;
+        try {
+          // Hands over the call's Disposable before the call can block; defer turns a throw from
+          // runAsync into the result's error.
+          result =
+              Single.defer(() -> tool.runAsync(args, toolContext))
+                  .doOnSubscribe(call::add)
+                  .subscribeWith(SingleSubject.create());
+        } finally {
+          returned.onComplete();
+        }
+        // tryOnError, as a call that fails after a cancel has no one left to tell.
+        call.add(result.subscribe(emitter::onSuccess, emitter::tryOnError));
+      });
+    }
+
+    /**
      * Calls the tool between the plugins' tool callbacks, as a model's tool call does. A
      * confirmation request from the tool becomes a request for input and skips the after-tool
      * callbacks.
@@ -143,7 +179,7 @@ public final class ToolNodes {
         Context context, Map<String, Object> args, ToolContext toolContext) {
       Plugin plugins = context.invocationContext().pluginManager();
       Single<Object> toolCall =
-          Single.defer(() -> tool.runAsync(args, toolContext))
+          trackedCall(context.requireNodeState().scope(), args, toolContext)
               .flatMap(
                   result -> {
                     ToolConfirmation requested = takeRequestedConfirmation(toolContext);

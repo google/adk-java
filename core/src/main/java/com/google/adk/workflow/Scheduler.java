@@ -134,7 +134,9 @@ final class Scheduler {
               })
           .andThen(wakeUps.doOnNext(unused -> handleCompletions()).ignoreElements())
           .andThen(Completable.defer(() -> failed ? Completable.complete() : finalizeRun()))
-          .doFinally(childRuns::dispose);
+          // Before the end reaches the workflow's attempt, whose scope then rejects a late child.
+          .doOnTerminate(childRuns::dispose)
+          .doOnDispose(childRuns::dispose);
     }
 
     /** Handles the node runs that finished since the last wake-up. */

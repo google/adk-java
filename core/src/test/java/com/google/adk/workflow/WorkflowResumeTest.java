@@ -1712,11 +1712,21 @@ public final class WorkflowResumeTest {
                         ctx.runNode(broken, null, runId("b")),
                         (first, second, third) -> "unreached")
                     .toFlowable());
+    List<Throwable> undeliverable = Collections.synchronizedList(new ArrayList<>());
+    Consumer<? super Throwable> previousHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
 
-    FailedTurn turn = new WorkflowSession(workflow(new Edge(START, caller))).failingTurn(go());
+    FailedTurn turn;
+    try {
+      turn = new WorkflowSession(workflow(new Edge(START, caller))).failingTurn(go());
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousHandler);
+    }
 
     assertThat(turn.error()).isInstanceOf(IllegalStateException.class);
     assertThat(stalled.runs()).isEqualTo(1);
+    // The last call to leave cancels the run, which the disposed calls do not report.
+    assertThat(undeliverable).isEmpty();
   }
 
   @Test
@@ -1731,11 +1741,21 @@ public final class WorkflowResumeTest {
                 secondJoined.andThen(Flowable.error(new IllegalStateException("sibling fails"))));
     WorkflowSession session =
         new WorkflowSession(workflow(new Edge(START, caller), new Edge(START, sibling)));
+    List<Throwable> undeliverable = Collections.synchronizedList(new ArrayList<>());
+    Consumer<? super Throwable> previousHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
 
-    FailedTurn turn = session.failingTurn(go());
+    FailedTurn turn;
+    try {
+      turn = session.failingTurn(go());
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousHandler);
+    }
 
     assertThat(turn.error()).isInstanceOf(IllegalStateException.class);
     assertThat(stalled.runs()).isEqualTo(1);
+    // The caller's end cancels the run, which the disposed joining call does not report.
+    assertThat(undeliverable).isEmpty();
   }
 
   @Test

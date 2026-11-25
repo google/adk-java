@@ -25,8 +25,9 @@ import org.jspecify.annotations.Nullable;
  * input may be shared with other nodes, so the body must not mutate it. It runs on the node's
  * scheduler ({@link FunctionNode.Builder#scheduler}), by default the {@code Runner}'s, so it may
  * block, and a small fixed-size scheduler can deadlock bodies that wait for one another. Canceling
- * the node interrupts the body's thread and drops its result; only the node's own timeout waits for
- * the body to return, so a body that ignores the interrupt holds up the retry and the run.
+ * the node interrupts the body's thread and drops its result, and the node's attempt ends only once
+ * the body returns, so a body that ignores the interrupt holds up the retry and the caller.
+ * Disposing the whole run does not wait for it.
  */
 @Experimental
 @FunctionalInterface

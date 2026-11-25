@@ -42,6 +42,8 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.observers.DisposableSingleObserver;
 import io.reactivex.rxjava3.processors.FlowableProcessor;
 import io.reactivex.rxjava3.processors.UnicastProcessor;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
@@ -50,6 +52,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -67,6 +70,9 @@ import org.jspecify.annotations.Nullable;
  */
 @Experimental
 public final class NodeRunner {
+
+  private static final String CALLER_ENDED_MESSAGE =
+      "Node '%s' has ended, so its child runs are canceled.";
 
   /** Sink that receives the events of a workflow run. */
   @Experimental
@@ -246,6 +252,10 @@ public final class NodeRunner {
       RunNodeConfig config,
       @Nullable String reservedRunId) {
     NodeExecutionState parentState = parent.requireNodeState();
+    if (parentState.scope().isClosed()) {
+      // As in Kotlin, an ended attempt starts no child run and takes no run ID from the retry.
+      return NodeRunner.<Object>callerEnded(parentState.node().name()).toMaybe();
+    }
     checkState(
         parentState.node().rerunOnResume(),
         "Node '%s' must rerun on resume to run child nodes: a child it runs may be interrupted, and"
@@ -275,49 +285,55 @@ public final class NodeRunner {
   /**
    * Returns the run of {@code node} under {@code runId} shared by the caller's calls with that run
    * ID, starting it if needed. A run that fails or waits for an output it did not produce is not
-   * shared, so a later call runs the child again. The run is canceled only once every call waiting
-   * on it is canceled.
+   * shared, so a later call runs the child again. The run is canceled once every call waiting on it
+   * is canceled, or when the caller's attempt ends.
    */
   private static Single<Context> sharedChildRun(
       Context parent, Node node, @Nullable Object nodeInput, String runId, RunNodeConfig config) {
-    return Single.defer(
-        () -> {
-          ConcurrentMap<String, SharedChildRun> childRuns = parent.requireNodeState().childRuns();
-          String childKey = segment(node.name(), runId);
-          SharedChildRun created = new SharedChildRun();
-          SharedChildRun existing = childRuns.putIfAbsent(childKey, created);
-          SharedChildRun run = existing != null ? existing : created;
-          if (!run.join()) {
-            // The run was canceled as this call joined it, so this call starts a new run.
-            childRuns.remove(childKey, run);
-            return sharedChildRun(parent, node, nodeInput, runId, config);
-          }
-          Single<Context> call =
-              run.result.doOnDispose(
-                  () -> {
-                    if (run.leave()) {
-                      childRuns.remove(childKey, run);
-                    }
-                  });
-          if (existing != null) {
-            return call;
-          }
-          // Start after the call subscribes, so a cancel reaches a child blocked as it starts.
-          return Single.create(
-              emitter -> {
-                emitter.setDisposable(call.subscribe(emitter::onSuccess, emitter::onError));
-                run.start(
-                    // Defer so a throw from scan or intercept fails the run instead of leaking it.
-                    Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
-                        .doOnSuccess(
-                            child -> {
-                              if (!keepsItsRun(child)) {
-                                childRuns.remove(childKey, run);
-                              }
-                            })
-                        .doOnError(error -> childRuns.remove(childKey, run)));
-              });
-        });
+    return Single.defer(() -> {
+      NodeExecutionState parentState = parent.requireNodeState();
+      ConcurrentMap<String, SharedChildRun> childRuns = parentState.childRuns();
+      String childKey = segment(node.name(), runId);
+      SharedChildRun created = new SharedChildRun();
+      SharedChildRun existing = childRuns.putIfAbsent(childKey, created);
+      SharedChildRun run = existing != null ? existing : created;
+      if (!run.join()) {
+        // The run was canceled as this call joined it, so this call starts a new run.
+        childRuns.remove(childKey, run);
+        return sharedChildRun(parent, node, nodeInput, runId, config);
+      }
+      Single<Context> call =
+          run.result.doOnDispose(() -> {
+            if (run.leave()) {
+              childRuns.remove(childKey, run);
+            }
+          });
+      return Single.create(emitter -> {
+        // tryOnError, as the run can fail while this call is disposed: the caller's attempt ends,
+        // or this call was the last to leave.
+        emitter.setDisposable(call.subscribe(emitter::onSuccess, emitter::tryOnError));
+        if (existing != null) {
+          return;
+        }
+        // Start after the call subscribes, so a cancel reaches a child blocked as it starts.
+        String callerName = parentState.node().name();
+        if (!parentState
+            .scope()
+            .add(Disposable.fromAction(() -> run.cancel(callerName)), run.ended())) {
+          run.cancel(callerName);
+          return;
+        }
+        run.start(
+            // Defer so a throw from scan or intercept fails the run instead of leaking it.
+            Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
+                .doOnSuccess(child -> {
+                  if (!keepsItsRun(child)) {
+                    childRuns.remove(childKey, run);
+                  }
+                })
+                .doOnError(error -> childRuns.remove(childKey, run)));
+      });
+    });
   }
 
   /**
@@ -468,7 +484,14 @@ public final class NodeRunner {
                               Context context = newContext(resumeInputs, previousAttempt.get());
                               previousAttempt.set(context.requireNodeState());
                               Activation activation = new Activation(context);
-                              return activation.run(nodeInput).toSingleDefault(activation);
+                              Completable run = activation.run(nodeInput);
+                              // After the chain is built, whose doFinally closes the scope.
+                              if (!context.requireNodeState().scope().open()) {
+                                // The caller's end cancels every run it started, this one too, and
+                                // an error here could race that cancel and go undelivered.
+                                return Single.never();
+                              }
+                              return run.toSingleDefault(activation);
                             })
                         .compose(Tracing.withContext(traceContext))))
         .takeUntil(activation -> !activation.retries(policy))
@@ -490,6 +513,16 @@ public final class NodeRunner {
       state.addInterruptIds(openInterrupts);
     }
     return context;
+  }
+
+  /**
+   * Fails a call that starts after the attempt of {@code callerName} ended, unless that end already
+   * canceled it, which then has no one left to tell.
+   */
+  private static <T> Single<T> callerEnded(String callerName) {
+    return Single.create(emitter ->
+        emitter.tryOnError(
+            new CancellationException(String.format(CALLER_ENDED_MESSAGE, callerName))));
   }
 
   /** Returns the wait before attempt {@code attempt}; there is none before the first. */
@@ -568,12 +601,22 @@ public final class NodeRunner {
               .run(context, nodeInput)
               // Avoid concatMapCompletable: its prefetch would let the node run ahead of the sink.
               .flatMapCompletable(this::dispatch, /* delayErrors= */ true, /* maxConcurrency= */ 1);
+      // A close that waits resumes on another thread, so it restores the caller's trace context.
+      io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
+      Completable closeScope =
+          Completable.defer(nodeState.scope()::close).compose(Tracing.withContext(traceContext));
       return withTimeout(body)
+          // Every end of the attempt waits for the work it started before it finishes or fails.
+          .andThen(closeScope)
           .andThen(Completable.defer(this::flushPending))
-          .onErrorResumeNext(this::onError)
+          .onErrorResumeNext(error -> closeScope.andThen(Completable.defer(() -> onError(error))))
           // A run cut short stays unfinished, so a later call in this turn reruns it.
           .doOnSubscribe(unused -> nodeState.markStarted())
-          .doOnComplete(nodeState::markFinished);
+          .doOnComplete(nodeState::markFinished)
+          // After a cancel has reached the node, stops the rest of its work without waiting.
+          .doFinally(() -> {
+            var unused = nodeState.scope().close();
+          });
     }
 
     /** Returns whether {@code policy} retries this attempt. */
@@ -593,11 +636,8 @@ public final class NodeRunner {
         return run;
       }
       Duration limit = timeout.get();
-      // The timeout only interrupts a body, so the node fails once the body has returned.
-      Completable timedOut =
-          nodeState
-              .bodyReturned()
-              .andThen(Completable.error(() -> new NodeTimeoutException(node.name(), limit)));
+      // Like any failure, the timeout fails the node once the attempt's work has stopped.
+      Completable timedOut = Completable.error(() -> new NodeTimeoutException(node.name(), limit));
       io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
       // Off the caller's thread, so a body that blocks does not block the caller.
       return completeOn(invocationContext.scheduler())
@@ -814,8 +854,9 @@ public final class NodeRunner {
   }
 
   /**
-   * A run of a child that a node's calls with one run ID share. It is canceled only once every call
-   * waiting on it is canceled, so a canceled call never makes another call run the child again.
+   * A run of a child shared by a node's calls with one run ID. A canceled call leaves the run going
+   * for the other calls, so none of them runs the child again; the run is canceled once every
+   * waiting call is, or when the attempt of the node that started it ends.
    */
   static final class SharedChildRun {
     private final SingleSubject<Context> result = SingleSubject.create();
@@ -827,6 +868,10 @@ public final class NodeRunner {
     @GuardedBy("this")
     private boolean canceled;
 
+    // Set by whichever ends the run first, the child or cancel(), so only one reports a result.
+    @GuardedBy("this")
+    private boolean ended;
+
     /** Adds a waiting call, or returns false if the run was already canceled. */
     private synchronized boolean join() {
       if (canceled) {
@@ -836,15 +881,63 @@ public final class NodeRunner {
       return true;
     }
 
-    /** Starts the run unless every call has left, and reports its result to every waiting call. */
+    /** Starts the run unless it was canceled, and reports its result to every waiting call. */
     private void start(Single<Context> child) {
       synchronized (this) {
         if (canceled) {
           return;
         }
       }
+      // Not the container overload: after a cancel, its disposed observer reports a late error.
+      DisposableSingleObserver<Context> observer =
+          new DisposableSingleObserver<>() {
+            @Override
+            public void onSuccess(Context context) {
+              if (end()) {
+                result.onSuccess(context);
+              }
+            }
+
+            @Override
+            public void onError(Throwable error) {
+              if (end()) {
+                result.onError(error);
+              }
+            }
+          };
       // Added before it subscribes, so a cancel reaches a child blocked as it starts.
-      child.subscribe(result::onSuccess, result::onError, run);
+      run.add(observer);
+      child.subscribe(observer);
+    }
+
+    /** Marks the run ended, or returns false if it already was. */
+    private synchronized boolean end() {
+      if (ended) {
+        return false;
+      }
+      ended = true;
+      return true;
+    }
+
+    /** Completes once the run has a result, which a cancel makes a failure. */
+    private Completable ended() {
+      return result.ignoreElement().onErrorComplete();
+    }
+
+    /**
+     * Cancels the run unless it ended, and fails the calls still waiting on it with a {@link
+     * CancellationException}.
+     */
+    private void cancel(String callerName) {
+      synchronized (this) {
+        if (ended) {
+          return;
+        }
+        ended = true;
+        canceled = true;
+      }
+      run.dispose();
+      result.onError(new CancellationException(String.format(CALLER_ENDED_MESSAGE, callerName)));
     }
 
     /**
@@ -853,12 +946,16 @@ public final class NodeRunner {
      */
     private boolean leave() {
       synchronized (this) {
-        if (--waitingCalls > 0 || result.hasValue() || result.hasThrowable()) {
+        if (--waitingCalls > 0 || ended) {
           return false;
         }
+        ended = true;
         canceled = true;
       }
       run.dispose();
+      // No call waits for it, but ended() does.
+      result.onError(
+          new CancellationException("Every call waiting on the child run was canceled."));
       return true;
     }
   }

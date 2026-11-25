@@ -433,11 +433,16 @@ public class Context extends ReadonlyContext {
    * node waits too, which {@code catch (Exception e)} lets through but {@code catch (Throwable t)}
    * and Rx error handlers such as {@code onErrorResumeNext} stop.
    *
+   * <p>However this node's attempt ends, it cancels the children still running and waits for them
+   * to stop, so a resume or a retry runs such a child again. Disposing the whole run cancels them
+   * too, but returns without waiting.
+   *
    * <p>It fails with {@link DynamicNodeFailedException} if the child fails; with {@link
-   * IllegalStateException} if this is not a workflow node's context, if this node's {@link
-   * Node#rerunOnResume} is false, or if {@code config} delegates an output that this node already
-   * has or has delegated; and with {@link IllegalArgumentException} if the child's name cannot form
-   * a node path.
+   * java.util.concurrent.CancellationException} if this node's attempt has ended or a cancel has
+   * interrupted its body; with {@link IllegalStateException} if this is not a workflow node's
+   * context, if this node's {@link Node#rerunOnResume} is false, or if {@code config} delegates an
+   * output that this node already has or has delegated; and with {@link IllegalArgumentException}
+   * if the child's name cannot form a node path.
    */
   @Experimental
   public final Maybe<Object> runNode(Node node, @Nullable Object nodeInput, RunNodeConfig config) {

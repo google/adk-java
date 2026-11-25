@@ -31,7 +31,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
-import io.reactivex.rxjava3.core.Completable;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -81,8 +80,7 @@ public final class NodeExecutionState {
   private final AtomicReference<OutputState> outputState = new AtomicReference<>(NO_OUTPUT);
   // Set once the node drops its own output because a useAsOutput child holds the output.
   private final AtomicBoolean droppedOwnOutput = new AtomicBoolean();
-  private final AtomicReference<Completable> bodyReturned =
-      new AtomicReference<>(Completable.complete());
+  private final ActivationScope scope;
   private String eventAuthor;
   private @Nullable ImmutableList<Route> selectedRoutes;
   private boolean routesEmitted;
@@ -101,6 +99,7 @@ public final class NodeExecutionState {
     this.runId = builder.runId;
     NodeExecutionState parentState = parent == null ? null : parent.requireNodeState();
     this.outputParent = builder.useAsOutput ? parentState : null;
+    this.scope = new ActivationScope(parentState == null ? null : parentState.scope);
     this.nodePath =
         NodeRunner.appendSegment(
             parentState == null ? null : parentState.nodePath,
@@ -351,14 +350,9 @@ public final class NodeExecutionState {
     }
   }
 
-  /** Records that a body of this run started; {@code returned} completes once it returns. */
-  void markBodyStarted(Completable returned) {
-    bodyReturned.set(returned);
-  }
-
-  /** Completes once the body this run started has returned, or at once if none started. */
-  Completable bodyReturned() {
-    return Completable.defer(bodyReturned::get);
+  /** Returns the scope of the work this attempt started. */
+  ActivationScope scope() {
+    return scope;
   }
 
   /**

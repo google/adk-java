@@ -47,6 +47,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.observers.TestObserver;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
@@ -682,6 +683,35 @@ public final class SchedulerTest {
         .run(/* nodeInput= */ null)
         .test()
         .assertError(fatal);
+  }
+
+  @Test
+  public void anErrorFromANode_siblingsStartingBesideIt_reportNoUndeliverableError() {
+    List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
+    var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+
+    try {
+      // The race is between the error and siblings starting on other threads, so repeat it.
+      for (int round = 0; round < 50; round++) {
+        AssertionError fatal = new AssertionError("fatal");
+        List<Edge> edges = new ArrayList<>();
+        edges.add(new Edge(START, new TestNode("fatal", (ctx, input) -> Flowable.error(fatal))));
+        for (int i = 0; i < 16; i++) {
+          edges.add(new Edge(START, emitter("sibling" + i, "out")));
+        }
+
+        runner(workflow(edges.toArray(new Edge[0])), "root")
+            .run(/* nodeInput= */ null)
+            .test()
+            .awaitDone(10, SECONDS)
+            .assertError(fatal);
+      }
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousErrorHandler);
+    }
+
+    assertThat(undeliverable).isEmpty();
   }
 
   @Test
