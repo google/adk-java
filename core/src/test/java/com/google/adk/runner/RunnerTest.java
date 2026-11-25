@@ -118,10 +118,12 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.processors.PublishProcessor;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subjects.MaybeSubject;
-import io.reactivex.rxjava3.subjects.PublishSubject;
+import io.reactivex.rxjava3.subjects.ReplaySubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Instant;
 import java.time.InstantSource;
@@ -134,6 +136,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -993,6 +996,253 @@ public final class RunnerTest {
   }
 
   @Test
+  public void runAsync_releasesLongCancelledQueueWithoutRecursion() {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(
+            () ->
+                calls.getAndIncrement() == 0
+                    ? firstResponse
+                    : Flowable.just(createTextLlmResponse("last done")));
+    runner =
+        Runner.builder()
+            .agent(createTestAgent(model))
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+    TestSubscriber<Event> first =
+        runner
+            .runAsync("user", session.id(), createContent("first").toBuilder().role("user").build())
+            .test();
+    TestSubscriber<Event> last = new TestSubscriber<>();
+    try {
+      for (int i = 0; i < 10_000; i++) {
+        runner
+            .runAsync(
+                "user", session.id(), createContent("cancelled").toBuilder().role("user").build())
+            .test()
+            .cancel();
+        assertThat(model.getRequests()).hasSize(1);
+      }
+      runner
+          .runAsync("user", session.id(), createContent("last").toBuilder().role("user").build())
+          .subscribe(last);
+      assertThat(model.getRequests()).hasSize(1);
+      firstResponse.onNext(createTextLlmResponse("first done"));
+      firstResponse.onComplete();
+      first.assertComplete().assertNoErrors();
+      last.awaitDone(10, SECONDS).assertComplete().assertNoErrors();
+      assertThat(model.getRequests()).hasSize(2);
+      assertThat(
+              model.getRequests().get(1).contents().stream()
+                  .flatMap(content -> content.parts().stream().flatMap(List::stream))
+                  .flatMap(part -> part.text().stream())
+                  .toList())
+          .containsExactly("first", "first done", "last")
+          .inOrder();
+    } finally {
+      first.cancel();
+      last.cancel();
+    }
+  }
+
+  @Test
+  public void runAsync_cancelledQueuedRun_canBlockOnFollowUp() throws Exception {
+    assertCancelledQueuedRunCanBlockOnFollowUp(false);
+  }
+
+  @Test
+  public void runAsync_cancelledQueuedRunWithSuccessor_canBlockOnFollowUp() throws Exception {
+    assertCancelledQueuedRunCanBlockOnFollowUp(true);
+  }
+
+  private void assertCancelledQueuedRunCanBlockOnFollowUp(boolean queueSuccessor) throws Exception {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(
+            () ->
+                calls.getAndIncrement() == 0
+                    ? firstResponse
+                    : Flowable.just(createTextLlmResponse("done")));
+    runner =
+        Runner.builder()
+            .agent(createTestAgent(model))
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+    TestSubscriber<Event> first = runner.runAsync("user", session.id(), createContent("A")).test();
+    CountDownLatch finished = new CountDownLatch(1);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    Disposable second =
+        runner
+            .runAsync("user", session.id(), createContent("B"))
+            .firstElement()
+            .subscribe(event -> {
+              try {
+                List<Event> followUp =
+                    runner
+                        .runAsync("user", session.id(), createContent("C"))
+                        .timeout(2, SECONDS)
+                        .toList()
+                        .blockingGet();
+                assertThat(followUp).isNotEmpty();
+              } catch (Throwable error) {
+                failure.set(error);
+              } finally {
+                finished.countDown();
+              }
+            }, error -> {
+              failure.set(error);
+              finished.countDown();
+            });
+    TestSubscriber<Event> successor =
+        queueSuccessor
+            ? runner.runAsync("user", session.id(), createContent("queued")).test()
+            : null;
+    Thread release = new Thread(firstResponse::onComplete);
+    release.setDaemon(true);
+    try {
+      release.start();
+      assertThat(finished.await(5, SECONDS)).isTrue();
+      assertThat(failure.get()).isNull();
+      if (successor != null) {
+        successor.awaitDone(5, SECONDS).assertComplete().assertNoErrors();
+      }
+    } finally {
+      first.cancel();
+      second.dispose();
+      if (successor != null) {
+        successor.cancel();
+      }
+      release.join(5000);
+    }
+  }
+
+  @Test
+  public void runAsync_cancelActiveRun_releasesSuccessorWhileCallbackIsBlocked() throws Exception {
+    assertCancellingBlockedRunReleasesSuccessor(false);
+    assertCancellingBlockedRunReleasesSuccessor(true);
+  }
+
+  private void assertCancellingBlockedRunReleasesSuccessor(boolean queued) throws Exception {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(
+            () ->
+                queued && calls.getAndIncrement() == 0
+                    ? firstResponse
+                    : Flowable.just(createTextLlmResponse("done")));
+    Runner local =
+        Runner.builder()
+            .agent(createTestAgent(model))
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+    TestSubscriber<Event> first =
+        queued ? local.runAsync("user", session.id(), createContent("A")).test() : null;
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch unblock = new CountDownLatch(1);
+    TestSubscriber<Event> blocked = new TestSubscriber<>();
+    Flowable<Event> work =
+        local
+            .runAsync("user", session.id(), createContent("B"))
+            .doOnNext(event -> {
+              entered.countDown();
+              assertThat(unblock.await(10, SECONDS)).isTrue();
+            });
+    Thread start =
+        new Thread(() -> {
+          if (queued) {
+            firstResponse.onComplete();
+          } else {
+            work.subscribe(blocked);
+          }
+        });
+    start.setDaemon(true);
+    if (queued) {
+      work.subscribe(blocked);
+    }
+    TestSubscriber<Event> successor = new TestSubscriber<>();
+    try {
+      start.start();
+      assertThat(entered.await(5, SECONDS)).isTrue();
+      local.runAsync("user", session.id(), createContent("C")).subscribe(successor);
+      blocked.cancel();
+      successor.awaitDone(2, SECONDS).assertComplete().assertNoErrors();
+    } finally {
+      unblock.countDown();
+      blocked.cancel();
+      successor.cancel();
+      if (first != null) {
+        first.cancel();
+      }
+      start.join(5000);
+    }
+  }
+
+  @Test
+  public void runAsync_releasesSynchronousQueuedRunsInOrderWithoutRecursion() {
+    CompletableSubject release = CompletableSubject.create();
+    AtomicInteger calls = new AtomicInteger();
+    BaseAgent ordered =
+        new BaseAgent(
+            "ordered",
+            "checks run order",
+            ImmutableList.of(),
+            ImmutableList.of(),
+            ImmutableList.of()) {
+          @Override
+          protected Flowable<Event> runAsyncImpl(InvocationContext context) {
+            String message =
+                context
+                    .userContent()
+                    .orElseThrow()
+                    .parts()
+                    .orElseThrow()
+                    .get(0)
+                    .text()
+                    .orElseThrow();
+            Flowable<Event> execution =
+                Flowable.defer(() -> {
+                  assertThat(message).isEqualTo(Integer.toString(calls.getAndIncrement()));
+                  return Flowable.empty();
+                });
+            return message.equals("0") ? release.andThen(execution) : execution;
+          }
+
+          @Override
+          protected Flowable<Event> runLiveImpl(InvocationContext context) {
+            return runAsyncImpl(context);
+          }
+        };
+    runner =
+        Runner.builder()
+            .agent(ordered)
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+    List<TestSubscriber<Event>> runs = new ArrayList<>();
+    try {
+      for (int i = 0; i < 10_000; i++) {
+        runs.add(runner.runAsync("user", session.id(), createContent(Integer.toString(i))).test());
+      }
+      assertThat(calls.get()).isEqualTo(0);
+      release.onComplete();
+      for (TestSubscriber<Event> run : runs) {
+        run.awaitDone(10, SECONDS).assertComplete().assertNoErrors();
+      }
+      assertThat(calls.get()).isEqualTo(runs.size());
+    } finally {
+      for (TestSubscriber<Event> run : runs) {
+        run.cancel();
+      }
+    }
+  }
+
+  @Test
   public void runAsync_concurrentCalls_staleRead() throws Exception {
     BaseSessionService mockSessionService = mock(BaseSessionService.class);
     Event agentEvent = Event.builder().id("agent-event").author("agent").build();
@@ -1006,7 +1256,7 @@ public final class RunnerTest {
     when(mockSessionService.getSession(anyString(), anyString(), anyString(), any()))
         .thenAnswer(invocation -> Maybe.just(dbSession.get()));
 
-    PublishSubject<Event> appendSubject = PublishSubject.create();
+    ReplaySubject<Event> appendSubject = ReplaySubject.createWithSize(1);
 
     when(mockSessionService.appendEvent(any(), any()))
         .thenAnswer(
@@ -1049,10 +1299,8 @@ public final class RunnerTest {
         .runAsync("user", "session-id", createContent("message 2"))
         .subscribe(subscriber2);
 
-    appendSubject.onNext(agentEvent); // Completes first appendEvent (user msg 1)
-    appendSubject.onNext(agentEvent); // Completes second appendEvent (agent event 1)
-    appendSubject.onNext(agentEvent); // Completes third appendEvent (user msg 2)
-    appendSubject.onNext(agentEvent); // Completes fourth appendEvent (agent event 2)
+    // Release persistence for both runs, including the asynchronously started second run.
+    appendSubject.onNext(agentEvent);
 
     subscriber1.awaitDone(5, SECONDS);
     subscriber2.awaitDone(5, SECONDS);
@@ -3671,6 +3919,43 @@ public final class RunnerTest {
     }
 
     assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void runAsync_queuedRun_preservesCallerContext() {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(
+            () ->
+                calls.getAndIncrement() == 0
+                    ? firstResponse
+                    : Flowable.just(createTextLlmResponse("queued done")));
+    runner =
+        Runner.builder()
+            .agent(createTestAgent(model))
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+    TestSubscriber<Event> first = new TestSubscriber<>();
+    TestSubscriber<Event> queued = new TestSubscriber<>();
+    ContextKey<String> testKey = ContextKey.named("queued-caller");
+    try (Scope scope = Context.current().with(testKey, "caller-value").makeCurrent()) {
+      runner.runAsync("user", session.id(), createContent("A")).subscribe(first);
+      runner
+          .runAsync("user", session.id(), createContent("B"))
+          .doOnNext(event -> {
+            assertThat(Context.current().get(testKey)).isEqualTo("caller-value");
+          })
+          .subscribe(queued);
+      firstResponse.onNext(createTextLlmResponse("first done"));
+      firstResponse.onComplete();
+      first.assertComplete().assertNoErrors();
+      queued.awaitDone(10, SECONDS).assertComplete().assertNoErrors().assertValueCount(1);
+    } finally {
+      first.cancel();
+      queued.cancel();
+    }
   }
 
   @Test

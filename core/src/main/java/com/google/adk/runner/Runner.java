@@ -64,6 +64,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.MapMaker;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
 import com.google.genai.types.Content;
@@ -80,6 +81,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.time.InstantSource;
 import java.util.ArrayList;
@@ -93,6 +95,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
@@ -116,7 +119,8 @@ public class Runner {
   @Nullable private final Scheduler scheduler;
   private final InstantSource instantSource;
   private final UuidProvider uuidProvider;
-  private final ConcurrentMap<String, Completable> activeSessionCompletables =
+  // Tail of each session's run queue, including runs waiting to start.
+  private final ConcurrentMap<String, SessionRun> activeSessionRuns =
       new MapMaker().weakValues().makeMap();
 
   /** Builder for {@link Runner}. */
@@ -735,27 +739,43 @@ public class Runner {
         return result;
       }
 
-      CompletableSubject requestCompletion = CompletableSubject.create();
-
-      Completable[] previousHolder = new Completable[1];
-
-      activeSessionCompletables.compute(
-          sessionId,
-          (key, current) -> {
-            previousHolder[0] = current;
-            return requestCompletion;
-          });
-
-      Completable previous = previousHolder[0];
-
-      Flowable<Event> sequenced =
-          (previous == null) ? result : previous.onErrorComplete().andThen(result);
-
-      return sequenced.doFinally(() -> {
-        requestCompletion.onComplete();
-        activeSessionCompletables.remove(sessionId, requestCompletion);
+      SessionRun request =
+          activeSessionRuns.compute(sessionId, (key, previous) -> new SessionRun(previous));
+      Completable ready = request.predecessor;
+      if (request.queued) {
+        Context callerContext = Context.current();
+        ready = ready.andThen(Completable.create(emitter -> {
+          // The task owns its worker until callbacks return, even if the run is cancelled.
+          Disposable unused = Schedulers.io().scheduleDirect(callerContext.wrap(emitter::onComplete));
+        }));
+      }
+      return ready.andThen(result).doFinally(() -> {
+        // A cancelled run waits for its predecessor; the executor keeps long queues off the stack.
+        Disposable unused = request.predecessor.subscribe(() -> {
+          if (activeSessionRuns.remove(sessionId, request)) {
+            request.completed.onComplete();
+          } else {
+            request.completions.execute(request.completed::onComplete);
+          }
+        });
       });
     });
+  }
+
+  private static final class SessionRun {
+    final CompletableSubject completed = CompletableSubject.create();
+    final Completable predecessor;
+    final Executor completions;
+    final boolean queued;
+
+    SessionRun(@Nullable SessionRun previous) {
+      queued = previous != null;
+      predecessor = previous == null ? Completable.complete() : previous.completed;
+      completions =
+          previous == null
+              ? MoreExecutors.newSequentialExecutor(MoreExecutors.directExecutor())
+              : previous.completions;
+    }
   }
 
   /**
