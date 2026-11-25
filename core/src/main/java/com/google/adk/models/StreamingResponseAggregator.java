@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -87,8 +88,10 @@ final class StreamingResponseAggregator {
   private byte @Nullable [] currentThoughtSignature = null;
 
   /**
-   * Accumulates {@code response} and returns it as a partial response, with an ID on every function
-   * call. Returns empty if the chunk carries no content, such as a metadata-only chunk.
+   * Accumulates {@code response} and returns it as a partial response in which every function call
+   * carries an ID: its own model-provided ID, or else the ID of the call it belongs to. A call
+   * without a name also gets an ID, though it is left out of the final response. Returns empty if
+   * the chunk carries no content, such as a metadata-only chunk.
    */
   Optional<LlmResponse> processResponse(LlmResponse response) {
     lastResponse = response;
@@ -99,12 +102,9 @@ final class StreamingResponseAggregator {
     // Only terminators: a dropped part, such as a nameless function call, must not reach the final.
     if (parts.stream().allMatch(StreamingResponseAggregator::isStreamTerminator)) {
       response.content().ifPresent(content -> terminatorContent = content);
-    }
-    List<Part> partsWithIds = ensureFunctionCallIds(parts);
-
-    if (!accumulateParts(partsWithIds)) {
       return Optional.empty();
     }
+    List<Part> partsWithIds = accumulateParts(parts);
     // Rebuilt from partsWithIds so the partial's function call IDs match the final response.
     Content.Builder rebuilt = Content.builder().parts(partsWithIds);
     response.content().flatMap(Content::role).ifPresent(rebuilt::role);
@@ -166,43 +166,18 @@ final class StreamingResponseAggregator {
   }
 
   /**
-   * Returns a list of parts where every function-call part has a non-empty ID. If a part's function
-   * call already has an ID, the original part is preserved; otherwise a new part with a
-   * client-generated ID is substituted. Non-FC parts are passed through unchanged.
-   */
-  private static List<Part> ensureFunctionCallIds(List<Part> parts) {
-    List<Part> result = new ArrayList<>(parts.size());
-    for (Part part : parts) {
-      if (part.functionCall().isPresent()) {
-        FunctionCall fc = part.functionCall().get();
-        if (fc.id().map(String::isEmpty).orElse(true)) {
-          FunctionCall withId =
-              fc.toBuilder().id(FunctionCallIds.generateClientFunctionCallId()).build();
-          result.add(part.toBuilder().functionCall(withId).build());
-          continue;
-        }
-      }
-      result.add(part);
-    }
-    return result;
-  }
-
-  /**
    * Accumulates content from incoming parts: text, function calls, and any other content part
    * (inline image/audio data, file data, code execution, server-side tool calls/responses,
    * standalone thought signatures, and future part types), which are appended verbatim as ADK
    * Python does. The empty-text part that ends a Gemini 3 stream is the one thing dropped.
-   * Function-call parts passed to this method are expected to already have IDs (see {@link
-   * #ensureFunctionCallIds}).
    *
-   * @return true if any content part was present, false otherwise.
+   * @return a mutable list of the parts for the partial response, each function call carrying an ID
    */
-  private boolean accumulateParts(List<Part> parts) {
-    boolean hasContent = false;
+  private List<Part> accumulateParts(List<Part> parts) {
+    List<Part> partsWithIds = new ArrayList<>(parts.size());
     for (Part part : parts) {
       String text = part.text().orElse("");
       if (!text.isEmpty()) {
-        hasContent = true;
         boolean isThought = part.thought().orElse(false);
         // Flush first, or the new run's signature would land on the flushed run.
         if (!currentTextBuffer.isEmpty() && isThought != currentTextIsThought) {
@@ -218,64 +193,86 @@ final class StreamingResponseAggregator {
         }
         currentTextBuffer.append(text);
       } else if (part.functionCall().isPresent()) {
-        hasContent = true;
-        processFunctionCallPart(part);
+        partsWithIds.add(processFunctionCallPart(part));
+        continue;
       } else if (isStreamTerminator(part)) {
         // Gemini 3 ends a stream with a bare empty text part; it carries nothing to keep.
       } else {
         // Kept as sent: a signature moved to another part would come back on an unsigned part.
-        hasContent = true;
         flushTextBufferToSequence();
         accumulatedSequence.add(part);
       }
+      partsWithIds.add(part);
     }
-    return hasContent;
+    return partsWithIds;
   }
 
   /**
    * Processes a function-call part, mirroring ADK Python's {@code _process_function_call_part}. A
-   * function call whose arguments are streamed across chunks (it carries {@code partialArgs} or
-   * {@code willContinue=true}) is accumulated and flushed as a single complete part once it
-   * finishes; a complete (non-streaming) function call is appended directly.
+   * function call whose arguments are streamed across chunks is accumulated and flushed as a single
+   * complete part once it finishes; a complete (non-streaming) function call closes any open call
+   * and, if it has a name, is appended directly.
+   *
+   * @return the part for the partial response, its function call carrying an ID
    */
-  private void processFunctionCallPart(Part part) {
+  private Part processFunctionCallPart(Part part) {
     FunctionCall fc = part.functionCall().get();
-    boolean hasName = fc.name().filter(name -> !name.isEmpty()).isPresent();
-    // Gemini can end a streamed call with a separate nameless willContinue=false part.
+    String name = fc.name().filter(n -> !n.isEmpty()).orElse(null);
+    String modelId = fc.id().filter(id -> !id.isEmpty()).orElse(null);
+    // A part without args belongs to the open call; Gemini ends a call with an empty one.
     boolean streamedPart =
         fc.partialArgs().map(args -> !args.isEmpty()).orElse(false)
             || fc.willContinue().orElse(false)
-            || (currentFcName != null && !hasName);
-    if (streamedPart) {
-      // Capture the thought signature from the first chunk that carries one.
-      if (currentThoughtSignature == null
-          && part.thoughtSignature().map(sig -> sig.length > 0).orElse(false)) {
-        currentThoughtSignature = part.thoughtSignature().get();
+            || (currentFcId != null && fc.args().map(Map::isEmpty).orElse(true));
+    if (!streamedPart) {
+      // Even a nameless call gets an ID: BaseLlmFlow throws on an ID-less call without a role.
+      Part withId =
+          modelId != null
+              ? part
+              : withFunctionCallId(part, fc, FunctionCallIds.generateClientFunctionCallId());
+      // A complete call ends the open one; a stray nameless marker leaves the text intact.
+      if (name != null || currentFcId != null) {
+        flushTextBufferToSequence();
+        flushFunctionCallToSequence();
       }
-      processStreamingFunctionCall(fc);
-    } else if (hasName) {
-      // Complete call: flush any open streamed call first so it is neither dropped nor merged.
+      if (name != null) {
+        accumulatedSequence.add(withId);
+      }
+      return withId;
+    }
+
+    // A new name means a different tool, so the open call ends here.
+    if (name != null && currentFcName != null && !name.equals(currentFcName)) {
       flushTextBufferToSequence();
       flushFunctionCallToSequence();
-      accumulatedSequence.add(part);
     }
+    if (currentFcId == null) {
+      currentFcId = modelId != null ? modelId : FunctionCallIds.generateClientFunctionCallId();
+    }
+    if (name != null) {
+      currentFcName = name;
+    }
+    // Capture the thought signature from the first chunk that carries one.
+    if (currentThoughtSignature == null
+        && part.thoughtSignature().map(sig -> sig.length > 0).orElse(false)) {
+      currentThoughtSignature = part.thoughtSignature().get();
+    }
+    // A continuation without its own ID carries the call's ID, so partials and the final match.
+    Part withId = modelId != null ? part : withFunctionCallId(part, fc, currentFcId);
+    processStreamingFunctionCall(fc);
+    return withId;
+  }
+
+  private static Part withFunctionCallId(Part part, FunctionCall fc, String id) {
+    return part.toBuilder().functionCall(fc.toBuilder().id(id).build()).build();
   }
 
   /**
    * Accumulates one chunk of a streamed function call, mirroring ADK Python's {@code
-   * _process_streaming_function_call}: merges the function name/ID and each {@code partialArg} (by
-   * JSONPath) into {@link #currentFcArgs}, then flushes the completed call once {@code
-   * willContinue} is no longer set.
+   * _process_streaming_function_call}: merges each {@code partialArg} (by JSONPath) into {@link
+   * #currentFcArgs}, then flushes the completed call once {@code willContinue} is no longer true.
    */
   private void processStreamingFunctionCall(FunctionCall fc) {
-    fc.name().filter(name -> !name.isEmpty()).ifPresent(name -> currentFcName = name);
-    // One ID for the whole call, so its partial and final responses correlate.
-    if (currentFcId == null) {
-      currentFcId =
-          fc.id()
-              .filter(id -> !id.isEmpty())
-              .orElseGet(FunctionCallIds::generateClientFunctionCallId);
-    }
     for (PartialArg partialArg : fc.partialArgs().orElse(ImmutableList.of())) {
       String jsonPath = partialArg.jsonPath().orElse("");
       if (jsonPath.isEmpty()) {
@@ -429,19 +426,19 @@ final class StreamingResponseAggregator {
    * single complete part, mirroring ADK Python's {@code _flush_function_call_to_sequence}.
    */
   private void flushFunctionCallToSequence() {
-    if (currentFcName == null) {
-      return;
+    if (currentFcName != null) {
+      FunctionCall fc =
+          FunctionCall.builder()
+              .name(currentFcName)
+              .args(new LinkedHashMap<>(currentFcArgs))
+              .id(Objects.requireNonNull(currentFcId))
+              .build();
+      Part.Builder partBuilder = Part.builder().functionCall(fc);
+      if (currentThoughtSignature != null) {
+        partBuilder.thoughtSignature(currentThoughtSignature);
+      }
+      accumulatedSequence.add(partBuilder.build());
     }
-    FunctionCall.Builder fcBuilder =
-        FunctionCall.builder().name(currentFcName).args(new LinkedHashMap<>(currentFcArgs));
-    if (currentFcId != null) {
-      fcBuilder.id(currentFcId);
-    }
-    Part.Builder partBuilder = Part.builder().functionCall(fcBuilder.build());
-    if (currentThoughtSignature != null) {
-      partBuilder.thoughtSignature(currentThoughtSignature);
-    }
-    accumulatedSequence.add(partBuilder.build());
     currentFcName = null;
     currentFcArgs = new LinkedHashMap<>();
     currentFcId = null;

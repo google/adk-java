@@ -16,6 +16,7 @@
 package com.google.adk.models;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -55,8 +56,10 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -650,34 +653,6 @@ public final class GeminiTest {
     assertThat(last.usageMetadata()).hasValue(usage);
   }
 
-  /** Runs one SSE turn of an agent whose Gemini model streams {@code chunks}. */
-  private static ImmutableList<Event> runSseTurn(GenerateContentResponse... chunks) {
-    BaseLlm streamingGemini =
-        new BaseLlm("gemini-2.5-flash") {
-          @Override
-          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-            return Gemini.processRawResponses(Flowable.fromArray(chunks));
-          }
-
-          @Override
-          public BaseLlmConnection connect(LlmRequest llmRequest) {
-            throw new UnsupportedOperationException();
-          }
-        };
-    InMemoryRunner runner =
-        new InMemoryRunner(
-            LlmAgent.builder().name("agent").model(streamingGemini).build(), "test-app");
-    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
-    return ImmutableList.copyOf(
-        runner
-            .runAsync(
-                "user",
-                session.id(),
-                Content.fromParts(Part.fromText("hello")),
-                RunConfig.builder().streamingMode(RunConfig.StreamingMode.SSE).build())
-            .blockingIterable());
-  }
-
   /** Streams one call whose arguments are {@code numbers}, one partial arg each. */
   private ImmutableMap<String, Object> streamedArgs(ImmutableMap<String, Double> numbers) {
     ImmutableList.Builder<PartialArg> partialArgs = ImmutableList.builder();
@@ -725,6 +700,155 @@ public final class GeminiTest {
   /** A tool for the runner tests; never called, since the fake model answers without it. */
   public static ImmutableMap<String, Object> lookup() {
     return ImmutableMap.of();
+  }
+
+  @Test
+  public void runner_sseTurnWithTwoStreamedCalls_runsEachToolWithItsOwnArgs() {
+    ToolTurn turn =
+        runToolTurn(
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder()
+                        .name("getWeather")
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.city").stringValue("Paris").build())
+                        .willContinue(true)
+                        .build())),
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder()
+                        .name("getTime")
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.zone").stringValue("CET").build())
+                        .willContinue(true)
+                        .build())),
+            toResponse(functionCallPart(FunctionCall.builder().willContinue(false).build())));
+
+    assertThat(turn.toolCalls()).containsExactly("getWeather(Paris)", "getTime(CET)").inOrder();
+  }
+
+  @Test
+  public void runner_sseTurnWithEndMarkerWithoutRole_runsTheToolOnce() {
+    GenerateContentResponse call =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .name("getWeather")
+                    .partialArgs(
+                        PartialArg.builder().jsonPath("$.city").stringValue("Paris").build())
+                    .willContinue(false)
+                    .build()));
+    GenerateContentResponse endMarkerWithoutRole =
+        toResponse(functionCallPart(FunctionCall.builder().build()));
+
+    ToolTurn turn = runToolTurn(call, endMarkerWithoutRole);
+
+    assertThat(turn.toolCalls()).containsExactly("getWeather(Paris)");
+  }
+
+  @Test
+  public void runner_sseTurnWithStreamedCall_partialsAndFinalShareTheCallId() {
+    ToolTurn turn =
+        runToolTurn(
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder()
+                        .name("getWeather")
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.city").stringValue("Par").build())
+                        .willContinue(true)
+                        .build())),
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder()
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.city").stringValue("is").build())
+                        .willContinue(true)
+                        .build())),
+            toResponse(functionCallPart(FunctionCall.builder().willContinue(false).build())));
+
+    ImmutableList<String> callIds =
+        turn.events().stream()
+            .flatMap(event -> event.functionCalls().stream())
+            .map(call -> call.id().orElse(""))
+            .collect(toImmutableList());
+    String id = callIds.get(0);
+    assertThat(id).isNotEmpty();
+    assertThat(callIds).containsExactly(id, id, id, id);
+    assertThat(turn.toolCalls()).containsExactly("getWeather(Paris)");
+  }
+
+  @Test
+  public void runner_sseTurnWithNamelessChunkBeforeStreamedCall_runsTheToolWithOnlyItsArgs() {
+    ToolTurn turn =
+        runToolTurn(
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder()
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.stale").stringValue("x").build())
+                        .willContinue(false)
+                        .build())),
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder()
+                        .name("getWeather")
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.city").stringValue("Paris").build())
+                        .willContinue(true)
+                        .build())),
+            toResponse(functionCallPart(FunctionCall.builder().build())));
+
+    assertThat(turn.toolCalls()).containsExactly("getWeather(Paris)");
+    FunctionCall finalCall = turn.finalCall();
+    assertThat(finalCall.args()).hasValue(ImmutableMap.of("city", "Paris"));
+  }
+
+  @Test
+  public void runner_sseTurnWithCompleteCallWithoutNameWhileACallIsOpen_runsTheOpenCallAsItWas() {
+    ToolTurn turn =
+        runToolTurn(
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder()
+                        .name("getWeather")
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.city").stringValue("Par").build())
+                        .willContinue(true)
+                        .build())),
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder().args(ImmutableMap.of("city", "x")).build())),
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder()
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.city").stringValue("is").build())
+                        .willContinue(false)
+                        .build())));
+
+    assertThat(turn.toolCalls()).containsExactly("getWeather(Par)");
+  }
+
+  @Test
+  public void runner_sseTurnWithSameNameAndAnotherIdWithoutArgs_closesTheOpenCall() {
+    ToolTurn turn =
+        runToolTurn(
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder()
+                        .id("call-1")
+                        .name("getWeather")
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.city").stringValue("Paris").build())
+                        .willContinue(true)
+                        .build())),
+            toResponse(
+                functionCallPart(FunctionCall.builder().id("call-2").name("getWeather").build())));
+
+    FunctionCall finalCall = turn.finalCall();
+    assertThat(finalCall.id()).hasValue("call-1");
+    assertThat(turn.toolCalls()).containsExactly("getWeather(Paris)");
   }
 
   // Two streamed function calls back-to-back must not bleed arguments into each other: a completed
@@ -946,10 +1070,7 @@ public final class GeminiTest {
     assertThat(second.args().get()).containsExactly("b", "2");
   }
 
-  // A stray nameless willContinue=false marker with no call in progress must be a safe no-op (the
-  // currentFcName != null half of the guard): it must not add a function call nor split the
-  // surrounding text. Without that half it would be treated as a streamed part and prematurely
-  // flush the text buffer, splitting "Hello world" into two parts.
+  // processFunctionCallPart's currentFcId != null checks keep a stray marker from splitting text.
   @Test
   public void processRawResponses_strayNamelessMarker_isNoOpAndDoesNotSplitText() {
     GenerateContentResponse hello = toResponseWithText("Hello ");
@@ -2614,6 +2735,91 @@ public final class GeminiTest {
   }
 
   // Helper methods to create responses for testing
+  /** Runs one SSE turn of an agent whose Gemini model streams {@code chunks}. */
+  private ImmutableList<Event> runSseTurn(GenerateContentResponse... chunks) {
+    return runTurn(ImmutableList.copyOf(chunks), ImmutableList.of());
+  }
+
+  /**
+   * Runs one SSE turn of an agent with {@code tools}: its Gemini model streams {@code firstTurn},
+   * then answers "done" to every later request.
+   */
+  private ImmutableList<Event> runTurn(
+      ImmutableList<GenerateContentResponse> firstTurn, ImmutableList<FunctionTool> tools) {
+    AtomicInteger llmCalls = new AtomicInteger();
+    BaseLlm streamingGemini =
+        new BaseLlm("gemini-2.5-flash") {
+          @Override
+          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+            return llmCalls.getAndIncrement() == 0
+                ? Gemini.processRawResponses(Flowable.fromIterable(firstTurn))
+                : Gemini.processRawResponses(
+                    Flowable.just(toResponseWithText("done", FinishReason.Known.STOP)));
+          }
+
+          @Override
+          public BaseLlmConnection connect(LlmRequest llmRequest) {
+            throw new UnsupportedOperationException();
+          }
+        };
+    InMemoryRunner runner =
+        new InMemoryRunner(
+            LlmAgent.builder().name("agent").model(streamingGemini).tools(tools).build(),
+            "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+    return ImmutableList.copyOf(
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                Content.fromParts(Part.fromText("hello")),
+                RunConfig.builder()
+                    .streamingMode(RunConfig.StreamingMode.SSE)
+                    .maxLlmCalls(3)
+                    .build())
+            .blockingIterable());
+  }
+
+  /** The tools of one runner test turn; records each call. */
+  public static final class RecordingTools {
+    private final List<String> calls = new CopyOnWriteArrayList<>();
+
+    public ImmutableMap<String, Object> getWeather(String city) {
+      calls.add("getWeather(" + city + ")");
+      return ImmutableMap.of("weather", "sunny");
+    }
+
+    public ImmutableMap<String, Object> getTime(String zone) {
+      calls.add("getTime(" + zone + ")");
+      return ImmutableMap.of("time", "12:00");
+    }
+  }
+
+  /** The events and tool calls of one turn run by {@link #runToolTurn}. */
+  private record ToolTurn(ImmutableList<Event> events, ImmutableList<String> toolCalls) {
+    /** Returns the only function call of the turn's non-partial events. */
+    FunctionCall finalCall() {
+      return events.stream()
+          .filter(event -> !event.partial().orElse(false))
+          .flatMap(event -> event.functionCalls().stream())
+          .collect(onlyElement());
+    }
+  }
+
+  /**
+   * Runs one SSE turn of an agent with the {@code getWeather} and {@code getTime} tools, whose
+   * Gemini model streams {@code firstTurn} and then answers "done".
+   */
+  private ToolTurn runToolTurn(GenerateContentResponse... firstTurn) {
+    RecordingTools tools = new RecordingTools();
+    ImmutableList<Event> events =
+        runTurn(
+            ImmutableList.copyOf(firstTurn),
+            ImmutableList.of(
+                FunctionTool.create(tools, "getWeather"), FunctionTool.create(tools, "getTime")));
+    return new ToolTurn(events, ImmutableList.copyOf(tools.calls));
+  }
+
   private GenerateContentResponse toResponseWithText(String text) {
     return toResponse(Part.fromText(text));
   }

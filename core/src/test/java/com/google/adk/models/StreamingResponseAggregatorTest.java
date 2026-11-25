@@ -18,6 +18,7 @@ package com.google.adk.models;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
@@ -26,6 +27,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.NullValue;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import java.util.List;
@@ -288,6 +290,326 @@ public final class StreamingResponseAggregatorTest {
   }
 
   @Test
+  public void aggregate_partialArgWithoutJsonPath_isSkipped() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .name("tool")
+                    .partialArgs(
+                        PartialArg.builder().stringValue("lost").build(),
+                        PartialArg.builder().jsonPath("$.x").stringValue("kept").build())
+                    .willContinue(true)
+                    .build())),
+        chunk(streamedCallEnd()));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args()).hasValue(ImmutableMap.of("x", "kept"));
+  }
+
+  @Test
+  public void aggregate_streamedBoolAndNullArgs_areKept() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .name("tool")
+                    .partialArgs(
+                        PartialArg.builder().jsonPath("$.urgent").boolValue(true).build(),
+                        PartialArg.builder()
+                            .jsonPath("$.assignee")
+                            .nullValue(NullValue.Known.NULL_VALUE)
+                            .build())
+                    .willContinue(true)
+                    .build())),
+        chunk(streamedCallEnd()));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args().get()).containsExactly("urgent", true, "assignee", null);
+  }
+
+  @Test
+  public void aggregate_twoStreamedCalls_getDifferentIdsAndOnlyTheirOwnSignature() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(
+            streamedCallStart("first", "$.x", "1").toBuilder()
+                .thoughtSignature(signatureA)
+                .build()),
+        chunk(streamedCallEnd()),
+        chunk(streamedCallStart("second", "$.y", "2")),
+        chunk(streamedCallEnd()));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).functionCall().get().id())
+        .isNotEqualTo(parts.get(1).functionCall().get().id());
+    assertThat(parts.get(0).thoughtSignature().get()).isEqualTo(signatureA);
+    assertThat(parts.get(1).thoughtSignature()).isEmpty();
+  }
+
+  @Test
+  public void aggregate_newNamedStreamedCallWhileOneIsOpen_flushesTheOpenCallFirst() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("get_weather", "$.city", "Paris")),
+        chunk(
+            streamedCallStart("get_time", "$.zone", "CET").toBuilder()
+                .thoughtSignature(signatureB)
+                .build()),
+        chunk(streamedCallEnd()));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).functionCall().get().name()).hasValue("get_weather");
+    assertThat(parts.get(0).functionCall().get().args()).hasValue(ImmutableMap.of("city", "Paris"));
+    assertThat(parts.get(0).thoughtSignature()).isEmpty();
+    assertThat(parts.get(1).functionCall().get().name()).hasValue("get_time");
+    assertThat(parts.get(1).functionCall().get().args()).hasValue(ImmutableMap.of("zone", "CET"));
+    assertThat(parts.get(1).thoughtSignature().get()).isEqualTo(signatureB);
+  }
+
+  @Test
+  public void aggregate_sameNameWithoutArgsWhileACallIsOpen_closesThatCall() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    String openingId =
+        onlyFunctionCall(
+                aggregator
+                    .processResponse(chunk(streamedCallStart("get_weather", "$.city", "Paris")))
+                    .get())
+            .id()
+            .get();
+    LlmResponse closing =
+        aggregator
+            .processResponse(
+                chunk(functionCallPart(FunctionCall.builder().name("get_weather").build())))
+            .get();
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(onlyFunctionCall(closing).id()).hasValue(openingId);
+    assertThat(call.name()).hasValue("get_weather");
+    assertThat(call.args()).hasValue(ImmutableMap.of("city", "Paris"));
+  }
+
+  @Test
+  public void aggregate_sameNameWithArgsWhileACallIsOpen_isASeparateCall() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("get_weather", "$.city", "Paris")),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .name("get_weather")
+                    .args(ImmutableMap.of("city", "London"))
+                    .build())));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).functionCall().get().args()).hasValue(ImmutableMap.of("city", "Paris"));
+    assertThat(parts.get(1).functionCall().get().args())
+        .hasValue(ImmutableMap.of("city", "London"));
+  }
+
+  @Test
+  public void aggregate_sameNameWithAnotherModelIdWithoutArgsWhileACallIsOpen_closesThatCall() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .id("call-1")
+                    .name("tool")
+                    .partialArgs(PartialArg.builder().jsonPath("$.x").stringValue("1").build())
+                    .willContinue(true)
+                    .build())));
+    LlmResponse closing =
+        aggregator
+            .processResponse(
+                chunk(functionCallPart(FunctionCall.builder().id("call-2").name("tool").build())))
+            .get();
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(onlyFunctionCall(closing).id()).hasValue("call-2");
+    assertThat(call.id()).hasValue("call-1");
+    assertThat(call.args()).hasValue(ImmutableMap.of("x", "1"));
+  }
+
+  @Test
+  public void aggregate_callWithoutArgsWhileANamelessCallIsOpen_closesItUnderThatName() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.x").stringValue("a").build())
+                    .willContinue(true)
+                    .build())),
+        chunk(functionCallPart(FunctionCall.builder().name("get_time").build())));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.name()).hasValue("get_time");
+    assertThat(call.args()).hasValue(ImmutableMap.of("x", "a"));
+  }
+
+  @Test
+  public void processResponse_streamedCallChunks_carryTheCallId() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    String firstId =
+        onlyFunctionCall(
+                aggregator.processResponse(chunk(streamedCallStart("tool", "$.x", "a"))).get())
+            .id()
+            .get();
+    LlmResponse continuation =
+        aggregator
+            .processResponse(
+                chunk(
+                    functionCallPart(
+                        FunctionCall.builder()
+                            .partialArgs(
+                                PartialArg.builder().jsonPath("$.x").stringValue("b").build())
+                            .willContinue(true)
+                            .build())))
+            .get();
+    LlmResponse closing = aggregator.processResponse(chunk(streamedCallEnd())).get();
+
+    assertThat(onlyFunctionCall(continuation).id()).hasValue(firstId);
+    assertThat(onlyFunctionCall(closing).id()).hasValue(firstId);
+  }
+
+  @Test
+  public void aggregate_namelessChunkBeforeStreamedCall_doesNotLeakIntoIt() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.stale").stringValue("x").build())
+                    .willContinue(false)
+                    .build())),
+        chunk(streamedCallStart("tool", "$.y", "1")),
+        chunk(streamedCallEnd()));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args()).hasValue(ImmutableMap.of("y", "1"));
+  }
+
+  @Test
+  public void aggregate_streamedCallStartedWithoutName_isClosedByAChunkWithoutWillContinue() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.x").stringValue("a").build())
+                    .willContinue(true)
+                    .build())),
+        chunk(functionCallPart(FunctionCall.builder().build())),
+        chunk(streamedCallStart("tool", "$.y", "1")),
+        chunk(streamedCallEnd()));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.args()).hasValue(ImmutableMap.of("y", "1"));
+  }
+
+  @Test
+  public void processResponse_completeCallWithoutName_getsAnId() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    Part nameless = functionCallPart(FunctionCall.builder().args(ImmutableMap.of()).build());
+
+    FunctionCall partialCall = onlyFunctionCall(aggregator.processResponse(chunk(nameless)).get());
+
+    assertThat(partialCall.id().orElse("")).isNotEmpty();
+    assertThat(partialCall.name()).isEmpty();
+  }
+
+  @Test
+  public void aggregate_completeCallWithoutName_isNotInTheFinal() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(functionCallPart(FunctionCall.builder().args(ImmutableMap.of()).build())));
+
+    assertThat(aggregator.aggregate().get().content()).isEmpty();
+  }
+
+  @Test
+  public void aggregate_completeCallWithoutNameWhileACallIsOpen_closesThatCall() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("get_weather", "$.city", "Par")),
+        chunk(functionCallPart(FunctionCall.builder().args(ImmutableMap.of("city", "x")).build())),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.city").stringValue("is").build())
+                    .willContinue(false)
+                    .build())));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.name()).hasValue("get_weather");
+    assertThat(call.args()).hasValue(ImmutableMap.of("city", "Par"));
+  }
+
+  @Test
+  public void aggregate_streamedCallsWhoseClosingChunkOmitsWillContinue_areSeparateCalls() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(
+            functionCallPart(
+                FunctionCall.builder().name("find_hotels").willContinue(true).build())),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(
+                        PartialArg.builder().jsonPath("$.amenities[0]").stringValue("POOL").build())
+                    .build())),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder().name("book_hotels").willContinue(true).build())),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(
+                        PartialArg.builder().jsonPath("$.length_of_stay").numberValue(10.0).build())
+                    .willContinue(true)
+                    .build())));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).functionCall().get().name()).hasValue("find_hotels");
+    assertThat(parts.get(0).functionCall().get().args())
+        .hasValue(ImmutableMap.of("amenities", ImmutableList.of("POOL")));
+    assertThat(parts.get(1).functionCall().get().name()).hasValue("book_hotels");
+    assertThat(parts.get(1).functionCall().get().args())
+        .hasValue(ImmutableMap.of("length_of_stay", 10));
+  }
+
+  @Test
   public void processResponse_bareEmptyTextPart_returnsEmpty() {
     StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
 
@@ -321,6 +643,23 @@ public final class StreamingResponseAggregatorTest {
     process(aggregator, chunk(signed));
 
     assertThat(aggregatedParts(aggregator)).containsExactly(signed);
+  }
+
+  @Test
+  public void processResponse_partialWithAFunctionCall_hasAMutablePartList() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    List<Part> parts =
+        aggregator
+            .processResponse(chunk(streamedCallStart("tool", "$.x", "a")))
+            .get()
+            .content()
+            .get()
+            .parts()
+            .get();
+
+    parts.add(Part.fromText("added by a caller"));
+
+    assertThat(parts).hasSize(2);
   }
 
   @Test
@@ -546,6 +885,10 @@ public final class StreamingResponseAggregatorTest {
             .partialArgs(PartialArg.builder().jsonPath(jsonPath).stringValue(value).build())
             .willContinue(true)
             .build());
+  }
+
+  private static Part streamedCallEnd() {
+    return functionCallPart(FunctionCall.builder().willContinue(false).build());
   }
 
   private static GenerateContentResponseUsageMetadata usage(int totalTokenCount) {
