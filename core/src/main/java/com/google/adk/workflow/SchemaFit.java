@@ -278,7 +278,7 @@ final class SchemaFit {
   }
 
   /** Returns the type {@code schema} declares, or else the shape its keys or items imply. */
-  private static Type.@Nullable Known impliedType(Schema schema) {
+  static Type.@Nullable Known impliedType(Schema schema) {
     Type.Known type = declaredType(schema);
     if (type != null) {
       return type;

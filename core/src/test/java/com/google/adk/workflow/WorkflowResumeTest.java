@@ -1274,18 +1274,24 @@ public final class WorkflowResumeTest {
   }
 
   @Test
-  public void resume_messageOutputNodeWithAnAnyOfSchema_readsOnlyStringEnumsUnquoted() {
+  public void resume_messageOutputNodeWithAnAnyOfSchema_unquotesOnlyEnumConstrainedStrings() {
     // Arrange
     Schema text = Schema.builder().type(Type.Known.STRING).build();
     Schema letters = Schema.builder().type(Type.Known.STRING).enum_("A", "B").build();
     Schema digits = Schema.builder().type(Type.Known.INTEGER).enum_("1", "2").build();
+    Schema openEnum = Schema.builder().anyOf(letters, text).build();
+    Schema closedEnum = Schema.builder().anyOf(letters, digits).build();
 
     // Act
-    Object letter = rehydratedChat("\"A\"", Schema.builder().anyOf(letters, text).build());
+    Object openMember = rehydratedChat("\"A\"", openEnum);
+    Object openOther = rehydratedChat("\"C\"", openEnum);
+    Object closedMember = rehydratedChat("\"A\"", closedEnum);
     Object digit = rehydratedChat("\"1\"", Schema.builder().anyOf(text, digits).build());
 
-    // Assert: only a string schema's enum values read without their quotes.
-    assertThat(letter).isEqualTo("A");
+    // Assert: anyOf(enum, string) keeps raw text; anyOf(enum, integer) unquotes the enum value.
+    assertThat(openMember).isEqualTo("\"A\"");
+    assertThat(openOther).isEqualTo("\"C\"");
+    assertThat(closedMember).isEqualTo("A");
     assertThat(digit).isEqualTo("\"1\"");
   }
 

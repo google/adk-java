@@ -22,6 +22,7 @@ import com.google.adk.telemetry.Tracing;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
@@ -58,7 +59,8 @@ public final class ParallelWorkers {
    * its config and input and output schemas to each item's run. A text-only {@link Content}, such
    * as a user message, is read as JSON, and a JSON list fans out. Its text reaches the items as a
    * {@code String} if it is not JSON, or if it is a non-list value and the item's input schema
-   * takes a string; any other non-list input runs as one item.
+   * takes a string (where a JSON-quoted enum value reads as the value); any other non-list input
+   * runs as one item.
    *
    * @throws WorkflowConfigurationException if {@code node} is {@link Start} or {@code
    *     maxParallelWorkers} is less than 1
@@ -114,7 +116,8 @@ public final class ParallelWorkers {
 
     /**
      * Returns the JSON value of text-only {@code content}, or its text if that is not JSON or is a
-     * non-list value for an item that takes a string; any other content is returned as it is.
+     * non-list value for an item that takes a string (unquoting a JSON-quoted enum value when the
+     * schema restricts strings to an enum); any other content is returned as it is.
      */
     private @Nullable Object unwrap(Content content) {
       List<Part> parts = content.parts().orElse(ImmutableList.of());
@@ -126,7 +129,10 @@ public final class ParallelWorkers {
       if (json instanceof List<?> list) {
         return list;
       }
-      return worker.inputSchema().map(MessageReader::acceptsString).orElse(false) ? text : json;
+      Schema inputSchema = worker.inputSchema().orElse(null);
+      return inputSchema != null && MessageReader.acceptsString(inputSchema)
+          ? MessageReader.enumValueOrText(inputSchema, text)
+          : json;
     }
 
     private final class FanOut {

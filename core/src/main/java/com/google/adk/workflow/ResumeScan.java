@@ -230,8 +230,9 @@ final class ResumeScan {
   /**
    * Unwraps the answer {@code response} to interrupt {@code interruptId} and returns it converted
    * to {@code schema}'s types. A {@code {"result": value}} envelope is unwrapped, and a string
-   * value inside it is read as JSON unless {@code schema} accepts a string. An undeclared key is
-   * kept, except in the answer to a tool confirmation request, whose schema is closed.
+   * value inside it is read as JSON unless {@code schema} accepts a string (where a JSON-quoted
+   * enum value still reads as the value). An undeclared key is kept, except in the answer to a tool
+   * confirmation request, whose schema is closed.
    *
    * @throws IllegalArgumentException if the answer does not match {@code schema}, or a confirmation
    *     answer has an undeclared key
@@ -256,9 +257,11 @@ final class ResumeScan {
       return response;
     }
     Object value = map.get(RESULT_KEY);
-    if (!(value instanceof String text)
-        || (schema != null && MessageReader.acceptsString(schema))) {
+    if (!(value instanceof String text)) {
       return value;
+    }
+    if (schema != null && MessageReader.acceptsString(schema)) {
+      return MessageReader.enumValueOrText(schema, text);
     }
     return MessageReader.jsonOrText(text);
   }

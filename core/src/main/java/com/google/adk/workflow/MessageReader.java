@@ -16,8 +16,6 @@
 
 package com.google.adk.workflow;
 
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -30,10 +28,13 @@ import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
+import java.util.Optional;
+import java.util.Set;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,9 +53,10 @@ final class MessageReader {
   private MessageReader() {}
 
   /**
-   * Returns what a port with {@code schema} reads from {@code content}: the text if the schema
-   * accepts a string, or an enum value the text holds as a JSON string, else the text's JSON, or
-   * the text if it is not JSON. A warning naming {@code what} counts the non-text parts it drops.
+   * Returns what a port with {@code schema} reads from {@code content}: the raw text when {@code
+   * schema} accepts a string, unless it restricts strings to enum values and the text names one as
+   * a JSON string; otherwise the text parsed as JSON, or the text itself if it is not JSON. A
+   * warning naming {@code what} counts the non-text parts it drops.
    */
   static @Nullable Object readValue(Content content, @Nullable Schema schema, String what) {
     long dropped =
@@ -71,25 +73,87 @@ final class MessageReader {
   }
 
   /**
-   * Returns {@code text}, or the enum value of {@code schema} that it holds as a JSON string, as
-   * ADK Python reads an enum.
+   * Returns the enum value of {@code schema} that {@code text} spells as a JSON string, such as
+   * {@code SHIPPED} for {@code "SHIPPED"}, when {@code schema} does not allow arbitrary strings and
+   * {@code text} itself is not already an enum value; otherwise returns {@code text}.
    */
   static String enumValueOrText(Schema schema, String text) {
-    ImmutableSet<String> values = enumValues(schema).collect(toImmutableSet());
+    // IdentityHashMap keys schemas by identity so shared anyOf DAGs stay O(1) without recursive
+    // AutoValue Schema.hashCode/equals.
+    if (allowsAnyString(schema, /* inheritedType= */ null, new IdentityHashMap<>())) {
+      return text;
+    }
+    ImmutableSet<String> values = enumValues(schema);
     if (values.isEmpty() || values.contains(text)) {
       return text;
     }
     return readJson(text) instanceof String value && values.contains(value) ? value : text;
   }
 
-  /** Returns the enum values of {@code schema}'s string types, itself or in an {@code anyOf}. */
-  private static Stream<String> enumValues(Schema schema) {
-    Stream<String> own =
-        schema.type().map(Type::knownEnum).orElse(null) == Type.Known.STRING
-            ? schema.enum_().orElse(ImmutableList.of()).stream()
-            : Stream.empty();
-    return Stream.concat(
-        own, schema.anyOf().orElse(ImmutableList.of()).stream().flatMap(MessageReader::enumValues));
+  /**
+   * Whether {@code schema} accepts an unconstrained string, directly or through an {@code anyOf}.
+   */
+  private static boolean allowsAnyString(
+      Schema schema,
+      Type.@Nullable Known inheritedType,
+      Map<Schema, Set<Type.@Nullable Known>> visited) {
+    Type.Known effectiveType = SchemaFit.declaredType(schema);
+    if (effectiveType == null) {
+      effectiveType = inheritedType;
+    }
+    if (!visited.computeIfAbsent(schema, unused -> new HashSet<>()).add(effectiveType)) {
+      return false;
+    }
+    if (schema.enum_().isPresent()) {
+      return false;
+    }
+    if (effectiveType != null && effectiveType != Type.Known.STRING) {
+      return false;
+    }
+    Optional<List<Schema>> anyOf = schema.anyOf();
+    if (anyOf.isPresent()) {
+      for (Schema branch : anyOf.get()) {
+        if (allowsAnyString(branch, effectiveType, visited)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    return effectiveType == Type.Known.STRING || SchemaFit.impliedType(schema) == null;
+  }
+
+  /**
+   * Returns the enum values of {@code schema} and its {@code anyOf} branches whose effective type
+   * is {@code STRING} or unset.
+   */
+  private static ImmutableSet<String> enumValues(Schema schema) {
+    Set<String> values = new HashSet<>();
+    collectEnumValues(schema, /* inheritedType= */ null, new IdentityHashMap<>(), values);
+    return ImmutableSet.copyOf(values);
+  }
+
+  private static void collectEnumValues(
+      Schema schema,
+      Type.@Nullable Known inheritedType,
+      Map<Schema, Set<Type.@Nullable Known>> visited,
+      Set<String> values) {
+    Type.Known effectiveType = SchemaFit.declaredType(schema);
+    if (effectiveType == null) {
+      effectiveType = inheritedType;
+    }
+    if (!visited.computeIfAbsent(schema, unused -> new HashSet<>()).add(effectiveType)) {
+      return;
+    }
+    Optional<List<String>> ownEnum = schema.enum_();
+    if (ownEnum.isPresent()) {
+      if (effectiveType == Type.Known.STRING || effectiveType == null) {
+        values.addAll(ownEnum.get());
+      }
+      return;
+    }
+    for (Schema branch : schema.anyOf().orElse(ImmutableList.of())) {
+      collectEnumValues(branch, effectiveType, visited, values);
+    }
   }
 
   /** Returns whether {@code schema} accepts a string, directly or through an {@code anyOf}. */

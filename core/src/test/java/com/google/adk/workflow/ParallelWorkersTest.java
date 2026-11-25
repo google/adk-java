@@ -803,6 +803,50 @@ public final class ParallelWorkersTest {
     assertThat(run.output()).isEqualTo(ImmutableList.of("a", "b"));
   }
 
+  @Test
+  public void runAsync_singleJsonQuotedEnumContent_readsTheEnumValue() {
+    // Arrange
+    FunctionNode<Status, Status> statusWorker =
+        FunctionNodes.of("status", Status.class, Status.class, (ctx, status) -> status);
+    FunctionNode<String, String> textWorker =
+        FunctionNodes.of("text", String.class, String.class, (ctx, text) -> text);
+
+    // Act
+    ImmutableList<Event> statusEvents =
+        runThroughRunner(
+            ParallelWorkers.parallelNode(statusWorker), "\"SHIPPED\"", /* scheduler= */ null);
+    ImmutableList<Event> textEvents =
+        runThroughRunner(ParallelWorkers.parallelNode(textWorker), "\"hi\"", /* scheduler= */ null);
+
+    // Assert
+    assertThat(Iterables.getLast(statusEvents).output()).hasValue(ImmutableList.of("SHIPPED"));
+    assertThat(Iterables.getLast(textEvents).output()).hasValue(ImmutableList.of("\"hi\""));
+  }
+
+  @Test
+  public void runAsync_singleJsonQuotedUnknownEnumContent_failsWithValidationError() {
+    // Arrange
+    FunctionNode<Status, Status> statusWorker =
+        FunctionNodes.of("status", Status.class, Status.class, (ctx, status) -> status);
+    Node parallel = ParallelWorkers.parallelNode(statusWorker);
+    String expectedError =
+        "validation error: input of node 'status' does not match " + Status.class.getName() + ".";
+
+    // Act
+    NodeInputValidationException error =
+        assertThrows(
+            NodeInputValidationException.class,
+            () -> runThroughRunner(parallel, "\"FOO\"", /* scheduler= */ null));
+
+    // Assert
+    assertThat(error).hasMessageThat().isEqualTo(expectedError);
+  }
+
+  private enum Status {
+    OPEN,
+    SHIPPED
+  }
+
   /** The outcome of running a node as the root of a workflow run. */
   private record Run(Context context, ImmutableList<Event> events) {
     @Nullable Object output() {

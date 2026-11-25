@@ -605,6 +605,176 @@ public final class ResumeScanTest {
   }
 
   @Test
+  public void processRehydratedOutput_enumSchemaWithQuotedNonMember_keepsRawText() {
+    // Arrange
+    Schema status = Schema.builder().type(Type.Known.STRING).enum_("OPEN", "SHIPPED").build();
+    Node node = new MessageOutputNode("chat", "", status);
+
+    // Act
+    Object unknown =
+        ResumeScan.processRehydratedOutput(node, modelText("\"FOO\""), /* delegated= */ false);
+    Object padded =
+        ResumeScan.processRehydratedOutput(node, modelText("\" SHIPPED\""), /* delegated= */ false);
+
+    // Assert
+    assertThat(unknown).isEqualTo("\"FOO\"");
+    assertThat(padded).isEqualTo("\" SHIPPED\"");
+  }
+
+  @Test
+  public void processRehydratedOutput_inheritedUntypedIntersectedAndSharedAnyOfEnums_readsValues() {
+    // Arrange
+    Schema inherited =
+        Schema.builder()
+            .type(Type.Known.STRING)
+            .anyOf(Schema.builder().enum_("OPEN", "SHIPPED").build())
+            .build();
+    Schema untypedParent =
+        Schema.builder()
+            .enum_("SHIPPED")
+            .anyOf(Schema.builder().type(Type.Known.STRING).build())
+            .build();
+    Schema intersected =
+        Schema.builder()
+            .enum_("SHIPPED")
+            .anyOf(Schema.builder().type(Type.Known.STRING).enum_("OPEN", "SHIPPED").build())
+            .build();
+    Schema sharedDag = Schema.builder().type(Type.Known.STRING).enum_("OPEN", "SHIPPED").build();
+    for (int i = 0; i < 40; i++) {
+      sharedDag = Schema.builder().anyOf(sharedDag, sharedDag).build();
+    }
+
+    // Act
+    Object fromInherited =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", inherited),
+            modelText("\"SHIPPED\""),
+            /* delegated= */ false);
+    Object fromInheritedUnknown =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", inherited),
+            modelText("\"FOO\""),
+            /* delegated= */ false);
+    Object fromUntypedParent =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", untypedParent),
+            modelText("\"SHIPPED\""),
+            /* delegated= */ false);
+    Object fromIntersected =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", intersected),
+            modelText("\"SHIPPED\""),
+            /* delegated= */ false);
+    Object excludedByParent =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", intersected),
+            modelText("\"OPEN\""),
+            /* delegated= */ false);
+    Object fromSharedDag =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", sharedDag),
+            modelText("\"SHIPPED\""),
+            /* delegated= */ false);
+
+    // Assert
+    assertThat(fromInherited).isEqualTo("SHIPPED");
+    assertThat(fromInheritedUnknown).isEqualTo("\"FOO\"");
+    assertThat(fromUntypedParent).isEqualTo("SHIPPED");
+    assertThat(fromIntersected).isEqualTo("SHIPPED");
+    assertThat(excludedByParent).isEqualTo("\"OPEN\"");
+    assertThat(fromSharedDag).isEqualTo("SHIPPED");
+  }
+
+  @Test
+  public void
+      processRehydratedOutput_anyOfWithImpliedOrUnspecifiedTypeBranches_distinguishesOpen() {
+    // Arrange
+    Schema status = Schema.builder().type(Type.Known.STRING).enum_("OPEN", "SHIPPED").build();
+    Schema enumOrEmpty = Schema.builder().anyOf(status, Schema.builder().build()).build();
+    Schema enumOrUnspecified =
+        Schema.builder()
+            .anyOf(status, Schema.builder().type(Type.Known.TYPE_UNSPECIFIED).build())
+            .build();
+    Schema enumOrImpliedObject =
+        Schema.builder()
+            .anyOf(
+                status,
+                Schema.builder()
+                    .properties(
+                        ImmutableMap.of("id", Schema.builder().type(Type.Known.STRING).build()))
+                    .build())
+            .build();
+    Schema enumOrImpliedArray =
+        Schema.builder()
+            .anyOf(
+                status,
+                Schema.builder().items(Schema.builder().type(Type.Known.STRING).build()).build())
+            .build();
+    Schema unspecifiedTypeEnum =
+        Schema.builder()
+            .type(Type.Known.TYPE_UNSPECIFIED)
+            .enum_("SHIPPED")
+            .anyOf(Schema.builder().type(Type.Known.STRING).build())
+            .build();
+
+    // Act
+    Object fromEmptyBranch =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", enumOrEmpty),
+            modelText("\"SHIPPED\""),
+            /* delegated= */ false);
+    Object fromUnspecifiedBranch =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", enumOrUnspecified),
+            modelText("\"SHIPPED\""),
+            /* delegated= */ false);
+    Object fromObjectBranch =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", enumOrImpliedObject),
+            modelText("\"SHIPPED\""),
+            /* delegated= */ false);
+    Object fromArrayBranch =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", enumOrImpliedArray),
+            modelText("\"SHIPPED\""),
+            /* delegated= */ false);
+    Object fromUnspecifiedParent =
+        ResumeScan.processRehydratedOutput(
+            new MessageOutputNode("chat", "", unspecifiedTypeEnum),
+            modelText("\"SHIPPED\""),
+            /* delegated= */ false);
+
+    // Assert
+    assertThat(fromEmptyBranch).isEqualTo("\"SHIPPED\"");
+    assertThat(fromUnspecifiedBranch).isEqualTo("\"SHIPPED\"");
+    assertThat(fromObjectBranch).isEqualTo("SHIPPED");
+    assertThat(fromArrayBranch).isEqualTo("SHIPPED");
+    assertThat(fromUnspecifiedParent).isEqualTo("SHIPPED");
+  }
+
+  @Test
+  public void validateAnswer_enumSchemaInResultEnvelope_readsNameWithOrWithoutJsonQuotes() {
+    // Arrange
+    Schema status = Schema.builder().type(Type.Known.STRING).enum_("OPEN", "SHIPPED").build();
+    ImmutableMap<String, Object> unknownResponse = ImmutableMap.of("result", "\"FOO\"");
+
+    // Act
+    Object plain = ResumeScan.validateAnswer(status, ImmutableMap.of("result", "SHIPPED"), "ask_1");
+    Object quoted =
+        ResumeScan.validateAnswer(status, ImmutableMap.of("result", "\"SHIPPED\""), "ask_1");
+    IllegalArgumentException unknown =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> ResumeScan.validateAnswer(status, unknownResponse, "ask_1"));
+
+    // Assert
+    assertThat(plain).isEqualTo("SHIPPED");
+    assertThat(quoted).isEqualTo("SHIPPED");
+    assertThat(unknown).hasMessageThat().contains("Validation failed for interrupt ask_1");
+    assertThat(unknown).hasMessageThat().contains("enum");
+  }
+
+  @Test
   public void validateAnswer_answerThatFits_isReturned() {
     Object answer = ResumeScan.validateAnswer(COUNT_SCHEMA, ImmutableMap.of("count", 1), "ask_1");
 
