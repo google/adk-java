@@ -17,6 +17,7 @@ package com.google.adk.a2a.executor;
 
 import static java.util.Objects.requireNonNull;
 
+import com.google.adk.a2a.converters.DisallowedFileUriException;
 import com.google.adk.a2a.converters.EventConverter;
 import com.google.adk.a2a.converters.PartConverter;
 import com.google.adk.agents.BaseAgent;
@@ -40,6 +41,7 @@ import io.a2a.server.events.EventQueue;
 import io.a2a.server.tasks.TaskUpdater;
 import io.a2a.spec.Artifact;
 import io.a2a.spec.InvalidAgentResponseError;
+import io.a2a.spec.InvalidParamsError;
 import io.a2a.spec.Message;
 import io.a2a.spec.MessageSendParams;
 import io.a2a.spec.Part;
@@ -197,6 +199,18 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     if (message == null) {
       throw new IllegalArgumentException("Message cannot be null");
     }
+    // Convert before submitting the task, so a rejected request leaves no task behind; a rejected
+    // follow-up leaves an existing task as it was, for the caller to retry.
+    Content content;
+    try {
+      content =
+          PartConverter.messageToContent(message, agentExecutorConfig.effectivePartConverter());
+    } catch (DisallowedFileUriException e) {
+      // Enqueued rather than thrown: a thrown error reaches streaming callers wrapped as an
+      // InternalError, while an enqueued one reaches both transports as invalid params.
+      eventQueue.enqueueEvent(new InvalidParamsError(e.getMessage()));
+      return;
+    }
     // Submits a new task if there is no active task.
     if (ctx.getTask() == null) {
       updater.submit();
@@ -208,7 +222,6 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
       throw new IllegalStateException(String.format("Task %s already running", ctx.getTaskId()));
     }
     EventProcessor p = new EventProcessor(agentExecutorConfig.outputMode());
-    Content content = PartConverter.messageToContent(message);
     Single<Boolean> skipExecution =
         agentExecutorConfig.beforeExecuteCallback() != null
             ? agentExecutorConfig.beforeExecuteCallback().call(ctx)

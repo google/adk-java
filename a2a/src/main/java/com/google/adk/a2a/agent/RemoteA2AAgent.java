@@ -15,6 +15,7 @@
  */
 package com.google.adk.a2a.agent;
 
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.base.Strings.nullToEmpty;
 
@@ -23,7 +24,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.google.adk.a2a.common.A2AClientError;
 import com.google.adk.a2a.common.A2AMetadata;
+import com.google.adk.a2a.converters.A2APartConverter;
 import com.google.adk.a2a.converters.EventConverter;
+import com.google.adk.a2a.converters.FileUriPolicy;
+import com.google.adk.a2a.converters.PartConverter;
 import com.google.adk.a2a.converters.ResponseConverter;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks;
@@ -85,6 +89,7 @@ public class RemoteA2AAgent extends BaseAgent {
   private final Client a2aClient;
   private String description;
   private final boolean streaming;
+  private final A2APartConverter partConverter;
 
   // Internal constructor used by builder
   private RemoteA2AAgent(Builder builder) {
@@ -118,6 +123,17 @@ public class RemoteA2AAgent extends BaseAgent {
       this.description = this.agentCard.description();
     }
     this.streaming = builder.streaming && this.agentCard.capabilities().streaming();
+    checkState(
+        builder.fileUriPolicy == null || builder.a2aPartConverter == null,
+        "Set fileUriPolicy or a2aPartConverter, not both; a custom converter can delegate to"
+            + " PartConverter.defaultConverter(policy)");
+    this.partConverter =
+        builder.a2aPartConverter != null
+            ? builder.a2aPartConverter
+            : PartConverter.defaultConverter(
+                builder.fileUriPolicy != null
+                    ? builder.fileUriPolicy
+                    : FileUriPolicy.defaultPolicy());
   }
 
   public static Builder builder() {
@@ -134,6 +150,8 @@ public class RemoteA2AAgent extends BaseAgent {
     private List<Callbacks.BeforeAgentCallback> beforeAgentCallback;
     private List<Callbacks.AfterAgentCallback> afterAgentCallback;
     private boolean streaming;
+    private @Nullable FileUriPolicy fileUriPolicy;
+    private @Nullable A2APartConverter a2aPartConverter;
 
     @CanIgnoreReturnValue
     public Builder streaming(boolean streaming) {
@@ -180,6 +198,28 @@ public class RemoteA2AAgent extends BaseAgent {
     @CanIgnoreReturnValue
     public Builder a2aClient(Client a2aClient) {
       this.a2aClient = a2aClient;
+      return this;
+    }
+
+    /**
+     * Which file URIs from the remote agent may reach the model; unset means {@link
+     * FileUriPolicy#defaultPolicy()}, which admits none. Exclusive with {@link
+     * #a2aPartConverter(A2APartConverter)}.
+     */
+    @CanIgnoreReturnValue
+    public Builder fileUriPolicy(FileUriPolicy fileUriPolicy) {
+      this.fileUriPolicy = fileUriPolicy;
+      return this;
+    }
+
+    /**
+     * Converts each part the remote agent returns, in place of {@link
+     * PartConverter#defaultConverter(FileUriPolicy)}. A part it rejects with an exception is
+     * skipped. Exclusive with {@link #fileUriPolicy(FileUriPolicy)}.
+     */
+    @CanIgnoreReturnValue
+    public Builder a2aPartConverter(A2APartConverter a2aPartConverter) {
+      this.a2aPartConverter = a2aPartConverter;
       return this;
     }
 
@@ -272,7 +312,8 @@ public class RemoteA2AAgent extends BaseAgent {
                   invocationContext,
                   requestJson,
                   name(),
-                  /* subscribeThread= */ Thread.currentThread());
+                  /* subscribeThread= */ Thread.currentThread(),
+                  partConverter);
           ImmutableList<BiConsumer<ClientEvent, AgentCard>> consumers =
               ImmutableList.of(handler::handleEvent);
           handler.dispatchSynchronously(
@@ -302,6 +343,7 @@ public class RemoteA2AAgent extends BaseAgent {
     private final String requestJson;
     private final String agentName;
     private final Thread subscribeThread;
+    private final A2APartConverter partConverter;
 
     /** True while {@code sendMessage} is running on {@link #subscribeThread}. */
     private volatile boolean dispatchingSynchronously = false;
@@ -329,12 +371,14 @@ public class RemoteA2AAgent extends BaseAgent {
         InvocationContext invocationContext,
         String requestJson,
         String agentName,
-        Thread subscribeThread) {
+        Thread subscribeThread,
+        A2APartConverter partConverter) {
       this.emitter = emitter;
       this.invocationContext = invocationContext;
       this.requestJson = requestJson;
       this.agentName = agentName;
       this.subscribeThread = subscribeThread;
+      this.partConverter = partConverter;
     }
 
     synchronized void handleError(Throwable e) {
@@ -369,7 +413,8 @@ public class RemoteA2AAgent extends BaseAgent {
 
       Optional<Event> eventOpt;
       try {
-        eventOpt = ResponseConverter.clientEventToEvent(clientEvent, invocationContext);
+        eventOpt =
+            ResponseConverter.clientEventToEvent(clientEvent, invocationContext, partConverter);
       } catch (Throwable t) {
         logger.warn("Failed to convert A2A event", t);
         handleError("Failed to convert the remote agent's response", t);
