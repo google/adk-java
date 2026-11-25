@@ -1622,6 +1622,8 @@ public class Runner {
       } else {
         invocationContextSingle = Single.just(invocationContext);
       }
+      // Allow the flow to wait until an event is saved before replaying history.
+      PersistBarrier.enable(invocationContext);
       return invocationContextSingle
           .flatMapPublisher(context -> runLiveWithPluginCallbacks(context, capturedContext))
           .doOnError(throwable -> {

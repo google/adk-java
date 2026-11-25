@@ -2360,8 +2360,9 @@ public final class RunnerTest {
     testSubscriber.await();
     testSubscriber.assertComplete();
     assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
-    // The hop that starts the live send loop went through the runner's scheduler.
-    assertThat(recordingScheduler.workersCreated()).isEqualTo(1);
+    // One worker starts the live send loop and another screens the queued request,
+    // both on the runner's scheduler.
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(2);
   }
 
   @Test

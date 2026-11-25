@@ -35,6 +35,9 @@ public final class Callbacks {
     /**
      * Async callback before LLM invocation.
      *
+     * <p>In live runs, request changes made by the callback are not sent; the model receives the
+     * original input.
+     *
      * @param callbackContext Callback context.
      * @param llmRequestBuilder LLM request builder.
      * @return response override, or empty to continue.

@@ -28,8 +28,10 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequest;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.ReadonlyContext;
+import com.google.adk.agents.Role;
 import com.google.adk.agents.RunConfig.StreamingMode;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
 import com.google.adk.flows.BaseFlow;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
@@ -48,6 +50,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.Part;
+import com.google.genai.types.Transcription;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.context.Context;
@@ -55,17 +59,21 @@ import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Action;
 import io.reactivex.rxjava3.functions.Predicate;
 import io.reactivex.rxjava3.observers.DisposableCompletableObserver;
+import io.reactivex.rxjava3.processors.FlowableProcessor;
+import io.reactivex.rxjava3.processors.UnicastProcessor;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -434,6 +442,13 @@ public abstract class BaseLlmFlow implements BaseFlow {
    */
   private Single<LlmResponse> handleAfterModelCallback(
       InvocationContext context, LlmResponse llmResponse, Event modelResponseEvent) {
+    return afterModelCallbackResponse(context, llmResponse, modelResponseEvent)
+        .defaultIfEmpty(llmResponse);
+  }
+
+  /** Returns the {@link AfterModelCallback} replacement for {@code llmResponse}, if any. */
+  private Maybe<LlmResponse> afterModelCallbackResponse(
+      InvocationContext context, LlmResponse llmResponse, Event modelResponseEvent) {
     Context currentContext = Context.current();
     Event callbackEvent = modelResponseEvent.toBuilder().build();
     CallbackContext callbackContext =
@@ -446,7 +461,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
     List<? extends AfterModelCallback> callbacks = agent.canonicalAfterModelCallbacks();
 
     if (callbacks.isEmpty()) {
-      return pluginResult.defaultIfEmpty(llmResponse);
+      return pluginResult;
     }
 
     Maybe<LlmResponse> callbackResult =
@@ -458,7 +473,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                         .compose(Tracing.withContext(currentContext)))
                 .firstElement());
 
-    return pluginResult.switchIfEmpty(callbackResult).defaultIfEmpty(llmResponse);
+    return pluginResult.switchIfEmpty(callbackResult);
   }
 
   /**
@@ -662,89 +677,33 @@ public abstract class BaseLlmFlow implements BaseFlow {
                   : LlmRegistry.getLlm(agent.resolvedModel().modelName().get());
           BaseLlmConnection connection = llm.connect(llmRequestAfterPreprocess);
           Completable historySent =
-              llmRequestAfterPreprocess.contents().isEmpty()
-                  ? Completable.complete()
-                  : connection
-                      .sendHistory(llmRequestAfterPreprocess.contents())
-                      .doOnComplete(() ->
-                          Tracing.traceSendData(
-                              Span.current(),
-                              invocationContext,
-                              eventIdForSendData,
-                              llmRequestAfterPreprocess.contents()))
-                      .doOnError(error -> {
-                        Span span = Span.current();
-                        span.setStatus(StatusCode.ERROR, error.getMessage());
-                        span.recordException(error);
-                        Tracing.traceSendData(
-                            Span.current(),
-                            invocationContext,
-                            eventIdForSendData,
-                            llmRequestAfterPreprocess.contents());
-                      })
-                      .compose(Tracing.<Event>trace("send_data").setParent(spanContext));
+              sendLiveHistory(
+                  invocationContext,
+                  connection,
+                  llmRequestAfterPreprocess,
+                  eventIdForSendData,
+                  spanContext);
 
-          Flowable<LiveRequest> liveRequests =
-              invocationContext
-                  .liveRequestQueue()
-                  .get()
-                  .get()
-                  .doOnNext(request -> {
-                    for (ActiveStreamingTool activeStreamingTool :
-                        invocationContext.activeStreamingTools().values()) {
-                      // Only a running tool reads its stream, so as in ADK Python, nothing
-                      // accumulates in the stream of a tool that has not started or has stopped.
-                      Disposable task = activeStreamingTool.task();
-                      if (activeStreamingTool.stream() != null
-                          && task != null
-                          && !task.isDisposed()) {
-                        activeStreamingTool.stream().send(request);
-                      }
-                    }
-                  });
           // The last function response for this connection, which closes only once it is sent.
           AtomicReference<Content> closingAnswer = new AtomicReference<>();
           CompletableSubject closingAnswerSent = CompletableSubject.create();
+          // Events produced by screening typed input: a replacement for blocked input or callback
+          // writes.
+          FlowableProcessor<Event> blockedInputTurns =
+              UnicastProcessor.<Event>create().toSerialized();
           Disposable sendTask =
-              historySent
-                  .observeOn(Functions.resolveWorkerScheduler(invocationContext))
-                  .andThen(
-                      liveRequests
-                          // Sends one request at a time so unsent requests stay queued for the
-                          // next connection when this one closes.
-                          .flatMapCompletable(
-                          request -> {
-                            if (request.content().isPresent()) {
-                              Content content = request.content().get();
-                              return connection
-                                  .sendContent(content, request.isPartial())
-                                  .doOnComplete(() -> {
-                                    if (content.equals(closingAnswer.get())) {
-                                      closingAnswerSent.onComplete();
-                                    }
-                                  });
-                            } else if (request.blob().isPresent()) {
-                              return connection.sendRealtime(request.blob().get());
-                            }
-                            return Completable.fromAction(connection::close);
-                          },
-                          /* delayErrors= */ false,
-                          /* maxConcurrency= */ 1))
-                  .subscribeWith(
-                      new DisposableCompletableObserver() {
-                        @Override
-                        public void onComplete() {
-                          connection.close();
-                          // Nothing more is sent, so a close need not wait for a response.
-                          closingAnswerSent.onComplete();
-                        }
+              startLiveSendLoop(
+                  invocationContext,
+                  llmRequestAfterPreprocess,
+                  connection,
+                  historySent,
+                  closingAnswer,
+                  closingAnswerSent,
+                  blockedInputTurns);
 
-                        @Override
-                        public void onError(Throwable e) {
-                          connection.close(e);
-                          closingAnswerSent.onComplete();
-                        }
-                      });
+          Span span =
+              Tracing.getTracer().spanBuilder("call_llm").setParent(spanContext).startSpan();
+          Context callLlmContext = spanContext.with(span);
 
           AtomicBoolean connectionClosed = new AtomicBoolean();
           Action closeConnection =
@@ -754,96 +713,60 @@ public abstract class BaseLlmFlow implements BaseFlow {
                   connection.close();
                 }
               };
-          // Closing with an unsent function response drops it or leaves it queued for the next
-          // connection.
           Function<Event, Completable> closeAfterAnswer =
-              event ->
-                  (event.functionResponses().isEmpty()
-                          ? Completable.complete()
-                          : closingAnswerSent
-                              .timeout(CLOSING_ANSWER_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
-                              .doOnError(error ->
-                                  logger.warn("A function response was not sent before closing."))
-                              .onErrorComplete())
-                      .andThen(Completable.fromAction(closeConnection));
+              event -> closeAfterAnswer(event, closingAnswerSent, closeConnection);
 
-          // Any live agent's own task_completed tool ends its live run, not only when running as a
-          // SequentialAgent step; offeredTo limits only which agents receive the tool. ADK Python
-          // does the same.
-          Predicate<Event> completesTask =
-              event ->
-                  event.functionResponses().stream()
-                      .anyMatch(
-                          response -> response.name().equals(Optional.of(TaskCompletedTool.NAME)));
+          // The model's output transcription so far in the current turn.
+          AtomicReference<String> turnOutput = new AtomicReference<>("");
+          // A blocked model output or spoken input ends this connection; the flow then restarts.
+          Set<String> restartEventIds = ConcurrentHashMap.newKeySet();
           // Ends this connection; what it sends afterwards is not read, as in ADK Python 2.x.
           Predicate<Event> endsConnection =
-              event -> event.actions().transferToAgent().isPresent() || completesTask.test(event);
-
-          Event.Builder liveEventBuilderTemplate =
-              Event.builder()
-                  .timestamp(invocationContext.now().toEpochMilli())
-                  .invocationId(invocationContext.invocationId())
-                  .author(invocationContext.agent().name())
-                  .branch(invocationContext.branch().orElse(null));
-
-          Span span =
-              Tracing.getTracer().spanBuilder("call_llm").setParent(spanContext).startSpan();
-          Context callLlmContext = spanContext.with(span);
-
-          Flowable<Event> receiveFlow =
+              event ->
+                  event.actions().transferToAgent().isPresent()
+                      || completesTask(event)
+                      || restartEventIds.contains(event.id());
+          // The events each model response leads to, decided when its turn in the order comes.
+          Flowable<Single<Flowable<Event>>> responseTurns =
               connection
                   .receive()
-                  .flatMap(llmResponse -> {
-                    Event baseEventForThisLlmResponse =
-                        liveEventBuilderTemplate.id(invocationContext.newUuid()).build();
-                    return postprocess(
-                        invocationContext,
-                        baseEventForThisLlmResponse,
-                        llmRequestAfterPreprocess,
-                        llmResponse,
-                        callLlmContext);
-                  })
+                  // The connection does not wait for demand, and the sender may be draining below.
+                  .onBackpressureBuffer()
+                  .map(llmResponse ->
+                      Single.defer(() ->
+                          screenLiveResponse(
+                              invocationContext,
+                              llmRequestAfterPreprocess,
+                              llmResponse,
+                              callLlmContext,
+                              turnOutput,
+                              restartEventIds)))
+                  .doOnComplete(blockedInputTurns::onComplete);
+          Flowable<Event> receiveFlow =
+              Flowable.merge(
+                      responseTurns,
+                      blockedInputTurns.map(blocked -> Single.just(Flowable.just(blocked))))
+                  // Taken as they come, so typed-input replacements and responses keep their order.
+                  .onBackpressureBuffer()
+                  // Screened one at a time; their events then flow as they come, so a running tool
+                  // holds nothing else up.
+                  .concatMapSingle(turn -> turn)
+                  .flatMap(events -> events)
+                  // Keeps the events in order when the caller consumes them slowly.
+                  .onBackpressureBuffer()
                   // Before the transfer below, so a sub-agent's events skip this agent's handling.
-                  .doOnNext(event -> {
-                    ImmutableList<FunctionResponse> functionResponses = event.functionResponses();
-                    boolean endsThisConnection = endsConnection.test(event);
-                    if (endsThisConnection) {
-                      stopStreamingTools(invocationContext);
-                    }
-                    if (!functionResponses.isEmpty()) {
-                      if (endsThisConnection) {
-                        closingAnswer.set(event.content().get());
-                      }
-                      invocationContext.liveRequestQueue().get().content(event.content().get());
-                    }
-                  })
+                  .doOnNext(event ->
+                      onLiveEvent(
+                          invocationContext,
+                          event,
+                          endsConnection,
+                          restartEventIds,
+                          closingAnswer,
+                          closeConnection))
                   .takeUntil(endsConnection)
-                  .flatMap(event -> {
-                    Flowable<Event> events = Flowable.just(event);
-                    if (event.actions().transferToAgent().isPresent()) {
-                      BaseAgent rootAgent = invocationContext.agent().rootAgent();
-                      Optional<BaseAgent> nextAgent =
-                          rootAgent.findAgent(event.actions().transferToAgent().get());
-                      if (nextAgent.isEmpty()) {
-                        throw new IllegalStateException(
-                            "Agent not found: " + event.actions().transferToAgent().get());
-                      }
-                      Flowable<Event> nextAgentEvents =
-                          closeAfterAnswer
-                              .apply(event)
-                              .andThen(
-                                  Flowable.defer(() -> {
-                                    try (Scope scope = spanContext.makeCurrent()) {
-                                      return nextAgent.get().runLive(invocationContext);
-                                    }
-                                  }));
-                      events = Flowable.concat(events, nextAgentEvents);
-                    } else if (completesTask.test(event)) {
-                      // The step ends here, so the next one starts on a new connection.
-                      events = events.concatWith(closeAfterAnswer.apply(event));
-                    }
-                    return events;
-                  })
+                  .flatMap(event ->
+                      followLiveEvent(
+                          invocationContext, event, spanContext, closeAfterAnswer, restartEventIds))
                   // Also closes when the model stream ends, stopping the send loop as in ADK
                   // Python. Unlike doFinally, doOnTerminate runs before downstream sees
                   // termination.
@@ -856,6 +779,420 @@ public abstract class BaseLlmFlow implements BaseFlow {
           return Tracing.traceFlowable(callLlmContext, span, () -> receiveFlow)
               .compose(Tracing.withContext(spanContext));
         }));
+  }
+
+  /** Sends the request's contents as history to a new live connection. */
+  private static Completable sendLiveHistory(
+      InvocationContext invocationContext,
+      BaseLlmConnection connection,
+      LlmRequest llmRequest,
+      String eventIdForSendData,
+      Context spanContext) {
+    return llmRequest.contents().isEmpty()
+        ? Completable.complete()
+        : connection
+            .sendHistory(llmRequest.contents())
+            .doOnComplete(() ->
+                Tracing.traceSendData(
+                    Span.current(), invocationContext, eventIdForSendData, llmRequest.contents()))
+            .doOnError(error -> {
+              Span span = Span.current();
+              span.setStatus(StatusCode.ERROR, error.getMessage());
+              span.recordException(error);
+              Tracing.traceSendData(
+                  Span.current(), invocationContext, eventIdForSendData, llmRequest.contents());
+            })
+            .compose(Tracing.<Event>trace("send_data").setParent(spanContext));
+  }
+
+  /**
+   * Closes the connection once any function response in {@code event} has been sent. Closing while
+   * a function response is unsent either drops it or leaves it queued for the next connection.
+   */
+  private static Completable closeAfterAnswer(
+      Event event, CompletableSubject closingAnswerSent, Action closeConnection) {
+    return (event.functionResponses().isEmpty()
+            ? Completable.complete()
+            : closingAnswerSent
+                .timeout(CLOSING_ANSWER_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+                .doOnError(error -> logger.warn("A function response was not sent before closing."))
+                .onErrorComplete())
+        .andThen(Completable.fromAction(closeConnection));
+  }
+
+  /**
+   * Starts sending requests from the live request queue to {@code connection} once its history has
+   * been sent.
+   *
+   * @return the send task, which is disposed when the connection closes.
+   */
+  private Disposable startLiveSendLoop(
+      InvocationContext invocationContext,
+      LlmRequest llmRequest,
+      BaseLlmConnection connection,
+      Completable historySent,
+      AtomicReference<Content> closingAnswer,
+      CompletableSubject closingAnswerSent,
+      FlowableProcessor<Event> blockedInputTurns) {
+    Flowable<LiveRequest> liveRequests =
+        invocationContext
+            .liveRequestQueue()
+            .get()
+            .get()
+            .doOnNext(request -> {
+              for (ActiveStreamingTool activeStreamingTool :
+                  invocationContext.activeStreamingTools().values()) {
+                // Only a running tool reads its stream, so as in ADK Python, nothing accumulates in
+                // the stream of a tool that has not started or has stopped.
+                Disposable task = activeStreamingTool.task();
+                if (activeStreamingTool.stream() != null && task != null && !task.isDisposed()) {
+                  activeStreamingTool.stream().send(request);
+                }
+              }
+            });
+    Scheduler sendScheduler = Functions.resolveWorkerScheduler(invocationContext);
+    return historySent
+        .observeOn(sendScheduler)
+        .andThen(
+            liveRequests
+                // Send one request at a time so a restart leaves unsent requests queued.
+                .flatMapCompletable(
+                request -> {
+                  if (request.content().isPresent()) {
+                    Content content = request.content().get();
+                    return Completable.defer(() ->
+                            sendLiveContent(
+                                invocationContext,
+                                llmRequest,
+                                connection,
+                                content,
+                                request.isPartial(),
+                                blockedInputTurns))
+                        // Runs on the agent worker, not during the caller's send,
+                        // matching how ADK Python screens input in its send task.
+                        .subscribeOn(sendScheduler)
+                        .doOnComplete(() -> {
+                          if (content.equals(closingAnswer.get())) {
+                            closingAnswerSent.onComplete();
+                          }
+                        });
+                  } else if (request.blob().isPresent()) {
+                    return connection.sendRealtime(request.blob().get());
+                  }
+                  return Completable.fromAction(connection::close);
+                },
+                /* delayErrors= */ false,
+                /* maxConcurrency= */ 1))
+        .subscribeWith(
+            new DisposableCompletableObserver() {
+              @Override
+              public void onComplete() {
+                connection.close();
+                // Nothing more is sent, so a close need not wait for a response.
+                closingAnswerSent.onComplete();
+              }
+
+              @Override
+              public void onError(Throwable e) {
+                connection.close(e);
+                closingAnswerSent.onComplete();
+              }
+            });
+  }
+
+  /**
+   * Screens the spoken input and output of a model response with the model callbacks.
+   *
+   * @return the resulting events; a blocked turn among them restarts the connection.
+   */
+  private Single<Flowable<Event>> screenLiveResponse(
+      InvocationContext invocationContext,
+      LlmRequest llmRequest,
+      LlmResponse llmResponse,
+      Context callLlmContext,
+      AtomicReference<String> turnOutput,
+      Set<String> restartEventIds) {
+    // What the old connection sends after a block is dropped, not screened.
+    if (!restartEventIds.isEmpty()) {
+      return Single.just(Flowable.<Event>empty());
+    }
+    Event baseEventForThisLlmResponse = newLiveEvent(invocationContext);
+    Event inputScreeningEvent = newLiveEvent(invocationContext);
+    Flowable<Event> events =
+        Flowable.defer(() ->
+            postprocess(
+                invocationContext,
+                baseEventForThisLlmResponse,
+                llmRequest,
+                llmResponse,
+                callLlmContext));
+    String spoken = turnOutput.updateAndGet(sofar -> spokenSoFar(sofar, llmResponse));
+    Maybe<Event> blockedOutput =
+        llmResponse.outputTranscription().isEmpty() || spoken.isEmpty()
+            ? Maybe.empty()
+            : screenModelOutput(
+                invocationContext, llmRequest, llmResponse, spoken, baseEventForThisLlmResponse);
+    // A partial response is not saved, so its after-model writes get a separate event.
+    Flowable<Event> outputWrites =
+        llmResponse.partial().orElse(false)
+            ? callbackWrites(invocationContext, baseEventForThisLlmResponse).toFlowable()
+            : Flowable.empty();
+    return blockedOutput
+        .map(blocked -> {
+          restartEventIds.add(blocked.id());
+          return Flowable.just(blocked);
+        })
+        .switchIfEmpty(
+            screenSpokenInput(invocationContext, llmRequest, llmResponse, inputScreeningEvent)
+                .map(blocked -> {
+                  restartEventIds.add(blocked.id());
+                  return Flowable.concat(outputWrites, events, Flowable.just(blocked));
+                })
+                .defaultIfEmpty(
+                    Flowable.concat(
+                        outputWrites,
+                        callbackWrites(invocationContext, inputScreeningEvent).toFlowable(),
+                        events)));
+  }
+
+  /**
+   * Queues the function responses in {@code event} for the model. When the event ends the
+   * connection, stops the connection's streaming tools; a restart also closes the connection at
+   * once.
+   */
+  private static void onLiveEvent(
+      InvocationContext invocationContext,
+      Event event,
+      Predicate<Event> endsConnection,
+      Set<String> restartEventIds,
+      AtomicReference<Content> closingAnswer,
+      Action closeConnection)
+      throws Throwable {
+    ImmutableList<FunctionResponse> functionResponses = event.functionResponses();
+    boolean endsThisConnection = endsConnection.test(event);
+    if (endsThisConnection) {
+      stopStreamingTools(invocationContext);
+    }
+    if (!functionResponses.isEmpty()) {
+      if (endsThisConnection) {
+        closingAnswer.set(event.content().get());
+      }
+      invocationContext.liveRequestQueue().get().content(event.content().get());
+    }
+    // Only a restart closes right away; a transfer or task_completed closes once
+    // its function response is sent.
+    if (restartEventIds.contains(event.id())) {
+      closeConnection.run();
+    }
+  }
+
+  /**
+   * Emits {@code event}; when it ends the connection, follows with the transferred-to agent's run,
+   * the end of a step, or a restart on a new connection.
+   */
+  private Flowable<Event> followLiveEvent(
+      InvocationContext invocationContext,
+      Event event,
+      Context spanContext,
+      Function<Event, Completable> closeAfterAnswer,
+      Set<String> restartEventIds) {
+    Flowable<Event> events = Flowable.just(event);
+    if (event.actions().transferToAgent().isPresent()) {
+      BaseAgent rootAgent = invocationContext.agent().rootAgent();
+      Optional<BaseAgent> nextAgent = rootAgent.findAgent(event.actions().transferToAgent().get());
+      if (nextAgent.isEmpty()) {
+        throw new IllegalStateException(
+            "Agent not found: " + event.actions().transferToAgent().get());
+      }
+      Flowable<Event> nextAgentEvents =
+          closeAfterAnswer
+              .apply(event)
+              .andThen(
+                  Flowable.defer(() -> {
+                    try (Scope scope = spanContext.makeCurrent()) {
+                      return nextAgent.get().runLive(invocationContext);
+                    }
+                  }));
+      events = Flowable.concat(events, nextAgentEvents);
+    } else if (completesTask(event)) {
+      // The step ends here, so the next one starts on a new connection.
+      events = events.concatWith(closeAfterAnswer.apply(event));
+    } else if (restartEventIds.contains(event.id())) {
+      // A new connection replays the history, which now ends with the blocked turn.
+      events =
+          events.concatWith(
+              // Wait for the Runner to save the turn so the replayed history
+              // includes it.
+              PersistBarrier.awaitPersisted(invocationContext, ImmutableList.of(event))
+                  .andThen(
+                      Flowable.defer(() -> {
+                        try (Scope scope = spanContext.makeCurrent()) {
+                          return runLive(invocationContext);
+                        }
+                      })));
+    }
+    return events;
+  }
+
+  /**
+   * Any live agent's own task_completed tool ends its live run, not only when running as a
+   * SequentialAgent step; offeredTo limits only which agents receive the tool. ADK Python does the
+   * same.
+   */
+  private static boolean completesTask(Event event) {
+    return event.functionResponses().stream()
+        .anyMatch(response -> response.name().equals(Optional.of(TaskCompletedTool.NAME)));
+  }
+
+  /**
+   * Sends content from the live request queue. Content with only function responses is sent as is.
+   * Other content is not sent if a before-model callback blocks it; {@code blockedInputTurns}
+   * receives its replacement turn instead.
+   */
+  private Completable sendLiveContent(
+      InvocationContext context,
+      LlmRequest llmRequest,
+      BaseLlmConnection connection,
+      Content content,
+      boolean partial,
+      FlowableProcessor<Event> blockedInputTurns) {
+    List<Part> parts = content.parts().orElse(ImmutableList.of());
+    if (!parts.isEmpty() && parts.stream().allMatch(part -> part.functionResponse().isPresent())) {
+      return connection.sendContent(content, partial);
+    }
+    boolean answersTools = parts.stream().anyMatch(part -> part.functionResponse().isPresent());
+    Content userContent =
+        answersTools || content.role().filter(role -> !role.isEmpty()).isPresent()
+            ? content
+            : content.toBuilder().role(Role.USER).build();
+    // Deferred so the before-model callbacks run when the send loop subscribes, in send order.
+    return Completable.defer(() -> {
+      Event screeningEvent = newLiveEvent(context);
+      return screenLiveInput(context, llmRequest, userContent, screeningEvent)
+          .doOnSuccess(blockedInputTurns::onNext)
+          .isEmpty()
+          .flatMapCompletable(passed ->
+              passed
+                  ? callbackWrites(context, screeningEvent)
+                      .doOnSuccess(blockedInputTurns::onNext)
+                      .ignoreElement()
+                      .andThen(connection.sendContent(userContent, partial))
+                  : Completable.complete());
+    });
+  }
+
+  /**
+   * Runs the before-model callbacks over a request holding only {@code content}, a live user input.
+   *
+   * @return the turn that replaces the input when a callback returns a response.
+   */
+  private Maybe<Event> screenLiveInput(
+      InvocationContext context, LlmRequest llmRequest, Content content, Event baseEvent) {
+    LlmRequest.Builder screenedRequest = llmRequest.toBuilder().contents(ImmutableList.of(content));
+    return handleBeforeModelCallback(context, screenedRequest, baseEvent)
+        .map(response -> replacementTurn(context, baseEvent, llmRequest, response));
+  }
+
+  /** Screens a finished input transcription in {@code llmResponse} as the user's spoken input. */
+  private Maybe<Event> screenSpokenInput(
+      InvocationContext context, LlmRequest llmRequest, LlmResponse llmResponse, Event baseEvent) {
+    Optional<String> heard =
+        llmResponse
+            .inputTranscription()
+            .filter(transcription -> transcription.finished().orElse(false))
+            .flatMap(Transcription::text)
+            .filter(text -> !text.isEmpty());
+    if (heard.isEmpty()) {
+      return Maybe.empty();
+    }
+    return screenLiveInput(
+        context,
+        llmRequest,
+        Content.builder().role(Role.USER).parts(Part.fromText(heard.get())).build(),
+        baseEvent);
+  }
+
+  /**
+   * Runs the after-model callbacks over {@code llmResponse} carrying the turn's output
+   * transcription so far, {@code spoken}.
+   *
+   * @return the turn that replaces the model's output when a callback returns a response.
+   */
+  private Maybe<Event> screenModelOutput(
+      InvocationContext context,
+      LlmRequest llmRequest,
+      LlmResponse llmResponse,
+      String spoken,
+      Event baseEvent) {
+    Transcription spokenTranscription =
+        Transcription.builder().text(spoken).finished(false).build();
+    LlmResponse screened = llmResponse.toBuilder().outputTranscription(spokenTranscription).build();
+    return afterModelCallbackResponse(context, screened, baseEvent)
+        .map(response ->
+            replacementTurn(
+                context,
+                baseEvent,
+                llmRequest,
+                // The accumulated transcription is the flow's, so it is dropped unless replaced.
+                response.outputTranscription().equals(Optional.of(spokenTranscription))
+                    ? response.toBuilder().outputTranscription(null).build()
+                    : response));
+  }
+
+  /** Returns the turn the model's output so far amounts to once {@code llmResponse} arrives. */
+  private static String spokenSoFar(String spoken, LlmResponse llmResponse) {
+    String turnSoFar =
+        llmResponse.turnComplete().orElse(false) || llmResponse.interrupted().orElse(false)
+            ? ""
+            : spoken;
+    Optional<Transcription> heard = llmResponse.outputTranscription();
+    if (heard.isEmpty()) {
+      return turnSoFar;
+    }
+    return heard.get().finished().orElse(false) ? "" : turnSoFar + heard.get().text().orElse("");
+  }
+
+  /** Returns the completed turn that stands in for live input or output a callback blocked. */
+  private Event replacementTurn(
+      InvocationContext context, Event baseEvent, LlmRequest llmRequest, LlmResponse response) {
+    LlmResponse.Builder turn = response.toBuilder().partial(false).turnComplete(true);
+    // It is the model's turn, whatever role the callback gave it: a history replayed after a
+    // restart must end with the model's turn, or the model answers it.
+    response
+        .content()
+        .ifPresent(content -> turn.content(content.toBuilder().role(Role.MODEL).build()));
+    return buildModelResponseEvent(context, baseEvent, llmRequest, turn.build());
+  }
+
+  /**
+   * Returns an event that saves the state and artifact changes made through the actions of {@code
+   * callbackEvent} when a callback returns no response, as in ADK Kotlin.
+   */
+  private static Maybe<Event> callbackWrites(InvocationContext context, Event callbackEvent) {
+    return Maybe.defer(() -> {
+      EventActions actions = callbackEvent.actions();
+      if (actions.stateDelta().isEmpty() && actions.artifactDelta().isEmpty()) {
+        return Maybe.empty();
+      }
+      return Maybe.just(
+          newLiveEvent(context).toBuilder()
+              .actions(
+                  EventActions.builder()
+                      .stateDelta(actions.stateDelta())
+                      .artifactDelta(actions.artifactDelta())
+                      .build())
+              .build());
+    });
+  }
+
+  private static Event newLiveEvent(InvocationContext context) {
+    return Event.builder()
+        .id(context.newUuid())
+        .timestamp(context.now().toEpochMilli())
+        .invocationId(context.invocationId())
+        .author(context.agent().name())
+        .branch(context.branch().orElse(null))
+        .build();
   }
 
   /**
