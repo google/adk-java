@@ -18,6 +18,7 @@ package com.google.adk.models;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Blob;
@@ -32,6 +33,7 @@ import com.google.genai.types.LiveServerContent;
 import com.google.genai.types.LiveServerMessage;
 import com.google.genai.types.LiveServerToolCall;
 import com.google.genai.types.Part;
+import com.google.genai.types.Transcription;
 import com.google.genai.types.UsageMetadata;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
@@ -47,6 +49,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,15 +70,18 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
   private final Flowable<LlmResponse> responseFlowable = responseProcessor.serialize();
   private final CompositeDisposable disposables = new CompositeDisposable();
   private final AtomicBoolean closed = new AtomicBoolean(false);
-  // Used only by handleServerMessage, which genai's WebSocket listener calls one message at a time.
+  // Both used only by handleServerMessage, which genai's WebSocket listener calls one at a time.
   private final PendingText pendingText = new PendingText();
+  private final PendingTranscriptions pendingTranscriptions;
 
   /**
    * Establishes a new connection over the given live transport.
    *
+   * @param modelName The name of the model the transport is connected to.
    * @param transportFuture The live transport the connection drives, once established.
    */
-  GeminiLlmConnection(CompletableFuture<GeminiLiveTransport> transportFuture) {
+  GeminiLlmConnection(String modelName, CompletableFuture<GeminiLiveTransport> transportFuture) {
+    this.pendingTranscriptions = new PendingTranscriptions(isGemini3xLive(modelName));
     this.transportFuture =
         Objects.requireNonNull(transportFuture)
             .whenCompleteAsync(
@@ -121,7 +127,8 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
       return;
     }
 
-    Observable<LlmResponse> llmResponse = convertToServerResponse(message, pendingText);
+    Observable<LlmResponse> llmResponse =
+        convertToServerResponse(message, pendingText, pendingTranscriptions);
     if (!disposables.add(
         llmResponse.subscribe(responseProcessor::onNext, responseProcessor::onError))) {
       logger.warn(
@@ -133,71 +140,72 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
    * Converts a server message into the standardized LlmResponse format.
    *
    * @param pendingText the text streamed by earlier messages and not yet emitted in full
+   * @param pendingTranscriptions the transcriptions streamed by earlier messages and not yet
+   *     emitted in full
    */
   static Observable<LlmResponse> convertToServerResponse(
-      LiveServerMessage message, PendingText pendingText) {
-    return Observable.create(
-        emitter -> {
-          // AtomicBoolean is used to modify state from within lambdas, which
-          // require captured variables to be effectively final.
-          final AtomicBoolean handled = new AtomicBoolean(false);
-          message
-              .serverContent()
-              .ifPresent(
-                  serverContent -> {
-                    emitServerContentResponses(serverContent, pendingText, emitter);
-                    handled.set(true);
-                  });
-          message
-              .toolCall()
-              .ifPresent(
-                  toolCall -> {
-                    pendingText.flush().ifPresent(emitter::onNext);
-                    emitter.onNext(createToolCallResponse(toolCall));
-                    handled.set(true);
-                  });
-          message
-              .usageMetadata()
-              .ifPresent(
-                  usageMetadata -> {
-                    logger.debug("Received usage metadata: {}", usageMetadata);
-                    emitter.onNext(createUsageMetadataResponse(usageMetadata));
-                    handled.set(true);
-                  });
-          message
-              .toolCallCancellation()
-              .ifPresent(
-                  toolCallCancellation -> {
-                    logger.debug("Received tool call cancellation: {}", toolCallCancellation);
-                    // TODO: implement proper CFC and thus tool call cancellation handling.
-                    handled.set(true);
-                  });
-          message
-              .setupComplete()
-              .ifPresent(
-                  setupComplete -> {
-                    logger.debug("Received setup complete.");
-                    handled.set(true);
-                  });
+      LiveServerMessage message,
+      PendingText pendingText,
+      PendingTranscriptions pendingTranscriptions) {
+    return Observable.create(emitter -> {
+      // AtomicBoolean is used to modify state from within lambdas, which
+      // require captured variables to be effectively final.
+      final AtomicBoolean handled = new AtomicBoolean(false);
+      message
+          .serverContent()
+          .ifPresent(serverContent -> {
+            emitServerContentResponses(serverContent, pendingText, pendingTranscriptions, emitter);
+            handled.set(true);
+          });
+      message
+          .toolCall()
+          .ifPresent(toolCall -> {
+            // Emit pending speech first so a transfer the call starts cannot drop it.
+            pendingTranscriptions.flushBeforeToolCall(emitter);
+            pendingText.flush().ifPresent(emitter::onNext);
+            emitter.onNext(createToolCallResponse(toolCall));
+            handled.set(true);
+          });
+      message
+          .usageMetadata()
+          .ifPresent(usageMetadata -> {
+            logger.debug("Received usage metadata: {}", usageMetadata);
+            emitter.onNext(createUsageMetadataResponse(usageMetadata));
+            handled.set(true);
+          });
+      message
+          .toolCallCancellation()
+          .ifPresent(toolCallCancellation -> {
+            logger.debug("Received tool call cancellation: {}", toolCallCancellation);
+            // TODO: implement proper CFC and thus tool call cancellation handling.
+            handled.set(true);
+          });
+      message
+          .setupComplete()
+          .ifPresent(setupComplete -> {
+            logger.debug("Received setup complete.");
+            handled.set(true);
+          });
 
-          if (!handled.get()) {
-            logger.warn("Received unknown or empty server message.");
-            emitter.onNext(createUnknownMessageResponse());
-          }
-          emitter.onComplete();
-        });
+      if (!handled.get()) {
+        logger.warn("Received unknown or empty server message.");
+        emitter.onNext(createUnknownMessageResponse());
+      }
+      emitter.onComplete();
+    });
   }
 
   /**
-   * Emits the responses for a server content message. Text parts are streamed in partial responses
-   * and collected in {@code pendingText}, which is emitted as one non-partial response when other
-   * content ends it and before the end of the turn or an interruption. Text that arrives with the
-   * end of the turn or an interruption is emitted only in full. The full text reports an
-   * interruption, and no response is emitted just to report it again.
+   * Emits the responses for a server content message. Text is streamed in partial responses and
+   * emitted again in full when other content, the end of the turn or an interruption ends it; text
+   * that arrives with the end of the turn or an interruption is emitted only in full.
+   * Transcriptions get responses of their own, emitted before the full text and the end of the
+   * turn.
    */
   private static void emitServerContentResponses(
       LiveServerContent serverContent,
       PendingText pendingText,
+      PendingTranscriptions pendingTranscriptions,
       ObservableEmitter<LlmResponse> emitter) {
     List<Part> parts = serverContent.modelTurn().flatMap(Content::parts).orElse(ImmutableList.of());
     List<Part> streamedParts = new ArrayList<>();
@@ -217,16 +225,11 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     boolean interruptionInFullText = false;
     if (turnComplete || interrupted) {
       streamedParts.removeIf(GeminiLlmConnection::hasText);
+      pendingTranscriptions.receive(serverContent, emitter);
       Optional<LlmResponse> fullText = pendingText.flush(interrupted);
       fullText.ifPresent(emitter::onNext);
       interruptionInFullText =
           interrupted && fullText.isPresent() && !turnComplete && streamedParts.isEmpty();
-    }
-    boolean hasTranscription =
-        serverContent.inputTranscription().isPresent()
-            || serverContent.outputTranscription().isPresent();
-    if (interruptionInFullText && !hasTranscription) {
-      return;
     }
 
     LlmResponse.Builder builder = LlmResponse.builder();
@@ -237,20 +240,34 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     }
     // Only text is partial: it is emitted again in full.
     boolean streamsText = streamedParts.stream().anyMatch(GeminiLlmConnection::hasText);
-    builder
-        .partial(streamsText)
-        .turnComplete(turnComplete)
-        .interrupted(interruptionInFullText ? null : serverContent.interrupted().orElse(null));
-    if (streamsText && hasTranscription) {
-      // A partial response is not persisted, so the transcriptions get a response of their own.
-      emitter.onNext(builder.build());
-      builder = LlmResponse.builder().partial(false).turnComplete(turnComplete);
-    }
-    emitter.onNext(
+    LlmResponse response =
         builder
-            .inputTranscription(serverContent.inputTranscription().orElse(null))
-            .outputTranscription(serverContent.outputTranscription().orElse(null))
-            .build());
+            .partial(streamsText)
+            .turnComplete(turnComplete)
+            .interrupted(interruptionInFullText ? null : serverContent.interrupted().orElse(null))
+            .build();
+    if (turnComplete || interrupted) {
+      if (!interruptionInFullText) {
+        emitter.onNext(response);
+      }
+      return;
+    }
+    if (response.content().isPresent()) {
+      emitter.onNext(response);
+    }
+    pendingTranscriptions.receive(serverContent, emitter);
+  }
+
+  /**
+   * Returns whether {@code modelName} names a Gemini 3.x Live model, which sends each input
+   * transcription once, in full.
+   */
+  static boolean isGemini3xLive(@Nullable String modelName) {
+    String name = Strings.nullToEmpty(modelName);
+    String modelId = name.substring(name.lastIndexOf('/') + 1);
+    return modelId.startsWith("gemini-3.")
+        && modelId.contains("-live")
+        && !modelId.startsWith("gemini-3.5-live-translate");
   }
 
   /** Returns whether {@code part} has text; an empty string does not count. */
@@ -470,6 +487,146 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
                 logger.warn("Error occurred while closing live transport", closeError);
                 return null; // Suppress error during close
               });
+    }
+  }
+
+  /**
+   * Input and output transcription text that has been streamed in partial responses but not yet
+   * emitted in full.
+   */
+  static final class PendingTranscriptions {
+    private final boolean inputArrivesInFull;
+    private final StringBuilder input = new StringBuilder();
+    private final StringBuilder output = new StringBuilder();
+    // Set on a tool-call flush until new text or a finish arrives, to skip empty finished events.
+    private boolean inputEmittedEarly;
+    private boolean outputEmittedEarly;
+
+    /**
+     * Creates the pending state for one connection.
+     *
+     * @param inputArrivesInFull whether each input transcription is already complete, as Gemini 3.x
+     *     Live models send it
+     */
+    PendingTranscriptions(boolean inputArrivesInFull) {
+      this.inputArrivesInFull = inputArrivesInFull;
+    }
+
+    /**
+     * Streams each transcription chunk in {@code serverContent} in a partial response, and emits
+     * the full text in a finished, non-partial one when the transcription, the generation or the
+     * turn ends, or the model is interrupted.
+     */
+    private void receive(LiveServerContent serverContent, ObservableEmitter<LlmResponse> emitter) {
+      serverContent
+          .inputTranscription()
+          .ifPresent(transcription -> {
+            if (inputArrivesInFull) {
+              transcription
+                  .text()
+                  .filter(text -> !text.isEmpty())
+                  .ifPresent(text -> emitter.onNext(inputResponse(text, /* finished= */ true)));
+            } else {
+              inputEmittedEarly =
+                  stream(
+                      transcription,
+                      input,
+                      inputEmittedEarly,
+                      emitter,
+                      PendingTranscriptions::inputResponse);
+            }
+          });
+      serverContent
+          .outputTranscription()
+          .ifPresent(transcription ->
+              outputEmittedEarly =
+                  stream(
+                      transcription,
+                      output,
+                      outputEmittedEarly,
+                      emitter,
+                      PendingTranscriptions::outputResponse));
+      // The Live API may end a transcription without marking it finished.
+      if (serverContent.interrupted().orElse(false)
+          || serverContent.turnComplete().orElse(false)
+          || serverContent.generationComplete().orElse(false)) {
+        flush(emitter);
+      }
+    }
+
+    /** Emits pending input and output text in full as finished, non-partial responses. */
+    private void flush(ObservableEmitter<LlmResponse> emitter) {
+      flush(input, emitter, PendingTranscriptions::inputResponse);
+      flush(output, emitter, PendingTranscriptions::outputResponse);
+    }
+
+    private static void flush(
+        StringBuilder pending,
+        ObservableEmitter<LlmResponse> emitter,
+        TranscriptionResponseFactory responseFactory) {
+      if (pending.length() > 0) {
+        emitter.onNext(responseFactory.create(pending.toString(), /* finished= */ true));
+        pending.setLength(0);
+      }
+    }
+
+    /**
+     * Emits pending text in full before a tool call and records the early flush so a later finish
+     * with no new text is skipped.
+     */
+    private void flushBeforeToolCall(ObservableEmitter<LlmResponse> emitter) {
+      inputEmittedEarly |= input.length() > 0;
+      outputEmittedEarly |= output.length() > 0;
+      flush(emitter);
+    }
+
+    /**
+     * Streams the chunk in {@code transcription} and emits the accumulated text once finished.
+     * Returns the updated {@code emittedEarly} flag, which stays true only if an early tool-call
+     * flush is still the latest emitted text with no new text or finish since.
+     */
+    private static boolean stream(
+        Transcription transcription,
+        StringBuilder pending,
+        boolean emittedEarly,
+        ObservableEmitter<LlmResponse> emitter,
+        TranscriptionResponseFactory responseFactory) {
+      String chunk = transcription.text().orElse("");
+      if (!chunk.isEmpty()) {
+        pending.append(chunk);
+        emitter.onNext(responseFactory.create(chunk, /* finished= */ false));
+      }
+      if (!transcription.finished().orElse(false)) {
+        return emittedEarly && pending.isEmpty();
+      }
+      // A finish with no new text after a tool-call flush would emit an empty finished event.
+      if (pending.length() > 0 || !emittedEarly) {
+        emitter.onNext(responseFactory.create(pending.toString(), /* finished= */ true));
+      }
+      pending.setLength(0);
+      return false;
+    }
+
+    private static LlmResponse inputResponse(String text, boolean finished) {
+      return LlmResponse.builder()
+          .inputTranscription(transcription(text, finished))
+          .partial(!finished)
+          .build();
+    }
+
+    private static LlmResponse outputResponse(String text, boolean finished) {
+      return LlmResponse.builder()
+          .outputTranscription(transcription(text, finished))
+          .partial(!finished)
+          .build();
+    }
+
+    private static Transcription transcription(String text, boolean finished) {
+      return Transcription.builder().text(text).finished(finished).build();
+    }
+
+    private interface TranscriptionResponseFactory {
+      LlmResponse create(String text, boolean finished);
     }
   }
 

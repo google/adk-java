@@ -476,7 +476,8 @@ public class Gemini extends BaseLlm {
         llmRequest.tools().size(),
         liveConnectConfig.systemInstruction().isPresent());
 
-    return new GeminiLlmConnection(connectLiveTransport(effectiveModelName, liveConnectConfig));
+    return new GeminiLlmConnection(
+        effectiveModelName, connectLiveTransport(effectiveModelName, liveConnectConfig));
   }
 
   /**

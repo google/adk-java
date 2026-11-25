@@ -20,7 +20,15 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.agents.LiveRequestQueue;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
+import com.google.adk.agents.RunConfig.StreamingMode;
+import com.google.adk.events.Event;
 import com.google.adk.models.GeminiLlmConnection.PendingText;
+import com.google.adk.models.GeminiLlmConnection.PendingTranscriptions;
+import com.google.adk.runner.InMemoryRunner;
+import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -28,6 +36,7 @@ import com.google.genai.types.ExecutableCode;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Language;
+import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.LiveSendClientContentParameters;
 import com.google.genai.types.LiveSendRealtimeInputParameters;
 import com.google.genai.types.LiveSendToolResponseParameters;
@@ -42,7 +51,9 @@ import com.google.genai.types.UsageMetadata;
 import io.reactivex.rxjava3.observers.TestObserver;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -155,7 +166,9 @@ public final class GeminiLlmConnectionTest {
     LiveServerMessage message = LiveServerMessage.builder().serverContent(serverContent).build();
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
 
     // The text of the interrupted message is emitted in full and reports the interruption.
     testObserver.assertValueCount(1);
@@ -180,7 +193,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
 
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
@@ -201,7 +216,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
 
     testObserver.assertValueCount(2);
     testObserver.assertComplete();
@@ -222,7 +239,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
 
     // The text is emitted in full before the response that completes the turn.
     testObserver.assertValueCount(2);
@@ -248,7 +267,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
 
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
@@ -267,7 +288,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
 
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
@@ -299,7 +322,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
 
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
@@ -328,7 +353,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
     LlmResponse response = testObserver.values().get(0);
@@ -351,7 +378,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
     testObserver.assertNoValues();
     testObserver.assertComplete();
   }
@@ -365,7 +394,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
 
     testObserver.assertNoValues();
     testObserver.assertComplete();
@@ -377,7 +408,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
 
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
@@ -409,7 +442,9 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(
+            message, new PendingText(), new PendingTranscriptions(/* inputArrivesInFull= */ false))
+        .subscribe(testObserver);
 
     testObserver.assertValueCount(3);
     testObserver.assertComplete();
@@ -505,7 +540,8 @@ public final class GeminiLlmConnectionTest {
                     LiveServerContent.builder()
                         .interrupted(true)
                         .outputTranscription(Transcription.builder().text("Hel").build()))))
-        .containsExactly("partial text:Hel", "text:Hel interrupted", "output:Hel")
+        .containsExactly(
+            "partial text:Hel", "partial output:Hel", "finished output:Hel", "text:Hel interrupted")
         .inOrder();
   }
 
@@ -519,7 +555,8 @@ public final class GeminiLlmConnectionTest {
                     LiveServerContent.builder()
                         .interrupted(true)
                         .outputTranscription(Transcription.builder().text("Hel").build()))))
-        .containsExactly("output:Hel interrupted");
+        .containsExactly("partial output:Hel", "finished output:Hel", "interrupted")
+        .inOrder();
     assertThat(
             convertAll(
                 serverContent(
@@ -547,7 +584,10 @@ public final class GeminiLlmConnectionTest {
                     Content.builder().role("model").parts(Part.fromText("Run"), code).build()));
 
     List<LlmResponse> responses =
-        GeminiLlmConnection.convertToServerResponse(message, new PendingText())
+        GeminiLlmConnection.convertToServerResponse(
+                message,
+                new PendingText(),
+                new PendingTranscriptions(/* inputArrivesInFull= */ false))
             .toList()
             .blockingGet();
 
@@ -623,14 +663,14 @@ public final class GeminiLlmConnectionTest {
 
   @Test
   public void convertToServerResponse_textWithTranscription_emitsTranscriptionSeparately() {
-    // The partial text response is not persisted, so the transcription is not put on it.
+    // Each transcription chunk gets a response of its own.
     assertThat(
             convertAll(
                 serverContent(
                     LiveServerContent.builder()
                         .modelTurn(modelContent(Part.fromText("Hel")))
                         .inputTranscription(Transcription.builder().text("Hi").build()))))
-        .containsExactly("partial text:Hel", "input:Hi")
+        .containsExactly("partial text:Hel", "partial input:Hi")
         .inOrder();
   }
 
@@ -659,7 +699,7 @@ public final class GeminiLlmConnectionTest {
   public void receive_textChunks_streamedAsPartialAndEmittedInFullAtTurnComplete() {
     // The Live API may leave turnComplete out of a message that does not end the turn.
     CompletableFuture<GeminiLiveTransport> transportFuture = new CompletableFuture<>();
-    GeminiLlmConnection connection = new GeminiLlmConnection(transportFuture);
+    GeminiLlmConnection connection = new GeminiLlmConnection("gemini-live", transportFuture);
     TestSubscriber<LlmResponse> subscriber = connection.receive().test();
 
     transportFuture.complete(
@@ -686,7 +726,7 @@ public final class GeminiLlmConnectionTest {
     // live run with no client close still terminates.
     FakeTransport transport = new FakeTransport(/* endStreamOnReceive= */ true);
     GeminiLlmConnection connection =
-        new GeminiLlmConnection(CompletableFuture.completedFuture(transport));
+        new GeminiLlmConnection("gemini-live", CompletableFuture.completedFuture(transport));
 
     TestSubscriber<LlmResponse> subscriber = connection.receive().test();
     subscriber.awaitDone(5, TimeUnit.SECONDS);
@@ -699,7 +739,7 @@ public final class GeminiLlmConnectionTest {
   public void close_afterTransportStreamEnd_isNoOp() {
     FakeTransport transport = new FakeTransport(/* endStreamOnReceive= */ true);
     GeminiLlmConnection connection =
-        new GeminiLlmConnection(CompletableFuture.completedFuture(transport));
+        new GeminiLlmConnection("gemini-live", CompletableFuture.completedFuture(transport));
     TestSubscriber<LlmResponse> subscriber = connection.receive().test();
     subscriber.awaitDone(5, TimeUnit.SECONDS);
     subscriber.assertComplete();
@@ -844,13 +884,379 @@ public final class GeminiLlmConnectionTest {
     }
   }
 
-  /** Converts {@code messages} in order with one {@link PendingText}, as a connection does. */
+  @Test
+  public void runLive_transcriptionChunks_savesOneFinishedTranscriptionEach() throws Exception {
+    ImmutableList<String> saved =
+        savedTranscriptions(
+            "gemini-live-2.5-flash-native-audio",
+            serverContent(LiveServerContent.builder().inputTranscription(chunk("Where is"))),
+            serverContent(
+                LiveServerContent.builder()
+                    .inputTranscription(
+                        Transcription.builder().text(" my order?").finished(true).build())),
+            serverContent(LiveServerContent.builder().outputTranscription(chunk("It shipped"))),
+            serverContent(LiveServerContent.builder().outputTranscription(chunk(" today."))),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+
+    assertThat(saved)
+        .containsExactly("finished input:Where is my order?", "finished output:It shipped today.")
+        .inOrder();
+  }
+
+  @Test
+  public void runLive_gemini3xLiveInputTranscription_isSavedAsFinishedRightAway() throws Exception {
+    // Gemini 3.x Live sends the input transcription once, in full, and may never mark it finished.
+    ImmutableList<String> saved =
+        savedTranscriptions(
+            "gemini-3.8-live",
+            serverContent(
+                LiveServerContent.builder().inputTranscription(chunk("Tell me the secret"))),
+            serverContent(LiveServerContent.builder().outputTranscription(chunk("No."))));
+
+    assertThat(saved).contains("finished input:Tell me the secret");
+  }
+
+  @Test
+  public void runLive_transferBeforeSpeechIsMarkedFinished_targetAgentHistoryHasTheSpeech()
+      throws Exception {
+    CompletableFuture<GeminiLiveTransport> rootConnecting = new CompletableFuture<>();
+    CompletableFuture<LiveSendClientContentParameters> refundHistory = new CompletableFuture<>();
+    FakeTransport refundTransport =
+        new FakeTransport(/* endStreamOnReceive= */ false) {
+          @Override
+          public CompletableFuture<Void> sendClientContent(LiveSendClientContentParameters params) {
+            refundHistory.complete(params);
+            return super.sendClientContent(params);
+          }
+        };
+    Iterator<CompletableFuture<GeminiLiveTransport>> connections =
+        ImmutableList.of(
+                rootConnecting,
+                CompletableFuture.<GeminiLiveTransport>completedFuture(refundTransport))
+            .iterator();
+    Gemini gemini =
+        new Gemini("gemini-live-2.5-flash-native-audio", "fake-api-key") {
+          @Override
+          protected CompletableFuture<GeminiLiveTransport> connectLiveTransport(
+              String name, LiveConnectConfig config) {
+            return connections.next();
+          }
+        };
+    LlmAgent refund = LlmAgent.builder().name("refund").model(gemini).build();
+    InMemoryRunner runner =
+        new InMemoryRunner(LlmAgent.builder().name("root").model(gemini).subAgents(refund).build());
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> events =
+        runner
+            .runLive(
+                session,
+                liveRequestQueue,
+                RunConfig.builder().setStreamingMode(StreamingMode.BIDI).build())
+            .test();
+    // The transfer call arrives before the user's speech is marked finished.
+    rootConnecting.complete(
+        new FakeTransport(
+            /* endStreamOnReceive= */ false,
+            ImmutableList.of(
+                serverContent(
+                    LiveServerContent.builder().inputTranscription(chunk("I want a refund."))),
+                toolCallMessage(
+                    FunctionCall.builder()
+                        .id("call-1")
+                        .name("transfer_to_agent")
+                        .args(ImmutableMap.of("agent_name", "refund"))
+                        .build()))) {
+          @Override
+          public CompletableFuture<Void> receive(
+              Consumer<LiveServerMessage> onMessage, Runnable onStreamEnd) {
+            // A real transport delivers messages on its own thread after setup.
+            return CompletableFuture.runAsync(() -> {
+              var unused = super.receive(onMessage, onStreamEnd);
+            });
+          }
+        });
+    LiveSendClientContentParameters history = refundHistory.get(5, TimeUnit.SECONDS);
+    liveRequestQueue.close();
+    events.awaitDone(5, TimeUnit.SECONDS).assertComplete();
+
+    assertThat(texts(history)).contains("I want a refund.");
+  }
+
+  @Test
+  public void convertToServerResponse_transcriptionChunks_streamedAsPartialAndEmittedInFull() {
+    assertThat(
+            convertAll(
+                serverContent(LiveServerContent.builder().inputTranscription(chunk("Hel"))),
+                serverContent(
+                    LiveServerContent.builder()
+                        .inputTranscription(
+                            Transcription.builder().text("lo").finished(true).build())),
+                serverContent(LiveServerContent.builder().inputTranscription(chunk("Again")))))
+        .containsExactly(
+            "partial input:Hel", "partial input:lo", "finished input:Hello", "partial input:Again")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_transcription_setsPartialAndFinishedExplicitly() {
+    PendingTranscriptions pendingTranscriptions =
+        new PendingTranscriptions(/* inputArrivesInFull= */ false);
+    List<LlmResponse> responses =
+        GeminiLlmConnection.convertToServerResponse(
+                serverContent(
+                    LiveServerContent.builder()
+                        .outputTranscription(
+                            Transcription.builder().text("Hi").finished(true).build())),
+                new PendingText(),
+                pendingTranscriptions)
+            .toList()
+            .blockingGet();
+
+    assertThat(responses).hasSize(2);
+    assertThat(responses.get(0).partial()).hasValue(true);
+    assertThat(responses.get(0).outputTranscription().get().finished()).hasValue(false);
+    assertThat(responses.get(1).partial()).hasValue(false);
+    assertThat(responses.get(1).outputTranscription().get().finished()).hasValue(true);
+  }
+
+  @Test
+  public void convertToServerResponse_turnSignal_flushesPendingTranscriptionsBeforeIt() {
+    assertThat(
+            convertAll(
+                serverContent(LiveServerContent.builder().inputTranscription(chunk("Hi"))),
+                serverContent(LiveServerContent.builder().outputTranscription(chunk("Hel"))),
+                serverContent(
+                    LiveServerContent.builder()
+                        .outputTranscription(chunk("lo"))
+                        .turnComplete(true))))
+        .containsExactly(
+            "partial input:Hi",
+            "partial output:Hel",
+            "partial output:lo",
+            "finished input:Hi",
+            "finished output:Hello",
+            "turnComplete")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_turnComplete_emitsTranscriptionsBeforeFullText() {
+    assertThat(
+            convertAll(
+                serverContent(LiveServerContent.builder().inputTranscription(chunk("Hi"))),
+                modelTurn(Part.fromText("Hel")),
+                serverContent(LiveServerContent.builder().turnComplete(true))))
+        .containsExactly(
+            "partial input:Hi", "partial text:Hel", "finished input:Hi", "text:Hel", "turnComplete")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_toolCall_emitsPendingTranscriptionsBeforeTheCall() {
+    assertThat(
+            convertAll(
+                serverContent(LiveServerContent.builder().inputTranscription(chunk("Check"))),
+                serverContent(LiveServerContent.builder().outputTranscription(chunk("One moment"))),
+                toolCallMessage(FunctionCall.builder().name("tool").build()),
+                serverContent(LiveServerContent.builder().turnComplete(true))))
+        .containsExactly(
+            "partial input:Check",
+            "partial output:One moment",
+            "finished input:Check",
+            "finished output:One moment",
+            "call:tool",
+            "turnComplete")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_finishAfterToolCall_emitsOnlyTextThatFollowedTheCall() {
+    assertThat(
+            convertAll(
+                serverContent(LiveServerContent.builder().inputTranscription(chunk("Check"))),
+                toolCallMessage(FunctionCall.builder().name("tool").build()),
+                serverContent(
+                    LiveServerContent.builder()
+                        .inputTranscription(Transcription.builder().finished(true).build()))))
+        .containsExactly("partial input:Check", "finished input:Check", "call:tool")
+        .inOrder();
+    assertThat(
+            convertAll(
+                serverContent(LiveServerContent.builder().outputTranscription(chunk("One"))),
+                toolCallMessage(FunctionCall.builder().name("tool").build()),
+                serverContent(
+                    LiveServerContent.builder()
+                        .outputTranscription(
+                            Transcription.builder().text(" more").finished(true).build()))))
+        .containsExactly(
+            "partial output:One",
+            "finished output:One",
+            "call:tool",
+            "partial output: more",
+            "finished output: more")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_generationCompleteOrInterrupted_flushesTranscriptions() {
+    assertThat(
+            convertAll(
+                serverContent(LiveServerContent.builder().outputTranscription(chunk("Hel"))),
+                serverContent(
+                    LiveServerContent.builder()
+                        .outputTranscription(chunk("lo"))
+                        .generationComplete(true))))
+        .containsExactly("partial output:Hel", "partial output:lo", "finished output:Hello")
+        .inOrder();
+    assertThat(
+            convertAll(
+                serverContent(LiveServerContent.builder().outputTranscription(chunk("Hel"))),
+                serverContent(LiveServerContent.builder().generationComplete(true)),
+                serverContent(LiveServerContent.builder().turnComplete(true))))
+        .containsExactly("partial output:Hel", "finished output:Hel", "turnComplete")
+        .inOrder();
+    assertThat(
+            convertAll(
+                serverContent(LiveServerContent.builder().outputTranscription(chunk("Hel"))),
+                serverContent(LiveServerContent.builder().interrupted(true))))
+        .containsExactly("partial output:Hel", "finished output:Hel", "interrupted")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_finishedWithoutPendingText_emitsEmptyFinishedTranscription() {
+    // As in ADK Python, a finished signal gets a full response, even with no text.
+    assertThat(
+            convertAll(
+                serverContent(
+                    LiveServerContent.builder()
+                        .outputTranscription(Transcription.builder().finished(true).build()))))
+        .containsExactly("finished output:");
+  }
+
+  @Test
+  public void convertToServerResponse_gemini3xLiveInput_isEmittedOnlyInFull() {
+    assertThat(
+            convertAll(
+                new PendingTranscriptions(/* inputArrivesInFull= */ true),
+                serverContent(LiveServerContent.builder().inputTranscription(chunk("Hello"))),
+                serverContent(LiveServerContent.builder().outputTranscription(chunk("Hi"))),
+                serverContent(LiveServerContent.builder().turnComplete(true))))
+        .containsExactly(
+            "finished input:Hello", "partial output:Hi", "finished output:Hi", "turnComplete")
+        .inOrder();
+    assertThat(
+            convertAll(
+                new PendingTranscriptions(/* inputArrivesInFull= */ true),
+                serverContent(
+                    LiveServerContent.builder()
+                        .inputTranscription(Transcription.builder().finished(true).build()))))
+        .isEmpty();
+  }
+
+  @Test
+  public void isGemini3xLive_matchesGemini3LiveModelsExceptLiveTranslate() {
+    assertThat(GeminiLlmConnection.isGemini3xLive("gemini-3.8-live")).isTrue();
+    assertThat(
+            GeminiLlmConnection.isGemini3xLive(
+                "projects/p/locations/l/publishers/google/models/gemini-3.1-flash-live-preview"))
+        .isTrue();
+    assertThat(GeminiLlmConnection.isGemini3xLive("models/gemini-3.8-live")).isTrue();
+    assertThat(GeminiLlmConnection.isGemini3xLive("apigee/v1/gemini-3.8-live")).isTrue();
+    assertThat(GeminiLlmConnection.isGemini3xLive("gemini-3.5-live-translate")).isFalse();
+    assertThat(GeminiLlmConnection.isGemini3xLive("gemini-live-2.5-flash-native-audio")).isFalse();
+    assertThat(GeminiLlmConnection.isGemini3xLive("gemini-3.8-flash")).isFalse();
+    assertThat(GeminiLlmConnection.isGemini3xLive(null)).isFalse();
+  }
+
+  /**
+   * Runs an agent live through {@link InMemoryRunner} on a Gemini named {@code modelName} whose
+   * transport delivers {@code messages}, and describes the transcriptions the session saved.
+   */
+  private static ImmutableList<String> savedTranscriptions(
+      String modelName, LiveServerMessage... messages) throws Exception {
+    CompletableFuture<GeminiLiveTransport> connecting = new CompletableFuture<>();
+    Gemini gemini =
+        new Gemini(modelName, "fake-api-key") {
+          @Override
+          protected CompletableFuture<GeminiLiveTransport> connectLiveTransport(
+              String name, LiveConnectConfig config) {
+            return connecting;
+          }
+        };
+    InMemoryRunner runner =
+        new InMemoryRunner(LlmAgent.builder().name("agent").model(gemini).build());
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+
+    TestSubscriber<Event> events =
+        runner
+            .runLive(
+                session,
+                new LiveRequestQueue(),
+                RunConfig.builder().setStreamingMode(StreamingMode.BIDI).build())
+            .test();
+    // runLive subscribes to the connection's responses before the transport connects.
+    connecting.complete(
+        new FakeTransport(/* endStreamOnReceive= */ true, ImmutableList.copyOf(messages)));
+    events.awaitDone(5, TimeUnit.SECONDS).assertComplete();
+
+    Session saved =
+        runner
+            .sessionService()
+            .getSession(runner.appName(), "user", session.id(), Optional.empty())
+            .blockingGet();
+    return describe(
+        saved.immutableEvents().stream()
+            .filter(event ->
+                event.inputTranscription().isPresent() || event.outputTranscription().isPresent())
+            .map(GeminiLlmConnectionTest::transcriptionsOf)
+            .collect(toImmutableList()));
+  }
+
+  private static LlmResponse transcriptionsOf(Event event) {
+    return LlmResponse.builder()
+        .inputTranscription(event.inputTranscription().orElse(null))
+        .outputTranscription(event.outputTranscription().orElse(null))
+        .partial(event.partial().orElse(null))
+        .build();
+  }
+
+  private static Transcription chunk(String text) {
+    return Transcription.builder().text(text).build();
+  }
+
+  private static LiveServerMessage toolCallMessage(FunctionCall functionCall) {
+    return LiveServerMessage.builder()
+        .toolCall(
+            LiveServerToolCall.builder().functionCalls(ImmutableList.of(functionCall)).build())
+        .build();
+  }
+
+  /** Returns the text of all parts in the turns of {@code clientContent}. */
+  private static ImmutableList<String> texts(LiveSendClientContentParameters clientContent) {
+    return clientContent.turns().orElse(ImmutableList.of()).stream()
+        .flatMap(turn -> turn.parts().orElse(ImmutableList.of()).stream())
+        .flatMap(part -> part.text().stream())
+        .collect(toImmutableList());
+  }
+
+  /** Converts {@code messages} in order with fresh pending state, as a connection does. */
   private static ImmutableList<String> convertAll(LiveServerMessage... messages) {
+    return convertAll(new PendingTranscriptions(/* inputArrivesInFull= */ false), messages);
+  }
+
+  /** Converts {@code messages} in order with the given pending state, as a connection does. */
+  private static ImmutableList<String> convertAll(
+      PendingTranscriptions pendingTranscriptions, LiveServerMessage... messages) {
     PendingText pendingText = new PendingText();
     List<LlmResponse> responses = new ArrayList<>();
     for (LiveServerMessage message : messages) {
       responses.addAll(
-          GeminiLlmConnection.convertToServerResponse(message, pendingText).toList().blockingGet());
+          GeminiLlmConnection.convertToServerResponse(message, pendingText, pendingTranscriptions)
+              .toList()
+              .blockingGet());
     }
     return describe(responses);
   }
@@ -873,32 +1279,35 @@ public final class GeminiLlmConnectionTest {
    */
   private static ImmutableList<String> describe(List<LlmResponse> responses) {
     return responses.stream()
-        .map(
-            response -> {
-              List<String> words = new ArrayList<>();
-              if (response.partial().orElse(false)) {
-                words.add("partial");
-              }
-              response.content().flatMap(Content::parts).orElse(ImmutableList.of()).stream()
-                  .map(GeminiLlmConnectionTest::describePart)
-                  .forEach(words::add);
-              response
-                  .inputTranscription()
-                  .flatMap(Transcription::text)
-                  .ifPresent(text -> words.add("input:" + text));
-              response
-                  .outputTranscription()
-                  .flatMap(Transcription::text)
-                  .ifPresent(text -> words.add("output:" + text));
-              if (response.turnComplete().orElse(false)) {
-                words.add("turnComplete");
-              }
-              if (response.interrupted().orElse(false)) {
-                words.add("interrupted");
-              }
-              return String.join(" ", words);
-            })
+        .map(response -> {
+          List<String> words = new ArrayList<>();
+          if (response.partial().orElse(false)) {
+            words.add("partial");
+          }
+          response.content().flatMap(Content::parts).orElse(ImmutableList.of()).stream()
+              .map(GeminiLlmConnectionTest::describePart)
+              .forEach(words::add);
+          response
+              .inputTranscription()
+              .ifPresent(t -> words.add(describeTranscription("input:", t)));
+          response
+              .outputTranscription()
+              .ifPresent(t -> words.add(describeTranscription("output:", t)));
+          if (response.turnComplete().orElse(false)) {
+            words.add("turnComplete");
+          }
+          if (response.interrupted().orElse(false)) {
+            words.add("interrupted");
+          }
+          return String.join(" ", words);
+        })
         .collect(toImmutableList());
+  }
+
+  private static String describeTranscription(String label, Transcription transcription) {
+    return (transcription.finished().orElse(false) ? "finished " : "")
+        + label
+        + transcription.text().orElse("");
   }
 
   private static String describePart(Part part) {
@@ -934,7 +1343,7 @@ public final class GeminiLlmConnectionTest {
    * A minimal in-process {@link GeminiLiveTransport} that delivers the given messages, records
    * sends and closes and can end its stream.
    */
-  private static final class FakeTransport implements GeminiLiveTransport {
+  private static class FakeTransport implements GeminiLiveTransport {
     private final boolean endStreamOnReceive;
     private final ImmutableList<LiveServerMessage> messages;
     final AtomicInteger closeCount = new AtomicInteger();
@@ -990,7 +1399,7 @@ public final class GeminiLlmConnectionTest {
   private static final class LiveConnectionFixture implements AutoCloseable {
     final FakeTransport transport = new FakeTransport(/* endStreamOnReceive= */ false);
     final GeminiLlmConnection connection =
-        new GeminiLlmConnection(CompletableFuture.completedFuture(transport));
+        new GeminiLlmConnection("gemini-live", CompletableFuture.completedFuture(transport));
 
     @Override
     public void close() {
