@@ -38,9 +38,14 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.subjects.CompletableSubject;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -87,6 +92,15 @@ public final class StreamingToolTest {
     }
 
     private StreamingTools() {}
+  }
+
+  /** A streaming tool that never completes and records whether it was canceled. */
+  public static final class EndlessWatch {
+    final CountDownLatch canceled = new CountDownLatch(1);
+
+    public Flowable<ImmutableMap<String, Object>> watchForever() {
+      return Flowable.<ImmutableMap<String, Object>>never().doOnCancel(canceled::countDown);
+    }
   }
 
   public static ImmutableMap<String, Object> getWeather(String location, String unit) {
@@ -260,7 +274,8 @@ public final class StreamingToolTest {
             .turnComplete(false)
             .build();
     LlmResponse response2 = LlmResponse.builder().turnComplete(true).build();
-    TestLlm testLlm = new TestLlm(ImmutableList.of(response1, response2));
+    CompletableSubject modelDone = CompletableSubject.create();
+    TestLlm testLlm = openModelStream(modelDone, response1, response2);
     LlmAgent rootAgent =
         LlmAgent.builder()
             .name("root_agent")
@@ -275,34 +290,23 @@ public final class StreamingToolTest {
     LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
     Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
 
-    // Send initial request to trigger the tool, followed by video frames for the tool to process.
+    // Send initial request to trigger the tool.
     liveRequestQueue.send(
         LiveRequest.builder()
             .content(Content.fromParts(Part.fromText("Monitor the video stream")))
             .build());
-    liveRequestQueue.send(
-        LiveRequest.builder()
-            .blob(
-                Part.fromBytes("fake_jpeg_data_1".getBytes(UTF_8), "image/jpeg").inlineData().get())
-            .build());
-    liveRequestQueue.send(
-        LiveRequest.builder()
-            .blob(
-                Part.fromBytes("fake_jpeg_data_2".getBytes(UTF_8), "image/jpeg").inlineData().get())
-            .build());
-    liveRequestQueue.send(
-        LiveRequest.builder()
-            .blob(
-                Part.fromBytes("fake_jpeg_data_3".getBytes(UTF_8), "image/jpeg").inlineData().get())
-            .build());
 
     // Run the agent and collect events.
-    List<Event> resEvents =
-        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
+    TestSubscriber<Event> run =
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).test();
+    assertThat(awaitToolStarted(run, "monitorVideoStream")).isTrue();
+    // The tool has started, so it reads video frames sent from this point on.
+    sendVideoFrames(liveRequestQueue, 3);
 
     // Wait for the tool to send its 3 results back to the LLM
     assertThat(testLlm.waitForStreamingToolResults("monitorVideoStream", 3, Duration.ofSeconds(20)))
         .isTrue();
+    List<Event> resEvents = finishRun(run, liveRequestQueue, modelDone);
     // Assert that the function call was made.
     boolean functionCallFound =
         resEvents.stream()
@@ -344,6 +348,52 @@ public final class StreamingToolTest {
             "Function monitorVideoStream returned: {people_count_alert=Processed frame: detected 2"
                 + " people}")
         .inOrder();
+  }
+
+  /**
+   * Returns a model whose live stream sends {@code responses} and stays open until {@code done}.
+   */
+  private static TestLlm openModelStream(CompletableSubject done, LlmResponse... responses) {
+    return new TestLlm(
+        () -> Flowable.fromArray(responses).concatWith(done.<LlmResponse>toFlowable()));
+  }
+
+  /**
+   * Waits for the run to emit the response to the call that started {@code toolName}, and returns
+   * whether it did.
+   */
+  private static boolean awaitToolStarted(TestSubscriber<Event> run, String toolName)
+      throws InterruptedException {
+    Instant deadline = Instant.now().plusSeconds(20);
+    while (Instant.now().isBefore(deadline)) {
+      if (run.values().stream()
+          .flatMap(event -> event.functionResponses().stream())
+          .anyMatch(response -> response.name().orElse("").equals(toolName))) {
+        return true;
+      }
+      Thread.sleep(10);
+    }
+    return false;
+  }
+
+  /**
+   * Closes the queue and the model stream, waits for the run to complete, and returns its events.
+   */
+  private static List<Event> finishRun(
+      TestSubscriber<Event> run, LiveRequestQueue liveRequestQueue, CompletableSubject modelDone)
+      throws InterruptedException {
+    liveRequestQueue.close();
+    modelDone.onComplete();
+    assertThat(run.await(20, TimeUnit.SECONDS)).isTrue();
+    run.assertComplete().assertNoErrors();
+    return run.values();
+  }
+
+  private static void sendVideoFrames(LiveRequestQueue liveRequestQueue, int count) {
+    for (int i = 1; i <= count; i++) {
+      liveRequestQueue.realtime(
+          Part.fromBytes(("fake_jpeg_data_" + i).getBytes(UTF_8), "image/jpeg").inlineData().get());
+    }
   }
 
   @Test
@@ -451,6 +501,59 @@ public final class StreamingToolTest {
   }
 
   @Test
+  public void runLive_modelStreamEnds_stopsStreamingTools() throws Exception {
+    EndlessWatch watch = new EndlessWatch();
+    CompletableSubject modelDone = CompletableSubject.create();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> run = startWatch(watch, modelDone, liveRequestQueue);
+
+    List<Event> unused = finishRun(run, liveRequestQueue, modelDone);
+
+    assertThat(watch.canceled.getCount()).isEqualTo(0);
+  }
+
+  @Test
+  public void runLive_callerCancels_stopsStreamingTools() throws Exception {
+    EndlessWatch watch = new EndlessWatch();
+    TestSubscriber<Event> run =
+        startWatch(watch, CompletableSubject.create(), new LiveRequestQueue());
+
+    run.cancel();
+
+    assertThat(watch.canceled.getCount()).isEqualTo(0);
+  }
+
+  /** Starts a run where the model calls {@code watch}'s tool and waits until the tool runs. */
+  private static TestSubscriber<Event> startWatch(
+      EndlessWatch watch, CompletableSubject modelDone, LiveRequestQueue liveRequestQueue)
+      throws InterruptedException {
+    TestLlm testLlm =
+        openModelStream(
+            modelDone,
+            LlmResponse.builder()
+                .content(
+                    Content.builder()
+                        .role("model")
+                        .parts(Part.fromFunctionCall("watchForever", ImmutableMap.of()))
+                        .build())
+                .build(),
+            LlmResponse.builder().turnComplete(true).build());
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("root_agent")
+            .model(testLlm)
+            .tools(ImmutableList.of(FunctionTool.create(watch, "watchForever")))
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent);
+    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    TestSubscriber<Event> run =
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).test();
+    assertThat(awaitToolStarted(run, "watchForever")).isTrue();
+    assertThat(watch.canceled.getCount()).isEqualTo(1);
+    return run;
+  }
+
+  @Test
   public void runLive_streamingTool_responsesAreSentAsUserContentToLlm() throws Exception {
     Part functionCall =
         Part.builder()
@@ -468,7 +571,8 @@ public final class StreamingToolTest {
             .build();
     LlmResponse response2 = LlmResponse.builder().turnComplete(true).build();
 
-    TestLlm testLlm = new TestLlm(ImmutableList.of(response1, response2));
+    CompletableSubject modelDone = CompletableSubject.create();
+    TestLlm testLlm = openModelStream(modelDone, response1, response2);
 
     LlmAgent rootAgent =
         LlmAgent.builder()
@@ -489,12 +593,13 @@ public final class StreamingToolTest {
 
     Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
 
-    List<Event> resEvents =
-        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
+    TestSubscriber<Event> run =
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).test();
 
     // Wait for the tool to send its 3 results back to the LLM
     assertThat(testLlm.waitForStreamingToolResults("monitorStockPrice", 3, Duration.ofSeconds(20)))
         .isTrue();
+    List<Event> resEvents = finishRun(run, liveRequestQueue, modelDone);
 
     assertThat(resEvents).isNotNull();
     assertThat(resEvents).isNotEmpty();

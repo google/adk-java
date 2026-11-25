@@ -56,6 +56,7 @@ import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.processors.PublishProcessor;
 import io.reactivex.rxjava3.schedulers.TestScheduler;
+import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
 import java.util.Map;
@@ -179,10 +180,11 @@ public final class AgentTransferTest {
     Content transferCallContent = Content.fromParts(createTransferCallPart("sub_agent_1"));
     Content response1 = Content.fromParts(Part.fromText("response1"));
 
+    CompletableSubject subAgentDone = CompletableSubject.create();
     TestLlm testLlm =
         createTestLlm(
             Flowable.just(createLlmResponse(transferCallContent)),
-            Flowable.just(createLlmResponse(response1)));
+            Flowable.just(createLlmResponse(response1)).concatWith(subAgentDone.toFlowable()));
 
     LlmAgent subAgent1 = createTestAgentBuilder(testLlm).name("sub_agent_1").build();
     LlmAgent rootAgent =
@@ -201,6 +203,11 @@ public final class AgentTransferTest {
             .runLive(invocationContext.session(), liveRequestQueue, RunConfig.builder().build())
             .test();
     liveRequestQueue.content(Content.fromParts(Part.fromText("hi")));
+    testSubscriber.awaitCount(3).assertValueCount(3);
+    // Counted while the sub-agent's call is still up, so only the transfer has closed one.
+    long closedConnectionsCount =
+        testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose).count();
+    subAgentDone.onComplete();
     testSubscriber.await();
 
     // Assert
@@ -211,10 +218,10 @@ public final class AgentTransferTest {
             "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1: response1")
         .inOrder();
-
-    long closedConnectionsCount =
-        testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose).count();
     assertThat(closedConnectionsCount).isEqualTo(1);
+    // The sub-agent's call closes when its model stream ends.
+    assertThat(testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose).count())
+        .isEqualTo(2);
   }
 
   @Test

@@ -33,6 +33,7 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.plugins.BasePlugin;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
@@ -43,6 +44,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
@@ -50,6 +52,7 @@ import io.reactivex.rxjava3.processors.PublishProcessor;
 import io.reactivex.rxjava3.schedulers.TestScheduler;
 import io.reactivex.rxjava3.subscribers.DisposableSubscriber;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -133,6 +136,42 @@ public final class BaseLlmFlowCancelTest {
     testSubscriber.assertError(IllegalStateException.class);
     assertThat(testLlm.getLiveRequestHistory())
         .containsExactly(LiveRequest.builder().close(true).build());
+  }
+
+  @Test
+  public void runLive_modelStreamEnds_closesConnectionAndStopsSending() throws Exception {
+    PublishProcessor<LlmResponse> responses = PublishProcessor.create();
+    CountDownLatch subscribed = new CountDownLatch(1);
+    TestLlm testLlm =
+        createTestLlm(() -> responses.doOnSubscribe(unused -> subscribed.countDown()));
+    LlmAgent agent = createTestAgentBuilder(testLlm).executor(Runnable::run).build();
+    List<LiveRequest> sentBeforeAfterRun = new ArrayList<>();
+    BasePlugin plugin =
+        new BasePlugin("record_after_run") {
+          @Override
+          public Completable afterRunCallback(InvocationContext invocationContext) {
+            sentBeforeAfterRun.addAll(testLlm.getLiveRequestHistory());
+            return Completable.complete();
+          }
+        };
+    InMemoryRunner runner = new InMemoryRunner(agent, "test_app", ImmutableList.of(plugin));
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+    assertThat(subscribed.await(5, SECONDS)).isTrue();
+    // End after subscribe returns, like a real model stream. A stream ending inside subscribe
+    // (e.g. Flowable.empty()) closes before afterRun even with doFinally.
+    responses.onComplete();
+    assertThat(testSubscriber.await(5, SECONDS)).isTrue();
+    liveRequestQueue.content(Content.fromParts(Part.fromText("after the stream ended")));
+
+    testSubscriber.assertComplete();
+    assertThat(testLlm.getLiveRequestHistory())
+        .containsExactly(LiveRequest.builder().close(true).build());
+    // The connection closes before completion reaches downstream, so afterRun sees the close.
+    assertThat(sentBeforeAfterRun).containsExactly(LiveRequest.builder().close(true).build());
   }
 
   @Test

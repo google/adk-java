@@ -618,8 +618,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
   }
 
   /**
-   * Stops the streaming tools an agent started so they no longer send to the live request queue
-   * read by the next agent's model, as in ADK Python.
+   * Stops the streaming tools an agent started when its live run ends or hands off, so they do not
+   * keep sending to a live request queue that nobody reads or that the next agent's model reads,
+   * matching ADK Python.
    */
   private static void stopStreamingTools(InvocationContext context) {
     for (ActiveStreamingTool tool : context.activeStreamingTools().values()) {
@@ -836,8 +837,14 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     }
                     return events;
                   })
+                  // Also closes when the model stream ends, stopping the send loop as in ADK
+                  // Python. Unlike doFinally, doOnTerminate runs before downstream sees
+                  // termination.
+                  .doOnTerminate(closeConnection)
                   .doOnCancel(closeConnection)
-                  .doOnError(error -> closeConnection.run());
+                  // Also stops the run's streaming tools however it ends, as in ADK Python.
+                  .doOnTerminate(() -> stopStreamingTools(invocationContext))
+                  .doOnCancel(() -> stopStreamingTools(invocationContext));
 
           return Tracing.traceFlowable(callLlmContext, span, () -> receiveFlow)
               .compose(Tracing.withContext(spanContext));

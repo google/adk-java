@@ -48,7 +48,9 @@ import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.processors.UnicastProcessor;
+import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -137,6 +139,9 @@ public final class EndInvocationActionTest {
             Content.fromParts(Part.fromFunctionCall("end_invocation", ImmutableMap.of()))));
     responses.onNext(createLlmResponse(Content.fromParts(Part.fromText("still here"))));
     liveRequestQueue.content(Content.fromParts(Part.fromText("next turn")));
+    // The call is still up: the next turn reached the model and no connection was closed.
+    assertThat(testLlm.waitForLiveContentText("next turn", Duration.ofSeconds(5))).isTrue();
+    assertThat(testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose)).isEmpty();
     responses.onComplete();
     assertThat(testSubscriber.await(5, SECONDS)).isTrue();
 
@@ -148,16 +153,11 @@ public final class EndInvocationActionTest {
             "root_agent: still here")
         .inOrder();
     assertThat(functionResponsesSent(testLlm)).containsExactly("end_invocation");
-    assertThat(
-            testLlm.getLiveRequestHistory().stream()
-                .flatMap(request -> request.content().stream())
-                .map(Content::text))
-        .contains("next turn");
-    assertThat(testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose)).isEmpty();
   }
 
   @Test
   public void runLive_endInvocationAfterTransfer_keepsCallUp() throws Exception {
+    CompletableSubject agentXDone = CompletableSubject.create();
     TestLlm testLlm =
         createTestLlm(
             Flowable.just(
@@ -166,9 +166,11 @@ public final class EndInvocationActionTest {
                         Part.fromFunctionCall(
                             "transfer_to_agent", ImmutableMap.of("agent_name", "x"))))),
             Flowable.just(
-                createLlmResponse(
-                    Content.fromParts(Part.fromFunctionCall("end_invocation", ImmutableMap.of()))),
-                createLlmResponse(Content.fromParts(Part.fromText("still here")))));
+                    createLlmResponse(
+                        Content.fromParts(
+                            Part.fromFunctionCall("end_invocation", ImmutableMap.of()))),
+                    createLlmResponse(Content.fromParts(Part.fromText("still here"))))
+                .concatWith(agentXDone.toFlowable()));
     LlmAgent agentX =
         createTestAgentBuilder(testLlm)
             .name("x")
@@ -182,6 +184,11 @@ public final class EndInvocationActionTest {
 
     TestSubscriber<Event> testSubscriber =
         runner.runLive(session, new LiveRequestQueue(), RunConfig.builder().build()).test();
+    testSubscriber.awaitCount(5).assertValueCount(5);
+    // Only the transfer closes a connection; x's call is still up.
+    assertThat(testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose))
+        .hasSize(1);
+    agentXDone.onComplete();
 
     assertThat(testSubscriber.await(5, SECONDS)).isTrue();
     testSubscriber.assertComplete();
@@ -196,9 +203,9 @@ public final class EndInvocationActionTest {
     assertThat(functionResponsesSent(testLlm))
         .containsExactly("transfer_to_agent", "end_invocation")
         .inOrder();
-    // Only the transfer closes a connection.
+    // x's call closes when its model stream ends.
     assertThat(testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose))
-        .hasSize(1);
+        .hasSize(2);
   }
 
   @Test

@@ -312,4 +312,36 @@ public final class TestLlm extends BaseLlm {
       close();
     }
   }
+
+  /**
+   * Waits up to {@code timeout} for at least {@code expectedCount} live requests satisfying {@code
+   * matches}, and returns whether that count was reached.
+   */
+  public boolean waitForLiveRequests(
+      Predicate<LiveRequest> matches, int expectedCount, Duration timeout) {
+    Instant deadline = Instant.now().plus(timeout);
+    while (Instant.now().isBefore(deadline)) {
+      if (getLiveRequestHistory().stream().filter(matches).count() >= expectedCount) {
+        return true;
+      }
+      try {
+        Thread.sleep(50);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+    }
+    return getLiveRequestHistory().stream().filter(matches).count() >= expectedCount;
+  }
+
+  /**
+   * Waits up to {@code timeout} for the live connection to receive content with {@code text}, and
+   * returns whether it did.
+   */
+  public boolean waitForLiveContentText(String text, Duration timeout) {
+    return waitForLiveRequests(
+        request -> request.content().map(Content::text).filter(text::equals).isPresent(),
+        1,
+        timeout);
+  }
 }

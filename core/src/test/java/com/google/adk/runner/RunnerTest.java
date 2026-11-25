@@ -123,6 +123,7 @@ import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subjects.MaybeSubject;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
@@ -2337,9 +2338,12 @@ public final class RunnerTest {
   @Test
   public void runLive_usesRunnerScheduler() throws Exception {
     RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    CompletableSubject modelDone = CompletableSubject.create();
+    TestLlm liveTestLlm = createOpenLiveTestLlm(modelDone);
+    LlmAgent liveAgent = createTestAgentBuilder(liveTestLlm).build();
     Runner schedulerRunner =
         Runner.builder()
-            .app(App.builder().name("test").rootAgent(agent).build())
+            .app(App.builder().name("test").rootAgent(liveAgent).build())
             .scheduler(recordingScheduler)
             .build();
     Session liveSession =
@@ -2349,12 +2353,13 @@ public final class RunnerTest {
         schedulerRunner.runLive(liveSession, liveRequestQueue, RunConfig.builder().build()).test();
 
     liveRequestQueue.content(createContent("from user"));
+    assertThat(liveTestLlm.waitForLiveContentText("from user", Duration.ofSeconds(5))).isTrue();
     liveRequestQueue.close();
+    modelDone.onComplete();
 
     testSubscriber.await();
     testSubscriber.assertComplete();
     assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
-    assertThat(liveRequestTexts(testLlm)).contains("from user");
     // The hop that starts the live send loop went through the runner's scheduler.
     assertThat(recordingScheduler.workersCreated()).isEqualTo(1);
   }
@@ -2362,7 +2367,8 @@ public final class RunnerTest {
   @Test
   public void runLive_agentExecutorTakesPrecedenceOverRunnerScheduler() throws Exception {
     RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
-    TestLlm liveTestLlm = createTestLlm(createLlmResponse(createContent("from llm")));
+    CompletableSubject modelDone = CompletableSubject.create();
+    TestLlm liveTestLlm = createOpenLiveTestLlm(modelDone);
     LlmAgent agentWithExecutor =
         createTestAgentBuilder(liveTestLlm).executor(Runnable::run).build();
     Runner schedulerRunner =
@@ -2377,12 +2383,13 @@ public final class RunnerTest {
         schedulerRunner.runLive(liveSession, liveRequestQueue, RunConfig.builder().build()).test();
 
     liveRequestQueue.content(createContent("from user"));
+    assertThat(liveTestLlm.waitForLiveContentText("from user", Duration.ofSeconds(5))).isTrue();
     liveRequestQueue.close();
+    modelDone.onComplete();
 
     testSubscriber.await();
     testSubscriber.assertComplete();
     assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
-    assertThat(liveRequestTexts(liveTestLlm)).contains("from user");
     assertThat(recordingScheduler.workersCreated()).isEqualTo(0);
   }
 
@@ -2399,6 +2406,12 @@ public final class RunnerTest {
         .map(request -> request.content().map(Content::text))
         .flatMap(Optional::stream)
         .collect(toImmutableList());
+  }
+
+  /** Returns a live model that sends "from llm" and keeps its stream open until {@code done}. */
+  private TestLlm createOpenLiveTestLlm(CompletableSubject done) {
+    return createTestLlm(() ->
+        Flowable.just(createLlmResponse(createContent("from llm"))).concatWith(done.toFlowable()));
   }
 
   private Content createContent(String text) {
