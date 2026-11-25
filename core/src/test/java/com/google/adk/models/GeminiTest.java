@@ -728,6 +728,45 @@ public final class GeminiTest {
   }
 
   @Test
+  public void runner_sseTurnWithACallRepeatingAModelId_runsTheToolOnce() {
+    GenerateContentResponse call =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .id("call-1")
+                    .name("getWeather")
+                    .args(ImmutableMap.of("city", "Paris"))
+                    .build()));
+    GenerateContentResponse repeat =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .id("call-1")
+                    .name("getWeather")
+                    .args(ImmutableMap.of("city", "London"))
+                    .build()));
+
+    ToolTurn turn = runToolTurn(call, repeat);
+
+    assertThat(turn.toolCalls()).containsExactly("getWeather(Paris)");
+  }
+
+  @Test
+  public void runner_sseTurnWithIdenticalCallsWithoutModelIds_runsBoth() {
+    GenerateContentResponse call =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .name("getWeather")
+                    .args(ImmutableMap.of("city", "Paris"))
+                    .build()));
+
+    ToolTurn turn = runToolTurn(call, call);
+
+    assertThat(turn.toolCalls()).containsExactly("getWeather(Paris)", "getWeather(Paris)");
+  }
+
+  @Test
   public void runner_sseTurnWithEndMarkerWithoutRole_runsTheToolOnce() {
     GenerateContentResponse call =
         toResponse(

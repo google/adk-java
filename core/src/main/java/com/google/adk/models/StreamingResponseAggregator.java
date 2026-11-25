@@ -26,11 +26,13 @@ import com.google.genai.types.GroundingMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
@@ -112,11 +114,11 @@ final class StreamingResponseAggregator {
   }
 
   /**
-   * Returns the final, non-partial response: every accumulated part, or else the latest content
-   * made only of stream terminators, with the latest usage, finish reason and grounding metadata;
-   * other fields come from the last chunk. Once a finish reason is seen, the error code is that
-   * reason unless it is STOP, and the error message is cleared. Returns empty only if no chunk was
-   * processed.
+   * Returns the final, non-partial response: every accumulated part except function calls that
+   * repeat a model-provided ID, or else the latest content made only of stream terminators, with
+   * the latest usage, finish reason and grounding metadata; other fields come from the last chunk.
+   * Once a finish reason is seen, the error code is that reason unless it is STOP, and the error
+   * message is cleared. Returns empty only if no chunk was processed.
    */
   Optional<LlmResponse> aggregate() {
     if (lastResponse == null) {
@@ -146,9 +148,29 @@ final class StreamingResponseAggregator {
                     ? terminatorContent
                     : Content.builder()
                         .role("model")
-                        .parts(new ArrayList<>(accumulatedSequence))
+                        .parts(deduplicateFunctionCalls(accumulatedSequence))
                         .build())
             .build());
+  }
+
+  /**
+   * Returns a mutable copy of {@code parts} without the function calls that repeat a model-provided
+   * ID, keeping the first, as ADK Python's {@code _deduplicate_function_calls} does. Calls without
+   * a model-provided ID are all kept: two identical calls in one turn are two calls.
+   */
+  private static List<Part> deduplicateFunctionCalls(List<Part> parts) {
+    Set<String> seenModelIds = new HashSet<>();
+    List<Part> result = new ArrayList<>(parts.size());
+    for (Part part : parts) {
+      String id = part.functionCall().flatMap(FunctionCall::id).orElse("");
+      if (!id.isEmpty()
+          && !FunctionCallIds.isClientGeneratedFunctionCallId(id)
+          && !seenModelIds.add(id)) {
+        continue;
+      }
+      result.add(part);
+    }
+    return result;
   }
 
   /**

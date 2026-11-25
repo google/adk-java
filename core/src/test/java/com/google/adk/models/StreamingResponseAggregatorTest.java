@@ -574,6 +574,84 @@ public final class StreamingResponseAggregatorTest {
   }
 
   @Test
+  public void aggregate_callRepeatingAModelId_keepsTheFirst() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    Part first =
+        functionCallPart(
+            FunctionCall.builder()
+                .id("call-1")
+                .name("send_email")
+                .args(ImmutableMap.of("to", "ann"))
+                .build());
+    Part other =
+        functionCallPart(
+            FunctionCall.builder()
+                .id("call-2")
+                .name("send_sms")
+                .args(ImmutableMap.of("to", "cid"))
+                .build());
+    Part repeat =
+        functionCallPart(
+            FunctionCall.builder()
+                .id("call-1")
+                .name("notify")
+                .args(ImmutableMap.of("to", "bob"))
+                .build());
+    process(aggregator, chunk(first), chunk(other), chunk(repeat), chunk(Part.fromText("Sent.")));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0)).isEqualTo(first);
+    assertThat(parts.get(1)).isEqualTo(other);
+    assertThat(parts.get(2).text()).hasValue("Sent.");
+  }
+
+  @Test
+  public void aggregate_streamedCallRepeatingAModelId_keepsTheFirst() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStartWithId("call-1", "get_weather", "$.city", "Paris")),
+        chunk(streamedCallEnd()),
+        chunk(streamedCallStartWithId("call-1", "get_weather", "$.city", "Rome")),
+        chunk(streamedCallEnd()));
+
+    FunctionCall call = getOnlyElement(aggregatedParts(aggregator)).functionCall().get();
+
+    assertThat(call.id()).hasValue("call-1");
+    assertThat(call.args()).hasValue(ImmutableMap.of("city", "Paris"));
+  }
+
+  @Test
+  public void aggregate_identicalCallsWithoutModelIds_areKept() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(Part.fromFunctionCall("roll_dice", ImmutableMap.of())),
+        chunk(Part.fromFunctionCall("roll_dice", ImmutableMap.of())));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).functionCall().get().id())
+        .isNotEqualTo(parts.get(1).functionCall().get().id());
+  }
+
+  @Test
+  public void aggregate_identicalCallsWithTheSameClientId_areKept() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    String clientId = FunctionCallIds.generateClientFunctionCallId();
+    FunctionCall call =
+        FunctionCall.builder().id(clientId).name("roll_dice").args(ImmutableMap.of()).build();
+    process(aggregator, chunk(functionCallPart(call)), chunk(functionCallPart(call)));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+  }
+
+  @Test
   public void aggregate_streamedCallsWhoseClosingChunkOmitsWillContinue_areSeparateCalls() {
     StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
     process(
@@ -643,6 +721,20 @@ public final class StreamingResponseAggregatorTest {
     process(aggregator, chunk(signed));
 
     assertThat(aggregatedParts(aggregator)).containsExactly(signed);
+  }
+
+  @Test
+  public void aggregate_final_hasAMutablePartList() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    Part call =
+        functionCallPart(
+            FunctionCall.builder().id("call-1").name("tool").args(ImmutableMap.of()).build());
+    process(aggregator, chunk(call));
+    List<Part> parts = aggregatedParts(aggregator);
+
+    parts.add(Part.fromText("added by a caller"));
+
+    assertThat(parts).hasSize(2);
   }
 
   @Test
@@ -889,6 +981,12 @@ public final class StreamingResponseAggregatorTest {
 
   private static Part streamedCallEnd() {
     return functionCallPart(FunctionCall.builder().willContinue(false).build());
+  }
+
+  private static Part streamedCallStartWithId(
+      String id, String name, String jsonPath, String value) {
+    return functionCallPart(
+        streamedCallStart(name, jsonPath, value).functionCall().get().toBuilder().id(id).build());
   }
 
   private static GenerateContentResponseUsageMetadata usage(int totalTokenCount) {
