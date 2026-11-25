@@ -5462,6 +5462,25 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void requestInput_responseSchema_outputsTheAnswerAsTheSchemaReadsIt() {
+    FunctionNode<Content, Object> asker =
+        FunctionNodes.of(
+            "asker",
+            Content.class,
+            Object.class,
+            (ctx, message) ->
+                FunctionNodes.requestInput(
+                    "age_1", "How old?", /* payload= */ null, WorkflowResumeTesting.AGE_SCHEMA));
+    WorkflowSession session = new WorkflowSession(chain(asker, captureInput("reply")));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("age_1", ImmutableMap.of("age", "25")));
+
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("age", 25L));
+  }
+
+  @Test
   public void requestInput_payloadWithNoJsonForm_failsTheAskingNode() {
     FunctionNode<Content, String> asker =
         FunctionNodes.of(
@@ -6998,6 +7017,66 @@ public final class FunctionNodeTest {
     assertThat(error)
         .hasMessageThat()
         .startsWith("Validation failed for interrupt " + TRANSFER_CONFIRMATION + ":");
+  }
+
+  @Test
+  public void resume_confirmationWithAnUndeclaredKey_failsTheResumeBeforeTheNodeRuns() {
+    // Arrange
+    AtomicInteger runs = new AtomicInteger();
+    WorkflowSession session =
+        new WorkflowSession(chain(transfer(runs).requireConfirmation(true).build()));
+    session.advance(go());
+    Content answer =
+        requestAnswer(TRANSFER_CONFIRMATION, ImmutableMap.of("confirmed", true, "extra", 1));
+
+    // Act
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> session.turn(answer));
+
+    // Assert
+    assertThat(error.getClass()).isEqualTo(IllegalArgumentException.class);
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "Validation failed for interrupt "
+                + TRANSFER_CONFIRMATION
+                + ": validation error: answer does not match its schema: the value has a key the"
+                + " schema does not declare");
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void resume_confirmationApprovedAsText_runsTheBody() {
+    // Arrange
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer = transfer(runs).requireConfirmation(true).build();
+    WorkflowSession session = new WorkflowSession(chain(transfer, captureInput("reply")));
+    session.advance(go());
+
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer(TRANSFER_CONFIRMATION, ImmutableMap.of("confirmed", "true")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo("sent");
+    assertThat(runs.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void resume_confirmationRejectedAsText_outputsTheRejectionWithoutTheBody() {
+    // Arrange
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer = transfer(runs).requireConfirmation(true).build();
+    WorkflowSession session = new WorkflowSession(chain(transfer, captureInput("reply")));
+    session.advance(go());
+
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer(TRANSFER_CONFIRMATION, ImmutableMap.of("confirmed", "false")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo(REJECTED);
+    assertThat(runs.get()).isEqualTo(0);
   }
 
   @Test

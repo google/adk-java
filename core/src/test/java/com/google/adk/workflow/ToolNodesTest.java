@@ -658,6 +658,40 @@ public final class ToolNodesTest {
   }
 
   @Test
+  public void resume_confirmationApprovedAsText_runsTheTool() {
+    // Arrange
+    Database database = new Database();
+    WorkflowSession session = new WorkflowSession(deletionWorkflow(database));
+    session.advance(go());
+
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer(DELETION_CONFIRMATION_ID, ImmutableMap.of("confirmed", "true")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("deleted", "prod"));
+    assertThat(database.deleted).containsExactly("prod");
+  }
+
+  @Test
+  public void resume_confirmationRejectedAsText_outputsTheRejectionWithoutRunningTheTool() {
+    // Arrange
+    Database database = new Database();
+    WorkflowSession session = new WorkflowSession(deletionWorkflow(database));
+    session.advance(go());
+
+    // Act
+    ImmutableList<Event> events =
+        session.turn(
+            requestAnswer(DELETION_CONFIRMATION_ID, ImmutableMap.of("confirmed", "false")));
+
+    // Assert
+    assertThat(replyInput(events))
+        .isEqualTo(ImmutableMap.of("error", "This tool call is rejected."));
+    assertThat(database.deleted).isEmpty();
+  }
+
+  @Test
   public void resume_answerWithoutConfirmed_rejectsTheCall() {
     Database database = new Database();
     WorkflowSession session = new WorkflowSession(deletionWorkflow(database));
@@ -736,6 +770,29 @@ public final class ToolNodesTest {
     assertThat(thrown)
         .hasMessageThat()
         .contains("Validation failed for interrupt " + DELETION_CONFIRMATION_ID);
+  }
+
+  @Test
+  public void resume_confirmationWrappedInAResponseKey_failsTheResume() {
+    // Arrange
+    WorkflowSession session = new WorkflowSession(deletionWorkflow(new Database()));
+    session.advance(go());
+    Content answer =
+        requestAnswer(
+            DELETION_CONFIRMATION_ID, ImmutableMap.of("response", "{\"confirmed\":true}"));
+
+    // Act
+    IllegalArgumentException thrown =
+        assertThrows(IllegalArgumentException.class, () -> session.turn(answer));
+
+    // Assert
+    assertThat(thrown)
+        .hasMessageThat()
+        .isEqualTo(
+            "Validation failed for interrupt "
+                + DELETION_CONFIRMATION_ID
+                + ": validation error: answer does not match its schema: the value has a key the"
+                + " schema does not declare");
   }
 
   @Test

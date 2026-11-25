@@ -51,7 +51,11 @@ public abstract class RequestInput {
   static final String PAYLOAD_KEY = "payload";
   static final String RESPONSE_SCHEMA_KEY = "response_schema";
 
-  /** Returns the ID of the request, which the answering function response carries. */
+  /**
+   * Returns the ID of the request, which the answering function response carries. The prefix {@code
+   * wf_tool_confirmation:} is reserved for the framework's confirmation requests, whose answers
+   * reject undeclared keys.
+   */
   public abstract String interruptId();
 
   /** Returns the message to show the user, if any. */

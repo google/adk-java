@@ -317,6 +317,58 @@ public final class ValueCoercerTest {
                 + " beyond what can be checked");
   }
 
+  @Test
+  public void coerceValueClosed_declaredKey_isConverted() {
+    // Act
+    Object checked =
+        ValueCoercer.coerceValue(
+            ImmutableMap.of("count", "1"), COUNT, "answer", /* closed= */ true);
+
+    // Assert
+    assertThat(checked).isEqualTo(ImmutableMap.of("count", 1L));
+  }
+
+  @Test
+  public void coerceValueClosed_objectSchemaWithoutProperties_keepsUndeclaredKeys() {
+    // Act
+    Object checked =
+        ValueCoercer.coerceValue(
+            ImmutableMap.of(SECRET, 1), typed(Type.Known.OBJECT), "answer", /* closed= */ true);
+
+    // Assert
+    assertThat(checked).isEqualTo(ImmutableMap.of(SECRET, 1));
+  }
+
+  @Test
+  public void coerceValueClosed_undeclaredKey_failsAtItsPlaceInMapOrder() {
+    // Arrange
+    Schema items =
+        typed(Type.Known.OBJECT).toBuilder()
+            .properties(
+                ImmutableMap.of("items", typed(Type.Known.ARRAY).toBuilder().items(COUNT).build()))
+            .build();
+
+    // Act
+    String badValueFirst =
+        failureMessage(
+            ImmutableMap.of("count", SECRET, SECRET, 1), COUNT, "answer", /* closed= */ true);
+    String extraKeyFirst =
+        failureMessage(
+            ImmutableMap.of(SECRET, 1, "count", SECRET), COUNT, "answer", /* closed= */ true);
+    String nested =
+        failureMessage(
+            ImmutableMap.of("items", ImmutableList.of(ImmutableMap.of(SECRET, 1))),
+            items,
+            "answer",
+            /* closed= */ true);
+
+    // Assert
+    String prefix = "validation error: answer does not match its schema: ";
+    assertThat(badValueFirst).isEqualTo(prefix + "'count' is not an integer");
+    assertThat(extraKeyFirst).isEqualTo(prefix + "the value has a key the schema does not declare");
+    assertThat(nested).isEqualTo(prefix + "'items[0]' has a key the schema does not declare");
+  }
+
   private static Schema typed(Type.Known type) {
     return Schema.builder().type(type).build();
   }
@@ -351,12 +403,16 @@ public final class ValueCoercerTest {
     assertThat(Arrays.stream(values).filter(value -> !fails(value, schema)).toList()).isEmpty();
   }
 
-  /** Returns the failure message for {@code value}, checking that it never quotes the secret. */
   private static String failureMessage(Object value, Schema schema) {
+    return failureMessage(value, schema, "input of node 'n'", /* closed= */ false);
+  }
+
+  /** Returns the failure message for {@code value}, checking that it never quotes the secret. */
+  private static String failureMessage(Object value, Schema schema, String what, boolean closed) {
     IllegalArgumentException error =
         assertThrows(
             IllegalArgumentException.class,
-            () -> ValueCoercer.coerceValue(value, schema, "input of node 'n'"));
+            () -> ValueCoercer.coerceValue(value, schema, what, closed));
     assertThat(error).hasCauseThat().isNull();
     assertThat(error).hasMessageThat().doesNotContain(SECRET);
     return error.getMessage();

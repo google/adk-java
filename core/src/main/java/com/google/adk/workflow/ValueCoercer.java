@@ -35,8 +35,8 @@ import org.jspecify.annotations.Nullable;
  * Checks a value against a {@link Schema}'s types, enums, keys and nullability, ignoring formats,
  * patterns and bounds, and returns it converted to the schema's types. A quoted number or boolean
  * converts, as does a whole number such as {@code 3.0} for an integer, and a message reads as JSON
- * unless the schema takes a string or the text is not JSON. Undeclared keys are kept, since a
- * {@link Schema} cannot close an object.
+ * unless the schema takes a string or the text is not JSON. Undeclared keys are kept unless the
+ * caller asks for a closed check, since a {@link Schema} cannot close an object.
  */
 final class ValueCoercer {
 
@@ -50,7 +50,19 @@ final class ValueCoercer {
    *     of the schema, never the value
    */
   static @Nullable Object coerceValue(@Nullable Object value, Schema schema, String what) {
-    ValueCoercer coercer = new ValueCoercer(what);
+    return coerceValue(value, schema, what, /* closed= */ false);
+  }
+
+  /**
+   * Returns {@code value} converted to {@code schema}'s types. With {@code closed}, an object
+   * schema that lists properties also rejects any key it does not declare.
+   *
+   * @throws IllegalArgumentException if it does not match; the message names {@code what} and parts
+   *     of the schema, never the value
+   */
+  static @Nullable Object coerceValue(
+      @Nullable Object value, Schema schema, String what, boolean closed) {
+    ValueCoercer coercer = new ValueCoercer(what, closed);
     try {
       return coercer.coerce(value, schema, "");
     } catch (Mismatch e) {
@@ -59,10 +71,12 @@ final class ValueCoercer {
   }
 
   private final String what;
+  private final boolean closed;
   private int unionChecksLeft = MAX_UNION_CHECKS;
 
-  private ValueCoercer(String what) {
+  private ValueCoercer(String what, boolean closed) {
     this.what = what;
+    this.closed = closed;
   }
 
   private IllegalArgumentException failure(String reason) {
@@ -175,7 +189,7 @@ final class ValueCoercer {
     int index = 0;
     for (Object item : items) {
       // Each item gets its own union budget: a list's length is data, not schema complexity.
-      result.add(new ValueCoercer(what).coerce(item, itemSchema, path + "[" + index + "]"));
+      result.add(new ValueCoercer(what, closed).coerce(item, itemSchema, path + "[" + index + "]"));
       index++;
     }
     return result;
@@ -184,10 +198,14 @@ final class ValueCoercer {
   private Map<String, @Nullable Object> coerceObject(Map<?, ?> map, Schema schema, String path) {
     Map<String, Schema> properties = schema.properties().orElse(ImmutableMap.of());
     Map<String, @Nullable Object> result = new LinkedHashMap<>();
+    boolean closedObject = closed && schema.properties().isPresent();
     for (Map.Entry<?, ?> entry : map.entrySet()) {
       String name = String.valueOf(entry.getKey());
       Schema property = properties.get(name);
-      // An undeclared key is user data, so it is kept unchecked and never named in a message.
+      // An undeclared key is user data, so it is never named in a message.
+      if (property == null && closedObject) {
+        throw new Mismatch(at(path) + "has a key the schema does not declare");
+      }
       result.put(
           name,
           property == null

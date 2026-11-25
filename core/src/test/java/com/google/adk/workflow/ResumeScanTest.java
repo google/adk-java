@@ -631,15 +631,29 @@ public final class ResumeScanTest {
 
   @Test
   public void validateAnswer_objectTheSchemaRejects_failsWithoutTheValue() {
+    // Act
     IllegalArgumentException error =
         assertThrows(
             IllegalArgumentException.class,
             () ->
                 ResumeScan.validateAnswer(
-                    COUNT_SCHEMA, ImmutableMap.of("result", "{\"count\": \"1\"}"), "ask_1"));
+                    COUNT_SCHEMA, ImmutableMap.of("result", "{\"count\": \"1.5\"}"), "ask_1"));
 
+    // Assert
     assertThat(error).hasMessageThat().contains("Validation failed for interrupt ask_1");
-    assertThat(error).hasMessageThat().doesNotContain("\"1\"");
+    assertThat(error).hasMessageThat().doesNotContain("1.5");
+    assertThat(error).hasCauseThat().isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  public void validateAnswer_quotedIntegerInJsonText_isReadAsAnInteger() {
+    // Act
+    Object answer =
+        ResumeScan.validateAnswer(
+            COUNT_SCHEMA, ImmutableMap.of("result", "{\"count\": \"1\"}"), "ask_1");
+
+    // Assert
+    assertThat(answer).isEqualTo(ImmutableMap.of("count", 1L));
   }
 
   @Test
@@ -670,7 +684,7 @@ public final class ResumeScanTest {
         IllegalArgumentException.class,
         () ->
             ResumeScan.validateAnswer(
-                INTEGER_ARRAY_SCHEMA, ImmutableMap.of("result", ImmutableList.of(1, "2")), "a"));
+                INTEGER_ARRAY_SCHEMA, ImmutableMap.of("result", ImmutableList.of(1, "two")), "a"));
   }
 
   @Test
@@ -731,7 +745,7 @@ public final class ResumeScanTest {
 
     assertThrows(
         IllegalArgumentException.class,
-        () -> ResumeScan.validateAnswer(countOrAge, ImmutableMap.of("height", 3), "a"));
+        () -> ResumeScan.validateAnswer(countOrAge, ImmutableMap.of("count", "many"), "a"));
   }
 
   /**
