@@ -248,6 +248,8 @@ final class Scheduler {
               workflowState.childCanceledMidRun(childKey),
               workflowState.childFailedThisTurn(childKey));
       Single<Context> nodeRun;
+      // Only a run, or a replay that completes an answered transfer, marks a step.
+      boolean marksStep = true;
       if (recoveredNode != null && !interception.shouldRun()) {
         InvocationContext scheduled =
             NodeRunner.scheduledContext(
@@ -259,16 +261,16 @@ final class Scheduler {
         Context replayContext =
             ResumeScan.replayContext(
                 context, scheduled, node, runId, useAsOutput, recoveredNode, interception);
-        // Only a replay that completes an answered transfer marks a new step, as a run does.
-        boolean completesTransfer =
+        marksStep =
             interception.transferToAgent() != null
                 && !recoveredNode.interruptIds.isEmpty()
                 && recoveredNode.unresolved().isEmpty();
+        if (!marksStep) {
+          replayed.add(nodeName);
+        }
         if (interception.transferToAgent() == null || !TransferTarget.handsOff(node)) {
-          if (completesTransfer) {
+          if (marksStep) {
             emitCheckpoint();
-          } else {
-            replayed.add(nodeName);
           }
           // A replay counts as running until its completion is handled, as a run does.
           running.put(nodeName, Disposable.empty());
@@ -293,7 +295,7 @@ final class Scheduler {
                 .run(trigger.input())
                 .compose(Tracing.withContext(traceContext));
       }
-      Completable checkpointed = checkpoint();
+      Completable checkpointed = marksStep ? checkpoint() : Completable.complete();
       // Processing the checkpoint can end the run, as when the caller stops after that event.
       if (childRuns.isDisposed()) {
         return;
@@ -330,7 +332,8 @@ final class Scheduler {
   private void handleCompletion(String nodeName, Context childContext) {
     NodeState progress = nodeStates.get(nodeName);
     NodeExecutionState childState = childContext.requireNodeState();
-    boolean wasReplayed = replayed.remove(nodeName);
+    // A replay whose handoff ran its last hop again completes as a run.
+    boolean wasReplayed = replayed.remove(nodeName) && childState.isReplay();
     ImmutableSet<String> childInterruptIds = childState.interruptIds();
     if (!childInterruptIds.isEmpty()) {
       progress.status = NodeStatus.WAITING;
@@ -403,8 +406,12 @@ final class Scheduler {
    * agent's history.
    */
   private void reemitReplayedOutput(Context childContext) {
-    Optional<Object> output = childContext.requireNodeState().output();
-    if (!context.invocationContext().isResumable() || output.isEmpty()) {
+    NodeExecutionState childState = childContext.requireNodeState();
+    Optional<Object> output = childState.output();
+    // A replayed top-level handoff target has already sent its output.
+    if (!context.invocationContext().isResumable()
+        || output.isEmpty()
+        || childState.outputEmitted()) {
       return;
     }
     Completable unused =

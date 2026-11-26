@@ -416,6 +416,7 @@ final class ResumeScan {
     /** Records the replayed result on {@code context} without sending it. */
     void replayOn(Context context) {
       NodeExecutionState state = context.requireNodeState();
+      state.markReplay();
       if (output != null) {
         state.produceOutput(output);
       }

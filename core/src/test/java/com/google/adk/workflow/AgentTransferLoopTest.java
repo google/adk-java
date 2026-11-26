@@ -27,10 +27,13 @@ import static com.google.adk.workflow.WorkflowResumeTesting.START;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
+import static com.google.adk.workflow.WorkflowResumeTesting.interrupt;
 import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
 import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathOf;
+import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -58,6 +61,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
@@ -1867,6 +1871,265 @@ public final class AgentTransferLoopTest {
     }
   }
 
+  @Test
+  public void peerHandoffTargetThatPausedAndWasAnswered_resumes() {
+    LlmAgent first = chat("first", TestLlm.create(transferTo("second")));
+    LlmAgent second = pausingChat("second", "approved by peer");
+    LlmAgent unusedRoot = chat("root", says("unused"), first, second);
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, first)));
+    ImmutableList<Event> paused = session.turn(go());
+
+    ImmutableList<Event> events = session.turn(approval());
+
+    Event reply = contentOf("second", events);
+    assertThat(reply.stringifyContent()).isEqualTo("approved by peer");
+    assertThat(pathOf(reply)).isEqualTo("wf@1/second@1");
+    assertThat(reply.invocationId()).isEqualTo(paused.get(0).invocationId());
+  }
+
+  @Test
+  public void parentHandoffTargetThatPausedAndWasAnswered_resumes() {
+    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
+    LlmAgent coordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .model(
+                TestLlm.create(
+                    transferTo("child"),
+                    askApproval(),
+                    createTextLlmResponse("approved by parent")))
+            .mode(AgentMode.CHAT)
+            .tools(pendingFunctionTool())
+            .subAgents(child)
+            .build();
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, coordinator)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(approval());
+
+    Event reply = contentOf("coordinator", events);
+    assertThat(reply.stringifyContent()).isEqualTo("approved by parent");
+    assertThat(pathOf(reply)).isEqualTo("wf@1/coordinator@2");
+  }
+
+  @Test
+  public void peerHandoffTargetThatRanAgainWithTheAnswer_outputsOnce() {
+    LlmAgent first = chat("first", TestLlm.create(transferTo("asker")));
+    AskingAgent asker = new AskingAgent("asker", "answered");
+    LlmAgent unusedRoot = chat("root", says("unused"), first, asker);
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, first)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_asker", ImmutableMap.of("ok", true)));
+
+    assertThat(events.stream().flatMap(event -> event.output().stream()))
+        .containsExactly("answered");
+  }
+
+  @Test
+  public void finishedHandoffTargetBeforeANodeThatPaused_letsThatNodeResume() {
+    LlmAgent first = chat("first", TestLlm.create(transferTo("second")));
+    OutputAgent second = new OutputAgent("second", "from second");
+    LlmAgent unusedRoot = chat("root", says("unused"), first, second);
+    TestLlm askModel = pausingModel("approved");
+    LlmAgent ask = pausing("ask", askModel, AgentMode.TASK);
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, first), new Edge(first, ask)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(approval());
+
+    assertThat(contentOf("ask", events).stringifyContent()).isEqualTo("approved");
+    assertThat(second.runs.get()).isEqualTo(1);
+    // As in Python, the last hop's output is the successor's input.
+    assertThat(texts(askModel.getLastRequest().contents())).contains("from second");
+  }
+
+  @Test
+  public void finishedSubAgentHandoffTargetBeforeANodeThatPaused_letsThatNodeResume() {
+    OutputAgent child = new OutputAgent("child", "from child");
+    LlmAgent coordinator = chat("coordinator", TestLlm.create(transferTo("child")), child);
+    TestLlm askModel = pausingModel("approved");
+    LlmAgent ask = pausing("ask", askModel, AgentMode.TASK);
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, coordinator), new Edge(coordinator, ask)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(approval());
+
+    assertThat(contentOf("ask", events).stringifyContent()).isEqualTo("approved");
+    assertThat(child.runs.get()).isEqualTo(1);
+    assertThat(texts(askModel.getLastRequest().contents())).contains("from child");
+  }
+
+  @Test
+  public void finishedHandoffTargetBesideAPausedNode_sendsItsOutputOnceBeforeACheckpoint() {
+    LlmAgent first = chat("first", TestLlm.create(transferTo("second")));
+    OutputAgent second = new OutputAgent("second", "from second");
+    LlmAgent unusedRoot = chat("root", says("unused"), first, second);
+    Node ask = longRunningAsk("ask", "ask_1");
+    Node join = captureInput("reply");
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, first),
+                new Edge(START, ask),
+                new Edge(first, join),
+                new Edge(ask, join)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    // The replayed target's output is sent again once, with no checkpoint before it.
+    ImmutableList<Event> outputs =
+        events.stream()
+            .filter(event -> pathOf(event).equals("wf@1/second@1") && event.output().isPresent())
+            .collect(toImmutableList());
+    assertThat(outputs).hasSize(1);
+    assertThat(events.indexOf(outputs.get(0))).isLessThan(firstCheckpointIndex(events));
+    assertThat(second.runs.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void handoffTargetWithoutAnOutput_runsAgainWhileATaskReplaysItsWait() {
+    CountDownLatch quietRan = new CountDownLatch(1);
+    HandingOffAgent first = new HandingOffAgent("first", "quiet");
+    // Finishes without an output, so a resume runs it again.
+    QuietAgent quiet = new QuietAgent("quiet", quietRan);
+    LlmAgent unusedRoot = chat("root", says("unused"), first, quiet);
+    // The task asks only once quiet ran, so the hold does not keep first back in turn 1.
+    LlmAgent task =
+        LlmAgent.builder()
+            .name("task")
+            .model(TestLlm.create(createTextLlmResponse("Which date?")))
+            .mode(AgentMode.TASK)
+            .beforeModelCallback((callbackContext, request) ->
+                Completable.fromAction(() -> quietRan.await(10, SECONDS))
+                    .andThen(Maybe.<LlmResponse>empty()))
+            .build();
+    // The gate replays after the task, so the task already waits when first is queued.
+    Node gate = new TestNode("gate", (ctx, input) -> Flowable.just("G"));
+    Node ask = longRunningAsk("ask", "ask_1");
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, task),
+                new Edge(START, gate),
+                new Edge(gate, first),
+                new Edge(START, ask)));
+    session.advance(go());
+
+    // The answer is for another node, so the task still waits on the user.
+    session.advance(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    // The task only replayed its wait, so nothing is held, and the target, which left no output,
+    // runs again, as in Python.
+    assertThat(quiet.runs.get()).isEqualTo(2);
+  }
+
+  @Test
+  public void handoffTargetStillUnanswered_keepsItsNodeWaiting() {
+    LlmAgent first = chat("first", TestLlm.create(transferTo("second")));
+    LlmAgent second = pausingChat("second", "approved by peer");
+    LlmAgent unusedRoot = chat("root", says("unused"), first, second);
+    Node ask = longRunningAsk("ask", "ask_2");
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, first),
+                new Edge(START, ask),
+                new Edge(first, captureInput("reply"))));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_2", ImmutableMap.of("ok", true)));
+
+    // The peer still waits on ask_1, so the node that handed off to it does not complete.
+    assertThat(pathsOf(events)).doesNotContain("wf@1/reply@1");
+  }
+
+  @Test
+  public void threeHopChainWhoseLastHopPaused_resumesTheLastHop() {
+    LlmAgent a = chat("a", TestLlm.create(transferTo("b")));
+    LlmAgent b = chat("b", TestLlm.create(transferTo("c")));
+    LlmAgent c = pausingChat("c", "approved by c");
+    LlmAgent unusedRoot = chat("root", says("unused"), a, b, c);
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, a)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(approval());
+
+    Event reply = contentOf("c", events);
+    assertThat(reply.stringifyContent()).isEqualTo("approved by c");
+    assertThat(pathOf(reply)).isEqualTo("wf@1/c@1");
+  }
+
+  /** An agent that says its name and finishes without an output. */
+  private static final class QuietAgent extends BaseAgent {
+    final AtomicInteger runs = new AtomicInteger();
+    private final CountDownLatch ran;
+
+    QuietAgent(String name, CountDownLatch ran) {
+      super(name, "", ImmutableList.of(), null, null);
+      this.ran = ran;
+    }
+
+    @Override
+    public Flowable<Event> runNode(Context context, @Nullable Object nodeInput) {
+      return Flowable.fromCallable(() -> {
+        runs.incrementAndGet();
+        ran.countDown();
+        return Event.builder()
+            .id(Event.generateEventId())
+            .author(name())
+            .content(Content.fromParts(Part.fromText(name())))
+            .build();
+      });
+    }
+
+    @Override
+    protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
+      return Flowable.empty();
+    }
+
+    @Override
+    protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
+      return Flowable.empty();
+    }
+  }
+
+  /** An agent that waits on a long-running call, then outputs {@code value} once answered. */
+  private static final class AskingAgent extends BaseAgent {
+    private final String value;
+
+    AskingAgent(String name, String value) {
+      super(name, "", ImmutableList.of(), null, null);
+      this.value = value;
+    }
+
+    @Override
+    public boolean rerunOnResume() {
+      return true;
+    }
+
+    @Override
+    public Flowable<Event> runNode(Context context, @Nullable Object nodeInput) {
+      return Flowable.just(
+          context.resumeInputs().isEmpty()
+              ? interrupt("ask_" + name())
+              : Event.builder().id(Event.generateEventId()).author(name()).output(value).build());
+    }
+
+    @Override
+    protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
+      return Flowable.empty();
+    }
+
+    @Override
+    protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
+      return Flowable.empty();
+    }
+  }
+
   /** An agent whose node run fails its first {@code failures} times, then outputs {@code value}. */
   private static final class OutputAgent extends BaseAgent {
     final AtomicInteger runs = new AtomicInteger();
@@ -1972,10 +2235,20 @@ public final class AgentTransferLoopTest {
 
   /** Returns a chat agent that waits on an approval and then says {@code text}. */
   private static LlmAgent pausingChat(String name, String text) {
+    return pausing(name, pausingModel(text), AgentMode.CHAT);
+  }
+
+  /** Returns a model that asks for approval, then replies {@code text}. */
+  private static TestLlm pausingModel(String text) {
+    return TestLlm.create(askApproval(), createTextLlmResponse(text));
+  }
+
+  /** Returns an agent in {@code mode} on {@code model} with the approval tool. */
+  private static LlmAgent pausing(String name, TestLlm model, AgentMode mode) {
     return LlmAgent.builder()
         .name(name)
-        .model(TestLlm.create(askApproval(), createTextLlmResponse(text)))
-        .mode(AgentMode.CHAT)
+        .model(model)
+        .mode(mode)
         .tools(pendingFunctionTool())
         .build();
   }
@@ -2005,6 +2278,20 @@ public final class AgentTransferLoopTest {
       responses.add(createTextLlmResponse(text));
     }
     return TestLlm.create(responses.build());
+  }
+
+  private static ImmutableList<String> texts(List<Content> contents) {
+    return contents.stream().map(Content::text).collect(toImmutableList());
+  }
+
+  /** Returns the index of the first workflow checkpoint in {@code events}, or the list's size. */
+  private static int firstCheckpointIndex(List<Event> events) {
+    for (int i = 0; i < events.size(); i++) {
+      if (events.get(i).actions().agentState().isPresent()) {
+        return i;
+      }
+    }
+    return events.size();
   }
 
   private static TestLlm says(String text) {

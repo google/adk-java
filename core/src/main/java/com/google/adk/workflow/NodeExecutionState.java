@@ -88,6 +88,7 @@ public final class NodeExecutionState {
   private String eventAuthor;
   private @Nullable ImmutableList<Route> selectedRoutes;
   private boolean routesEmitted;
+  private boolean replay;
   private @Nullable Exception failure;
   private @Nullable String failureNodePath;
   private @Nullable ImmutableMap<String, ResumeScan.RecoveredNode> recoveredChildren;
@@ -562,6 +563,15 @@ public final class NodeExecutionState {
               node.name());
           return new OutputState(OutputStatus.DELEGATE_PRODUCED, output);
         });
+  }
+
+  /** Returns whether this run replays an outcome recorded in an earlier turn instead of running. */
+  boolean isReplay() {
+    return replay;
+  }
+
+  void markReplay() {
+    replay = true;
   }
 
   /** Returns whether an event has carried the node's current route selection. */
