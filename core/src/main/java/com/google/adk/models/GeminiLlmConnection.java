@@ -26,6 +26,9 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FileData;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GroundingChunk;
+import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.GroundingSupport;
 import com.google.genai.types.LiveSendClientContentParameters;
 import com.google.genai.types.LiveSendRealtimeInputParameters;
 import com.google.genai.types.LiveSendToolResponseParameters;
@@ -163,7 +166,7 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
             // Emit pending speech first so a transfer the call starts cannot drop it.
             pendingTranscriptions.flushBeforeToolCall(emitter);
             pendingText.flush().ifPresent(emitter::onNext);
-            emitter.onNext(createToolCallResponse(toolCall));
+            emitter.onNext(createToolCallResponse(toolCall, pendingText.takeGrounding()));
             handled.set(true);
           });
       message
@@ -200,18 +203,24 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
    * emitted again in full when other content, the end of the turn or an interruption ends it; text
    * that arrives with the end of the turn or an interruption is emitted only in full.
    * Transcriptions get responses of their own, emitted before the full text and the end of the
-   * turn.
+   * turn, and grounding metadata merged across the turn goes to the full text, a tool call or the
+   * end of the turn, as in ADK Python.
    */
   private static void emitServerContentResponses(
       LiveServerContent serverContent,
       PendingText pendingText,
       PendingTranscriptions pendingTranscriptions,
       ObservableEmitter<LlmResponse> emitter) {
+    Optional<GroundingMetadata> grounding = serverContent.groundingMetadata();
+    grounding.ifPresent(pendingText::addGrounding);
     List<Part> parts = serverContent.modelTurn().flatMap(Content::parts).orElse(ImmutableList.of());
     List<Part> streamedParts = new ArrayList<>();
     for (Part part : parts) {
       if (pendingText.isEndedBy(part)) {
-        pendingText.flush().ifPresent(emitter::onNext);
+        // A thought/answer switch leaves grounding for the final text or turn end.
+        pendingText
+            .flush(/* interrupted= */ false, /* withGrounding= */ !hasText(part))
+            .ifPresent(emitter::onNext);
         // The full response now carries the text parts of this message so far.
         streamedParts.removeIf(GeminiLlmConnection::hasText);
       }
@@ -226,7 +235,10 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     if (turnComplete || interrupted) {
       streamedParts.removeIf(GeminiLlmConnection::hasText);
       pendingTranscriptions.receive(serverContent, emitter);
-      Optional<LlmResponse> fullText = pendingText.flush(interrupted);
+      if (turnComplete) {
+        warnIfIncomplete(grounding.or(pendingText::grounding));
+      }
+      Optional<LlmResponse> fullText = pendingText.flush(interrupted, /* withGrounding= */ true);
       fullText.ifPresent(emitter::onNext);
       interruptionInFullText =
           interrupted && fullText.isPresent() && !turnComplete && streamedParts.isEmpty();
@@ -240,6 +252,16 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     }
     // Only text is partial: it is emitted again in full.
     boolean streamsText = streamedParts.stream().anyMatch(GeminiLlmConnection::hasText);
+    if (turnComplete) {
+      // This message's grounding, else what the turn collected and no full text carried.
+      Optional<GroundingMetadata> turnGrounding = pendingText.takeGrounding();
+      builder.groundingMetadata(grounding.or(() -> turnGrounding).orElse(null));
+    } else if (interrupted) {
+      builder.groundingMetadata(pendingText.takeGrounding().orElse(null));
+    } else {
+      // Streamed chunks carry their own message's grounding; a message may carry nothing else.
+      builder.groundingMetadata(grounding.orElse(null));
+    }
     LlmResponse response =
         builder
             .partial(streamsText)
@@ -252,10 +274,23 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
       }
       return;
     }
-    if (response.content().isPresent()) {
+    if (response.content().isPresent() || response.groundingMetadata().isPresent()) {
       emitter.onNext(response);
     }
     pendingTranscriptions.receive(serverContent, emitter);
+  }
+
+  /** Logs ADK Python's warning for turn grounding that has retrieval queries but no chunks. */
+  private static void warnIfIncomplete(Optional<GroundingMetadata> grounding) {
+    grounding
+        .filter(g -> !g.retrievalQueries().orElse(ImmutableList.of()).isEmpty())
+        .filter(g -> g.groundingChunks().orElse(ImmutableList.of()).isEmpty())
+        .ifPresent(g ->
+            logger.warn(
+                "Incomplete grounding metadata received: {} retrieval queries but no grounding"
+                    + " chunks. This may indicate a transient issue with the Vertex AI Search"
+                    + " backend.",
+                g.retrievalQueries().get().size()));
   }
 
   /**
@@ -275,8 +310,9 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     return part.text().filter(text -> !text.isEmpty()).isPresent();
   }
 
-  private static LlmResponse createToolCallResponse(LiveServerToolCall toolCall) {
-    LlmResponse.Builder builder = LlmResponse.builder();
+  private static LlmResponse createToolCallResponse(
+      LiveServerToolCall toolCall, Optional<GroundingMetadata> grounding) {
+    LlmResponse.Builder builder = LlmResponse.builder().groundingMetadata(grounding.orElse(null));
     toolCall
         .functionCalls()
         .ifPresent(
@@ -630,10 +666,14 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     }
   }
 
-  /** Model text that has been streamed in partial responses but not yet emitted in full. */
+  /**
+   * Model text that has been streamed in partial responses but not yet emitted in full, and the
+   * grounding metadata the turn has collected but no response has carried yet.
+   */
   static final class PendingText {
     private final StringBuilder text = new StringBuilder();
     private boolean thought;
+    private @Nullable GroundingMetadata grounding;
 
     /**
      * Returns whether {@code part} ends the pending text: text of the other thought kind, or a part
@@ -651,20 +691,43 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
       thought = part.thought().orElse(false);
     }
 
-    /** Returns the pending text as one non-partial response and clears it, or empty if none. */
+    /** Merges {@code added} into the grounding collected so far. */
+    private void addGrounding(GroundingMetadata added) {
+      grounding = grounding == null ? added : merge(grounding, added);
+    }
+
+    private Optional<GroundingMetadata> grounding() {
+      return Optional.ofNullable(grounding);
+    }
+
+    /** Returns the collected grounding and clears it. */
+    private Optional<GroundingMetadata> takeGrounding() {
+      Optional<GroundingMetadata> taken = grounding();
+      grounding = null;
+      return taken;
+    }
+
+    /**
+     * Returns the pending text as one non-partial response with the collected grounding and clears
+     * both, or empty if there is no text.
+     */
     private Optional<LlmResponse> flush() {
-      return flush(/* interrupted= */ false);
+      return flush(/* interrupted= */ false, /* withGrounding= */ true);
     }
 
     /**
      * Returns the pending text as one non-partial response and clears it, or empty if none.
      *
      * @param interrupted whether an interruption ended the text, which the response then reports
+     * @param withGrounding whether the response carries the collected grounding, which is then
+     *     cleared
      */
-    private Optional<LlmResponse> flush(boolean interrupted) {
+    private Optional<LlmResponse> flush(boolean interrupted, boolean withGrounding) {
       if (text.length() == 0) {
         return Optional.empty();
       }
+      Optional<GroundingMetadata> responseGrounding =
+          withGrounding ? takeGrounding() : Optional.empty();
       Part.Builder part = Part.builder().text(text.toString());
       if (thought) {
         part.thought(true);
@@ -675,7 +738,76 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
               .content(Content.builder().role("model").parts(part.build()).build())
               .partial(false)
               .interrupted(interrupted ? true : null)
+              .groundingMetadata(responseGrounding.orElse(null))
               .build());
+    }
+
+    /**
+     * Merges {@code added} into {@code existing} as ADK Python's {@code _merge_grounding_metadata}
+     * does: query lists gain the added queries they lack, chunks and supports are appended, and
+     * other fields set in {@code added} replace those in {@code existing}. The chunk indices of the
+     * added supports are shifted past the existing chunks, so each still cites its own source.
+     */
+    private static GroundingMetadata merge(GroundingMetadata existing, GroundingMetadata added) {
+      GroundingMetadata.Builder merged = existing.toBuilder();
+      int chunkOffset = existing.groundingChunks().map(List::size).orElse(0);
+      added
+          .imageSearchQueries()
+          .ifPresent(q -> merged.imageSearchQueries(union(existing.imageSearchQueries(), q)));
+      added
+          .webSearchQueries()
+          .ifPresent(q -> merged.webSearchQueries(union(existing.webSearchQueries(), q)));
+      added
+          .retrievalQueries()
+          .ifPresent(q -> merged.retrievalQueries(union(existing.retrievalQueries(), q)));
+      added
+          .groundingChunks()
+          .ifPresent(chunks ->
+              merged.groundingChunks(
+                  ImmutableList.<GroundingChunk>builder()
+                      .addAll(existing.groundingChunks().orElse(ImmutableList.of()))
+                      .addAll(chunks)
+                      .build()));
+      added
+          .groundingSupports()
+          .ifPresent(supports ->
+              merged.groundingSupports(
+                  ImmutableList.<GroundingSupport>builder()
+                      .addAll(existing.groundingSupports().orElse(ImmutableList.of()))
+                      .addAll(
+                          supports.stream()
+                              .map(support -> shiftChunkIndices(support, chunkOffset))
+                              .iterator())
+                      .build()));
+      added.retrievalMetadata().ifPresent(merged::retrievalMetadata);
+      added.searchEntryPoint().ifPresent(merged::searchEntryPoint);
+      added.googleMapsWidgetContextToken().ifPresent(merged::googleMapsWidgetContextToken);
+      added.sourceFlaggingUris().ifPresent(merged::sourceFlaggingUris);
+      return merged.build();
+    }
+
+    /** Returns {@code existing} followed by the items of {@code added} it does not contain yet. */
+    private static ImmutableList<String> union(
+        Optional<List<String>> existing, List<String> added) {
+      List<String> union = new ArrayList<>(existing.orElse(ImmutableList.of()));
+      for (String item : added) {
+        if (!union.contains(item)) {
+          union.add(item);
+        }
+      }
+      return ImmutableList.copyOf(union);
+    }
+
+    private static GroundingSupport shiftChunkIndices(GroundingSupport support, int offset) {
+      if (offset == 0 || support.groundingChunkIndices().orElse(ImmutableList.of()).isEmpty()) {
+        return support;
+      }
+      return support.toBuilder()
+          .groundingChunkIndices(
+              support.groundingChunkIndices().get().stream()
+                  .map(index -> index + offset)
+                  .collect(toImmutableList()))
+          .build();
     }
   }
 }

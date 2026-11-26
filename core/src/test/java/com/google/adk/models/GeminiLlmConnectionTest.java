@@ -35,6 +35,10 @@ import com.google.genai.types.Content;
 import com.google.genai.types.ExecutableCode;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.GroundingChunk;
+import com.google.genai.types.GroundingChunkWeb;
+import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.GroundingSupport;
 import com.google.genai.types.Language;
 import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.LiveSendClientContentParameters;
@@ -46,6 +50,7 @@ import com.google.genai.types.LiveServerSetupComplete;
 import com.google.genai.types.LiveServerToolCall;
 import com.google.genai.types.LiveServerToolCallCancellation;
 import com.google.genai.types.Part;
+import com.google.genai.types.SearchEntryPoint;
 import com.google.genai.types.Transcription;
 import com.google.genai.types.UsageMetadata;
 import io.reactivex.rxjava3.observers.TestObserver;
@@ -1171,12 +1176,329 @@ public final class GeminiLlmConnectionTest {
     assertThat(GeminiLlmConnection.isGemini3xLive(null)).isFalse();
   }
 
+  @Test
+  public void convertToServerResponse_groundingWithStreamedText_isCarriedByTheFullText() {
+    GroundingMetadata grounding = GroundingMetadata.builder().webSearchQueries("weather").build();
+
+    ImmutableList<LlmResponse> responses =
+        convertAllResponses(
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("Sun")))
+                    .groundingMetadata(grounding)),
+            modelTurn(Part.fromText("ny.")),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+
+    assertThat(describe(responses))
+        .containsExactly("partial text:Sun", "partial text:ny.", "text:Sunny.", "turnComplete")
+        .inOrder();
+    assertThat(groundings(responses))
+        .containsExactly(
+            Optional.of(grounding), Optional.empty(), Optional.of(grounding), Optional.empty())
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_groundingWithTurnComplete_isOnFullTextAndTurnComplete() {
+    GroundingMetadata grounding = GroundingMetadata.builder().webSearchQueries("weather").build();
+
+    ImmutableList<LlmResponse> responses =
+        convertAllResponses(
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("It is sunny.")))
+                    .groundingMetadata(grounding)
+                    .turnComplete(true)));
+
+    assertThat(describe(responses)).containsExactly("text:It is sunny.", "turnComplete").inOrder();
+    assertThat(groundings(responses))
+        .containsExactly(Optional.of(grounding), Optional.of(grounding))
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_groundingWithoutContent_isEmittedOnItsOwn() {
+    GroundingMetadata grounding =
+        GroundingMetadata.builder()
+            .webSearchQueries("weather")
+            .searchEntryPoint(SearchEntryPoint.builder().renderedContent("<p>Weather</p>"))
+            .build();
+
+    ImmutableList<LlmResponse> responses =
+        convertAllResponses(
+            serverContent(LiveServerContent.builder().groundingMetadata(grounding)));
+
+    LlmResponse response = getOnlyElement(responses);
+    assertThat(response.groundingMetadata()).hasValue(grounding);
+    assertThat(response.content()).isEmpty();
+  }
+
+  @Test
+  public void convertToServerResponse_groundingBeforeToolCall_isCarriedByTheToolCall() {
+    GroundingMetadata grounding = GroundingMetadata.builder().retrievalQueries("query").build();
+
+    ImmutableList<LlmResponse> responses =
+        convertAllResponses(
+            serverContent(LiveServerContent.builder().groundingMetadata(grounding)),
+            toolCallMessage(FunctionCall.builder().name("lookup").build()),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+
+    assertThat(describe(responses)).containsExactly("", "call:lookup", "turnComplete").inOrder();
+    assertThat(groundings(responses))
+        .containsExactly(Optional.of(grounding), Optional.of(grounding), Optional.empty())
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_groundingAcrossMessages_isMergedWithShiftedChunkIndices() {
+    GroundingMetadata first =
+        GroundingMetadata.builder()
+            .retrievalQueries("query1")
+            .groundingChunks(chunk(1))
+            .groundingSupports(GroundingSupport.builder().groundingChunkIndices(0))
+            .build();
+    GroundingMetadata second =
+        GroundingMetadata.builder()
+            .retrievalQueries("query1", "query2")
+            .groundingChunks(chunk(2))
+            .groundingSupports(GroundingSupport.builder().groundingChunkIndices(0))
+            .build();
+
+    ImmutableList<LlmResponse> responses =
+        convertAllResponses(
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("hello")))
+                    .groundingMetadata(first)),
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText(" world")))
+                    .groundingMetadata(second)),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+
+    LlmResponse fullText = responses.get(2);
+    assertThat(describe(ImmutableList.of(fullText))).containsExactly("text:hello world");
+    GroundingMetadata merged = fullText.groundingMetadata().get();
+    assertThat(merged.retrievalQueries()).hasValue(ImmutableList.of("query1", "query2"));
+    assertThat(merged.groundingChunks()).hasValue(ImmutableList.of(chunk(1), chunk(2)));
+    assertThat(
+            merged.groundingSupports().get().stream()
+                .map(support -> support.groundingChunkIndices().get())
+                .collect(toImmutableList()))
+        .containsExactly(ImmutableList.of(0), ImmutableList.of(1))
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_groundingBeforeThoughtSwitch_staysForTheAnswer() {
+    GroundingMetadata grounding = GroundingMetadata.builder().webSearchQueries("weather").build();
+    Part thought = Part.builder().text("Searching").thought(true).build();
+
+    ImmutableList<LlmResponse> responses =
+        convertAllResponses(
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(thought))
+                    .groundingMetadata(grounding)),
+            modelTurn(Part.fromText("Sunny.")),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+
+    assertThat(describe(responses))
+        .containsExactly(
+            "partial thought:Searching",
+            "thought:Searching",
+            "partial text:Sunny.",
+            "text:Sunny.",
+            "turnComplete")
+        .inOrder();
+    assertThat(groundings(responses).get(1)).isEmpty();
+    assertThat(groundings(responses).get(3)).hasValue(grounding);
+  }
+
+  @Test
+  public void convertToServerResponse_interruption_carriesAndClearsTheGrounding() {
+    GroundingMetadata grounding = GroundingMetadata.builder().webSearchQueries("weather").build();
+
+    ImmutableList<LlmResponse> withText =
+        convertAllResponses(
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("Sun")))
+                    .groundingMetadata(grounding)),
+            serverContent(LiveServerContent.builder().interrupted(true)),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+    ImmutableList<LlmResponse> withoutText =
+        convertAllResponses(
+            serverContent(LiveServerContent.builder().groundingMetadata(grounding)),
+            serverContent(LiveServerContent.builder().interrupted(true)),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+
+    assertThat(describe(withText))
+        .containsExactly("partial text:Sun", "text:Sun interrupted", "turnComplete")
+        .inOrder();
+    assertThat(groundings(withText))
+        .containsExactly(Optional.of(grounding), Optional.of(grounding), Optional.empty())
+        .inOrder();
+    assertThat(describe(withoutText)).containsExactly("", "interrupted", "turnComplete").inOrder();
+    assertThat(groundings(withoutText))
+        .containsExactly(Optional.of(grounding), Optional.of(grounding), Optional.empty())
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_groundingMerge_keepsQueriesAndReplacesOtherFields() {
+    GroundingMetadata first =
+        GroundingMetadata.builder()
+            .webSearchQueries("a", "a")
+            .searchEntryPoint(SearchEntryPoint.builder().renderedContent("first"))
+            .build();
+    GroundingMetadata second =
+        GroundingMetadata.builder()
+            .webSearchQueries("a", "b")
+            .searchEntryPoint(SearchEntryPoint.builder().renderedContent("second"))
+            .build();
+
+    ImmutableList<LlmResponse> responses =
+        convertAllResponses(
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("A")))
+                    .groundingMetadata(first)),
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("B")))
+                    .groundingMetadata(second)),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+
+    GroundingMetadata merged = responses.get(2).groundingMetadata().get();
+    assertThat(merged.webSearchQueries()).hasValue(ImmutableList.of("a", "a", "b"));
+    assertThat(merged.searchEntryPoint().flatMap(SearchEntryPoint::renderedContent))
+        .hasValue("second");
+  }
+
+  @Test
+  public void convertToServerResponse_groundedTextEndedByNonTextPart_carriesTheGrounding() {
+    GroundingMetadata grounding = GroundingMetadata.builder().webSearchQueries("weather").build();
+    Part code =
+        Part.builder()
+            .executableCode(
+                ExecutableCode.builder().code("print(1)").language(Language.Known.PYTHON))
+            .build();
+
+    ImmutableList<LlmResponse> responses =
+        convertAllResponses(
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("Sunny.")))
+                    .groundingMetadata(grounding)),
+            modelTurn(code),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+
+    assertThat(describe(responses))
+        .containsExactly("partial text:Sunny.", "text:Sunny.", "executableCode", "turnComplete")
+        .inOrder();
+    assertThat(groundings(responses))
+        .containsExactly(
+            Optional.of(grounding), Optional.of(grounding), Optional.empty(), Optional.empty())
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_groundedTextEndedByToolCall_fullTextCarriesTheGrounding() {
+    GroundingMetadata grounding = GroundingMetadata.builder().webSearchQueries("weather").build();
+
+    ImmutableList<LlmResponse> responses =
+        convertAllResponses(
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("Checking.")))
+                    .groundingMetadata(grounding)),
+            toolCallMessage(FunctionCall.builder().name("lookup").build()),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+
+    assertThat(describe(responses))
+        .containsExactly("partial text:Checking.", "text:Checking.", "call:lookup", "turnComplete")
+        .inOrder();
+    assertThat(groundings(responses))
+        .containsExactly(
+            Optional.of(grounding), Optional.of(grounding), Optional.empty(), Optional.empty())
+        .inOrder();
+  }
+
+  @Test
+  public void
+      convertToServerResponse_groundingMergeAfterNoChunks_keepsChunkIndicesAndImageQueries() {
+    GroundingMetadata first = GroundingMetadata.builder().imageSearchQueries("cat").build();
+    GroundingMetadata second =
+        GroundingMetadata.builder()
+            .imageSearchQueries("cat", "dog")
+            .groundingChunks(chunk(1))
+            .groundingSupports(GroundingSupport.builder().groundingChunkIndices(0))
+            .build();
+
+    ImmutableList<LlmResponse> responses =
+        convertAllResponses(
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("A")))
+                    .groundingMetadata(first)),
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("B")))
+                    .groundingMetadata(second)),
+            serverContent(LiveServerContent.builder().turnComplete(true)));
+
+    GroundingMetadata merged = responses.get(2).groundingMetadata().get();
+    assertThat(merged.imageSearchQueries()).hasValue(ImmutableList.of("cat", "dog"));
+    assertThat(getOnlyElement(merged.groundingSupports().get()).groundingChunkIndices())
+        .hasValue(ImmutableList.of(0));
+  }
+
+  @Test
+  public void runLive_groundedAnswer_eventsCarryTheGroundingMetadata() throws Exception {
+    GroundingMetadata grounding =
+        GroundingMetadata.builder()
+            .webSearchQueries("weather today")
+            .searchEntryPoint(SearchEntryPoint.builder().renderedContent("<p>Weather</p>"))
+            .build();
+
+    ImmutableList<Event> events =
+        liveEvents(
+            "gemini-3.8-live",
+            serverContent(
+                LiveServerContent.builder()
+                    .modelTurn(modelContent(Part.fromText("It is sunny.")))
+                    .groundingMetadata(grounding)
+                    .turnComplete(true)));
+
+    assertThat(
+            events.stream()
+                .filter(event -> event.groundingMetadata().isPresent())
+                .map(event -> event.groundingMetadata().get())
+                .collect(toImmutableList()))
+        .containsExactly(grounding, grounding);
+  }
+
   /**
    * Runs an agent live through {@link InMemoryRunner} on a Gemini named {@code modelName} whose
    * transport delivers {@code messages}, and describes the transcriptions the session saved.
    */
   private static ImmutableList<String> savedTranscriptions(
       String modelName, LiveServerMessage... messages) throws Exception {
+    return describe(
+        liveEvents(modelName, messages).stream()
+            .filter(event ->
+                event.inputTranscription().isPresent() || event.outputTranscription().isPresent())
+            .map(GeminiLlmConnectionTest::transcriptionsOf)
+            .collect(toImmutableList()));
+  }
+
+  /**
+   * Runs an agent live through {@link InMemoryRunner} on a Gemini named {@code modelName} whose
+   * transport delivers {@code messages}, and returns the events the session saved.
+   */
+  private static ImmutableList<Event> liveEvents(String modelName, LiveServerMessage... messages)
+      throws Exception {
     CompletableFuture<GeminiLiveTransport> connecting = new CompletableFuture<>();
     Gemini gemini =
         new Gemini(modelName, "fake-api-key") {
@@ -1207,12 +1529,7 @@ public final class GeminiLlmConnectionTest {
             .sessionService()
             .getSession(runner.appName(), "user", session.id(), Optional.empty())
             .blockingGet();
-    return describe(
-        saved.immutableEvents().stream()
-            .filter(event ->
-                event.inputTranscription().isPresent() || event.outputTranscription().isPresent())
-            .map(GeminiLlmConnectionTest::transcriptionsOf)
-            .collect(toImmutableList()));
+    return ImmutableList.copyOf(saved.immutableEvents());
   }
 
   private static LlmResponse transcriptionsOf(Event event) {
@@ -1225,6 +1542,12 @@ public final class GeminiLlmConnectionTest {
 
   private static Transcription chunk(String text) {
     return Transcription.builder().text(text).build();
+  }
+
+  private static GroundingChunk chunk(int number) {
+    return GroundingChunk.builder()
+        .web(GroundingChunkWeb.builder().uri("https://example.com/" + number))
+        .build();
   }
 
   private static LiveServerMessage toolCallMessage(FunctionCall functionCall) {
@@ -1242,6 +1565,31 @@ public final class GeminiLlmConnectionTest {
         .collect(toImmutableList());
   }
 
+  /** Converts {@code messages} in order with fresh pending state and returns the responses. */
+  private static ImmutableList<LlmResponse> convertAllResponses(LiveServerMessage... messages) {
+    return convertAllResponses(
+        new PendingTranscriptions(/* inputArrivesInFull= */ false), messages);
+  }
+
+  /** Converts {@code messages} in order with the given pending state and returns the responses. */
+  private static ImmutableList<LlmResponse> convertAllResponses(
+      PendingTranscriptions pendingTranscriptions, LiveServerMessage... messages) {
+    PendingText pendingText = new PendingText();
+    ImmutableList.Builder<LlmResponse> responses = ImmutableList.builder();
+    for (LiveServerMessage message : messages) {
+      responses.addAll(
+          GeminiLlmConnection.convertToServerResponse(message, pendingText, pendingTranscriptions)
+              .toList()
+              .blockingGet());
+    }
+    return responses.build();
+  }
+
+  private static ImmutableList<Optional<GroundingMetadata>> groundings(
+      List<LlmResponse> responses) {
+    return responses.stream().map(LlmResponse::groundingMetadata).collect(toImmutableList());
+  }
+
   /** Converts {@code messages} in order with fresh pending state, as a connection does. */
   private static ImmutableList<String> convertAll(LiveServerMessage... messages) {
     return convertAll(new PendingTranscriptions(/* inputArrivesInFull= */ false), messages);
@@ -1250,15 +1598,7 @@ public final class GeminiLlmConnectionTest {
   /** Converts {@code messages} in order with the given pending state, as a connection does. */
   private static ImmutableList<String> convertAll(
       PendingTranscriptions pendingTranscriptions, LiveServerMessage... messages) {
-    PendingText pendingText = new PendingText();
-    List<LlmResponse> responses = new ArrayList<>();
-    for (LiveServerMessage message : messages) {
-      responses.addAll(
-          GeminiLlmConnection.convertToServerResponse(message, pendingText, pendingTranscriptions)
-              .toList()
-              .blockingGet());
-    }
-    return describe(responses);
+    return describe(convertAllResponses(pendingTranscriptions, messages));
   }
 
   private static LiveServerMessage modelTurn(Part part) {
