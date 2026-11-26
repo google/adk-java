@@ -19,8 +19,10 @@ package com.google.adk.workflow;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
@@ -69,6 +71,8 @@ final class Scheduler {
   private final ImmutableMap<String, RecoveredNode> recovered;
   // The nodes replayed from history whose completion is not handled yet.
   private final Set<String> replayed = new HashSet<>();
+  // Task nodes that replayed as waiting in this turn, which Python reruns rather than replays.
+  private final Set<String> replayedWaits = new HashSet<>();
   // The nodes whose latest output was replayed, so no event in this turn carried it in outputFor.
   private final Set<String> replayedOutputs = new HashSet<>();
 
@@ -186,6 +190,10 @@ final class Scheduler {
     }
 
     private void scheduleReady() {
+      // As in Python ADK, no other node starts while a task node waits on the user.
+      if (hasWaitingTaskNode()) {
+        return;
+      }
       Optional<Integer> maxConcurrency = workflow.maxConcurrency();
       for (String nodeName : triggerQueue.queuedNodeNames()) {
         // A cancel can arrive while a node blocks as it starts.
@@ -209,9 +217,24 @@ final class Scheduler {
       }
     }
 
+    /**
+     * Returns whether a task node waits on the user. One that only replayed its wait from an
+     * earlier turn does not count, as Python reruns it, so a reply to another branch gets through.
+     */
+    private boolean hasWaitingTaskNode() {
+      return nodeStates.entrySet().stream()
+          .anyMatch(entry ->
+              entry.getValue().status == NodeStatus.WAITING
+                  && !replayedWaits.contains(entry.getKey())
+                  && graph.node(entry.getKey()) instanceof LlmAgent agent
+                  && agent.hasMode(AgentMode.TASK));
+    }
+
     private void start(String nodeName, Trigger trigger) {
       String runId = workflowState.nextChildRunId(nodeName);
       nodeStates.put(nodeName, new NodeState(NodeStatus.RUNNING));
+      // A new run's wait counts again; a replay adds the node back when it completes.
+      replayedWaits.remove(nodeName);
       Node node = graph.node(nodeName);
       boolean useAsOutput = graph.terminalNodeNames().contains(nodeName);
       String childKey = NodeRunner.segment(nodeName, runId);
@@ -294,6 +317,9 @@ final class Scheduler {
       progress.status = NodeStatus.WAITING;
       progress.interrupts = childInterruptIds.asList();
       interruptIds.addAll(childInterruptIds);
+      if (wasReplayed) {
+        replayedWaits.add(nodeName);
+      }
       emitCheckpoint();
       return;
     }
@@ -301,6 +327,9 @@ final class Scheduler {
         && childState.output().isEmpty()
         && childState.selectedRoutes().isEmpty()) {
       progress.status = NodeStatus.WAITING;
+      if (wasReplayed) {
+        replayedWaits.add(nodeName);
+      }
       emitCheckpoint();
       return;
     }

@@ -29,7 +29,9 @@ public enum AgentMode {
 
   /**
    * Works on a task in its own isolated history until it calls {@code finish_task} with an output
-   * that matches its output schema.
+   * that matches its output schema. While a task node waits on the user, no other workflow node
+   * starts, and, as in Python ADK, a plain reply goes to the task that asked last, so task nodes
+   * that ask in parallel can't be answered reliably.
    */
   TASK,
 }

@@ -27,8 +27,10 @@ import static com.google.adk.workflow.WorkflowResumeTesting.START;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
+import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
 import static com.google.adk.workflow.WorkflowResumeTesting.lookalikeFinishTask;
 import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
+import static com.google.adk.workflow.WorkflowResumeTesting.pathOf;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 
@@ -36,7 +38,9 @@ import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
+import com.google.adk.testing.TestNode;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
@@ -47,8 +51,13 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
 import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -56,7 +65,6 @@ import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public final class TaskContinuationTest {
-
   @Test
   public void waitingTaskNode_continuesWithThePlainReplyInItsInvocation() {
     assertWaitingTaskNodeContinuesWithThePlainReply(/* resumable= */ true);
@@ -595,6 +603,301 @@ public final class TaskContinuationTest {
     assertThat(workerModel.getRequests()).hasSize(2);
     assertThat(workerModel.getLastRequest().contents()).contains(userText("Friday"));
     assertThat(answered.stream().map(Event::stringifyContent)).contains("Done.");
+  }
+
+  @Test
+  public void waitingTaskNode_keepsOtherNodesFromStarting() {
+    AtomicInteger otherRuns = new AtomicInteger();
+    // The gate ends only once the task waits on its question.
+    Node gate = gateAfterWait("gate", "task", "Which date?", "G");
+    Workflow workflow =
+        workflow(
+            new Edge(START, askingTask()),
+            new Edge(START, gate),
+            new Edge(gate, countingNode("other", otherRuns)));
+
+    assertOtherNodeStartsOnlyOnceTheTaskIsAnswered(workflow, /* resumable= */ true, otherRuns);
+  }
+
+  @Test
+  public void waitingTaskNodeWithoutResumability_keepsOtherNodesFromStarting() {
+    AtomicInteger otherRuns = new AtomicInteger();
+    // Without checkpoints to wait for, one node at a time queues the other node behind the task.
+    Workflow workflow =
+        Workflow.builder()
+            .name("wf")
+            .maxConcurrency(1)
+            .edges(new Edge(START, askingTask()), new Edge(START, countingNode("other", otherRuns)))
+            .build();
+
+    assertOtherNodeStartsOnlyOnceTheTaskIsAnswered(workflow, /* resumable= */ false, otherRuns);
+  }
+
+  private static void assertOtherNodeStartsOnlyOnceTheTaskIsAnswered(
+      Workflow workflow, boolean resumable, AtomicInteger otherRuns) {
+    WorkflowSession session = new WorkflowSession(workflow, resumable);
+
+    session.advance(go());
+    int otherRunsWhileTaskWaited = otherRuns.get();
+    session.advance(userText("Tuesday"));
+
+    // As in Python, the other node starts only once the task is answered.
+    assertThat(otherRunsWhileTaskWaited).isEqualTo(0);
+    assertThat(otherRuns.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void replyToATaskWhileAnotherTaskWaits_reachesItsTaskAsInPython() {
+    CountDownLatch t2Started = new CountDownLatch(1);
+    TestLlm t1Model =
+        TestLlm.create(createTextLlmResponse("T1 asks?"), createTextLlmResponse("T1 again?"));
+    // t1 asks only once t2 has started, so both tasks run and ask in turn 1.
+    LlmAgent t1 =
+        LlmAgent.builder()
+            .name("t1")
+            .model(t1Model)
+            .mode(AgentMode.TASK)
+            .beforeModelCallback((callbackContext, request) ->
+                Completable.fromAction(() -> awaitOrFail(t2Started))
+                    .andThen(Maybe.<LlmResponse>empty()))
+            .build();
+    TestLlm t2Model = TestLlm.create(createTextLlmResponse("T2 asks?"), finishTask("Booked."));
+    // t2 asks only after t1 has, so the reply goes to t2.
+    LlmAgent t2 =
+        LlmAgent.builder()
+            .name("t2")
+            .model(t2Model)
+            .mode(AgentMode.TASK)
+            .beforeModelCallback((callbackContext, request) -> {
+              t2Started.countDown();
+              return Flowable.interval(5, TimeUnit.MILLISECONDS)
+                  .filter(unused ->
+                      taskWaitRecorded(
+                          callbackContext.invocationContext().session(), "t1", "T1 asks?"))
+                  .take(1)
+                  .timeout(10, TimeUnit.SECONDS)
+                  .ignoreElements()
+                  .andThen(Maybe.<LlmResponse>empty());
+            })
+            .build();
+    Node a = emitter("a", "A");
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, t1), new Edge(START, a), new Edge(a, t2)));
+    session.advance(go());
+
+    session.advance(userText("Tuesday"));
+    int t1RequestsAfterFirstReply = t1Model.getRequests().size();
+    session.advance(userText("Friday"));
+
+    // As in Python ADK, t2 asked last, so it takes the first reply; the next one goes to t1.
+    assertThat(t2Model.getRequests()).hasSize(2);
+    assertThat(t2Model.getLastRequest().contents()).contains(userText("Tuesday"));
+    assertThat(t1RequestsAfterFirstReply).isEqualTo(1);
+    assertThat(t1Model.getLastRequest().contents()).contains(userText("Friday"));
+  }
+
+  @Test
+  public void answerToANodeBehindAPlainNodeWhileATaskWaits_reachesThatNode() {
+    CountDownLatch t2CalledModel = new CountDownLatch(1);
+    LlmAgent task =
+        LlmAgent.builder()
+            .name("task")
+            .model(TestLlm.create(createTextLlmResponse("Which date?")))
+            .mode(AgentMode.TASK)
+            // Calls its model only once t2 has, so t2 starts before the task waits.
+            .beforeModelCallback((ctx, req) ->
+                Completable.fromAction(() -> awaitOrFail(t2CalledModel))
+                    .andThen(Maybe.<LlmResponse>empty()))
+            .build();
+    TestLlm t2Model =
+        TestLlm.create(
+            createFunctionCallLlmResponse(
+                "ask_1", "pendingTool", ImmutableMap.of("message", "approve?")),
+            createTextLlmResponse("T2 got it."));
+    LlmAgent t2 =
+        LlmAgent.builder()
+            .name("t2")
+            .model(t2Model)
+            .mode(AgentMode.TASK)
+            .tools(pendingFunctionTool())
+            .beforeModelCallback((ctx, req) -> {
+              t2CalledModel.countDown();
+              return Maybe.empty();
+            })
+            .build();
+    Node g = emitter("g", "G");
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, task), new Edge(START, g), new Edge(g, t2)));
+    session.advance(go());
+
+    session.advance(answer("ask_1", ImmutableMap.of("status", "approved"), "pendingTool"));
+
+    // The task only replayed its wait in turn 2, so the answer still reaches t2, as in Python.
+    assertThat(t2Model.getRequests()).hasSize(2);
+  }
+
+  @Test
+  public void answerToAnotherNodeWhileATaskWaits_keepsANestedOpenCallWaiting() {
+    LlmAgent task = task("task", TestLlm.create(createTextLlmResponse("Which date?")));
+    Node sub = workflow("sub", new Edge(START, longRunningAsk("asker", "ask_1")));
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, task),
+                new Edge(START, sub),
+                new Edge(START, longRunningAsk("other", "ask_2"))));
+    session.advance(go());
+
+    ImmutableList<Event> second = session.turn(answer("ask_2", ImmutableMap.of("ok", true)));
+
+    // Nobody answered ask_1, so the workflow keeps waiting on it rather than finishing.
+    assertThat(
+            second.stream()
+                .anyMatch(event -> event.actions().endOfAgent() && pathOf(event).isEmpty()))
+        .isFalse();
+  }
+
+  @Test
+  public void taskThatRunsAgainAfterReplayingItsWait_holdsNodesQueuedAfterItsNewWait() {
+    TestLlm t1Model =
+        TestLlm.create(createTextLlmResponse("T1 asks?"), createTextLlmResponse("T1 again?"));
+    LlmAgent t1 = task("t1", t1Model);
+    Node other = longRunningAsk("other", "ask_1");
+    // Waits on t1's new question, as the one it replayed is followed by checkpoints already.
+    Node gate2 = gateAfterWait("gate2", "t1", "T1 again?", "G2");
+    AtomicInteger heldRuns = new AtomicInteger();
+    Node held =
+        new TestNode(
+            "held",
+            (ctx, input) -> {
+              heldRuns.incrementAndGet();
+              return Flowable.just("H");
+            });
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, t1),
+                new Edge(START, other),
+                new Edge(other, t1),
+                new Edge(other, gate2),
+                new Edge(gate2, held)));
+    session.advance(go());
+
+    session.advance(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    // t1 replayed its first wait, then ran again and waits, so held stays held.
+    assertThat(t1Model.getRequests()).hasSize(2);
+    assertThat(heldRuns.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void answerToANodeBehindAPlainNodeWhileATaskWaitsOnACall_reachesThatNode() {
+    CountDownLatch t2CalledModel = new CountDownLatch(1);
+    TestLlm taskModel =
+        TestLlm.create(
+            createFunctionCallLlmResponse(
+                "ask_task", "pendingTool", ImmutableMap.of("message", "task approve?")));
+    LlmAgent task =
+        LlmAgent.builder()
+            .name("task")
+            .model(taskModel)
+            .mode(AgentMode.TASK)
+            .tools(pendingFunctionTool())
+            // Calls its model only once t2 has, so t2 starts before the task waits.
+            .beforeModelCallback((ctx, req) ->
+                Completable.fromAction(() -> awaitOrFail(t2CalledModel))
+                    .andThen(Maybe.<LlmResponse>empty()))
+            .build();
+    TestLlm t2Model =
+        TestLlm.create(
+            createFunctionCallLlmResponse(
+                "ask_1", "pendingTool", ImmutableMap.of("message", "approve?")),
+            createTextLlmResponse("T2 got it."));
+    LlmAgent t2 =
+        LlmAgent.builder()
+            .name("t2")
+            .model(t2Model)
+            .mode(AgentMode.TASK)
+            .tools(pendingFunctionTool())
+            .beforeModelCallback((ctx, req) -> {
+              t2CalledModel.countDown();
+              return Maybe.empty();
+            })
+            .build();
+    Node g = emitter("g", "G");
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, task), new Edge(START, g), new Edge(g, t2)));
+    session.advance(go());
+
+    session.advance(answer("ask_1", ImmutableMap.of("status", "approved"), "pendingTool"));
+
+    // The task only replayed its open call in turn 2, so the answer still reaches t2, as in Python.
+    assertThat(t2Model.getRequests()).hasSize(2);
+  }
+
+  /** Returns a node that emits {@code output} once {@code task} waits on {@code question}. */
+  private static Node gateAfterWait(String name, String task, String question, String output) {
+    return new TestNode(
+        name,
+        (ctx, input) ->
+            Flowable.interval(5, TimeUnit.MILLISECONDS)
+                .filter(
+                    unused -> taskWaitRecorded(ctx.invocationContext().session(), task, question))
+                .take(1)
+                .map(unused -> output)
+                .timeout(10, TimeUnit.SECONDS));
+  }
+
+  /**
+   * Returns whether a workflow checkpoint in which {@code task} waits follows its last {@code
+   * question} in {@code session}.
+   */
+  private static boolean taskWaitRecorded(Session session, String task, String question) {
+    ImmutableList<Event> events = session.immutableEvents();
+    int asked = -1;
+    for (int i = 0; i < events.size(); i++) {
+      if (events.get(i).author().equals(task)
+          && events.get(i).stringifyContent().equals(question)) {
+        asked = i;
+      }
+    }
+    return asked >= 0
+        && events.subList(asked + 1, events.size()).stream()
+            .anyMatch(event -> isWaiting(event, task));
+  }
+
+  /** Returns whether {@code event} is a workflow checkpoint in which {@code node} waits. */
+  private static boolean isWaiting(Event event, String node) {
+    return event
+        .actions()
+        .agentState()
+        .map(state -> state.get(NodeState.NODES_KEY))
+        .filter(Map.class::isInstance)
+        .map(nodes -> ((Map<?, ?>) nodes).get(node))
+        .filter(Map.class::isInstance)
+        .map(state -> ((Map<?, ?>) state).get("status"))
+        .filter(
+            status -> status instanceof Number code && code.intValue() == NodeStatus.WAITING.code())
+        .isPresent();
+  }
+
+  /** Waits for {@code latch}, failing fast rather than letting the test go on after a timeout. */
+  private static void awaitOrFail(CountDownLatch latch) throws InterruptedException {
+    if (!latch.await(10, TimeUnit.SECONDS)) {
+      throw new IllegalStateException("Timed out waiting for the latch.");
+    }
+  }
+
+  /** Returns a task node that asks once and finishes with the reply. */
+  private static LlmAgent askingTask() {
+    return task(
+        "task", TestLlm.create(createTextLlmResponse("Which date?"), finishTask("Booked.")));
+  }
+
+  /** Returns a node that counts its runs in {@code runs} and ends without an output. */
+  private static Node countingNode(String name, AtomicInteger runs) {
+    return new TestNode(
+        name, (ctx, input) -> Flowable.empty().doOnSubscribe(unused -> runs.incrementAndGet()));
   }
 
   private static LlmAgent task(String name, TestLlm model) {
