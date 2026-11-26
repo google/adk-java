@@ -40,9 +40,14 @@ public final class NodeNames {
   public static void validate(String name) {
     checkArgument(!name.isEmpty(), "A node name must not be empty.");
     checkArgument(
-        PATH_SEPARATORS.matchesNoneOf(name),
+        isValid(name),
         "A node name must not contain '/', '@', or '.', which separate node paths and branches,"
             + " but '%s' does.",
         name);
+  }
+
+  /** Returns whether {@code name} can be a node name: it is not empty and has no separators. */
+  static boolean isValid(String name) {
+    return !name.isEmpty() && PATH_SEPARATORS.matchesNoneOf(name);
   }
 }

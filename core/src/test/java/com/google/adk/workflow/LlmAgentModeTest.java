@@ -40,6 +40,7 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
+import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
@@ -816,6 +817,222 @@ public final class LlmAgentModeTest {
     };
   }
 
+  @Test
+  public void taskSubAgentWithADottedName_isRejected() {
+    LlmAgent worker = agent("billing.desk", AgentMode.TASK);
+    TestLlm model = TestLlm.create("ok");
+
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> chat("coordinator", model, worker));
+
+    assertThat(e).hasMessageThat().contains("'billing.desk'");
+  }
+
+  @Test
+  public void singleTurnSubAgentWithADottedName_isRejected() {
+    LlmAgent helper = agent("notes.writer", AgentMode.SINGLE_TURN);
+    TestLlm model = TestLlm.create("ok");
+
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> chat("coordinator", model, helper));
+
+    assertThat(e).hasMessageThat().contains("'notes.writer'");
+  }
+
+  @Test
+  public void rejectedAgent_leavesItsSubAgentsWithoutAParent() {
+    LlmAgent sibling = agent("valid_worker", AgentMode.TASK);
+    LlmAgent dotted = agent("billing.desk", AgentMode.TASK);
+    TestLlm model = TestLlm.create("ok");
+
+    assertThrows(IllegalArgumentException.class, () -> chat("coordinator", model, sibling, dotted));
+
+    assertThat(sibling.parentAgent()).isNull();
+  }
+
+  @Test
+  public void chatOrModelessSubAgentWithADottedName_isAllowed() {
+    LlmAgent parent =
+        chat(
+            "coordinator",
+            TestLlm.create("ok"),
+            agent("billing.desk", AgentMode.CHAT),
+            modeless("notes.writer"));
+
+    assertThat(parent.subAgents()).hasSize(2);
+  }
+
+  @Test
+  public void graphWithADottedAgentBelowAnAgentNode_failsValidation() {
+    LlmAgent child =
+        LlmAgent.builder()
+            .name("support")
+            .model(TestLlm.create("ok"))
+            .subAgents(modeless("billing.desk"))
+            .build();
+    LlmAgent lead = chat("lead", TestLlm.create("ok"), child);
+    Edge edge = new Edge(START, lead);
+
+    GraphValidationException e = assertThrows(GraphValidationException.class, () -> workflow(edge));
+
+    assertThat(e)
+        .hasMessageThat()
+        .contains("Agents [billing.desk] that graph node 'lead' can hand off to");
+  }
+
+  @Test
+  public void graphWithADottedAgentBelowAParallelAgentNode_failsValidation() {
+    LlmAgent lead = chat("lead", TestLlm.create("ok"), modeless("billing.desk"));
+    Edge edge = new Edge(START, ParallelWorkers.parallelNode(ParallelWorkers.parallelNode(lead)));
+
+    GraphValidationException e = assertThrows(GraphValidationException.class, () -> workflow(edge));
+
+    assertThat(e).hasMessageThat().contains("[billing.desk]");
+  }
+
+  @Test
+  public void graphWithADottedAgentThatRunsInline_passesValidation() {
+    SequentialAgent pipeline =
+        SequentialAgent.builder().name("pipeline").subAgents(modeless("billing.desk")).build();
+    LlmAgent lead = chat("lead", TestLlm.create("ok"), pipeline);
+
+    // Building the workflow does not throw.
+    var unused = workflow(new Edge(START, lead));
+  }
+
+  @Test
+  public void graphWithADottedAgentBelowASingleTurnNode_passesValidation() {
+    // A single-turn node runs its handoff target inline.
+    LlmAgent lead =
+        LlmAgent.builder()
+            .name("lead")
+            .model(TestLlm.create("ok"))
+            .mode(AgentMode.SINGLE_TURN)
+            .subAgents(modeless("billing.desk"))
+            .build();
+
+    // Building the workflow does not throw.
+    var unused = workflow(new Edge(START, lead));
+  }
+
+  @Test
+  public void graphWithADottedPeerOfAnAgentNode_failsValidation() {
+    LlmAgent lead = chat("lead", TestLlm.create("ok"));
+    LlmAgent unusedRoot = chat("root", TestLlm.create("ok"), lead, modeless("billing.desk"));
+    Edge edge = new Edge(START, lead);
+
+    GraphValidationException e = assertThrows(GraphValidationException.class, () -> workflow(edge));
+
+    assertThat(e).hasMessageThat().contains("[billing.desk]");
+  }
+
+  @Test
+  public void graphWithADottedAgentBelowATaskPeer_passesValidation() {
+    LlmAgent lead =
+        LlmAgent.builder()
+            .name("lead")
+            .model(TestLlm.create("ok"))
+            .mode(AgentMode.CHAT)
+            .disallowTransferToParent(true)
+            .build();
+    LlmAgent peerTask =
+        LlmAgent.builder()
+            .name("peer_task")
+            .model(TestLlm.create("ok"))
+            .mode(AgentMode.TASK)
+            .subAgents(modeless("billing.desk"))
+            .build();
+    LlmAgent unusedRoot = chat("root", TestLlm.create("ok"), lead, peerTask);
+
+    // A task peer is not a handoff target, and the parent is out of reach, so are its sub-agents.
+    var unused = workflow(new Edge(START, lead));
+  }
+
+  @Test
+  public void graphWithADottedAgentBelowATaskSubAgent_failsValidation() {
+    LlmAgent worker =
+        LlmAgent.builder()
+            .name("worker")
+            .model(TestLlm.create("ok"))
+            .mode(AgentMode.TASK)
+            .subAgents(modeless("billing.desk"))
+            .build();
+    LlmAgent lead = chat("lead", TestLlm.create("ok"), worker);
+    Edge edge = new Edge(START, lead);
+
+    // The delegated task runs as a child node and can hand off to its own sub-agents.
+    GraphValidationException e = assertThrows(GraphValidationException.class, () -> workflow(edge));
+
+    assertThat(e).hasMessageThat().contains("[billing.desk]");
+  }
+
+  @Test
+  public void graphWithADottedParentOfAnAgentNode_failsValidation() {
+    LlmAgent lead = chat("lead", TestLlm.create("ok"));
+    LlmAgent unusedRoot = chat("front.desk", TestLlm.create("ok"), lead);
+    Edge edge = new Edge(START, lead);
+
+    GraphValidationException e = assertThrows(GraphValidationException.class, () -> workflow(edge));
+
+    assertThat(e).hasMessageThat().contains("[front.desk]");
+  }
+
+  @Test
+  public void graphWithADottedAgentThatTheNodeCannotReach_passesValidation() {
+    LlmAgent lead =
+        LlmAgent.builder()
+            .name("lead")
+            .model(TestLlm.create("ok"))
+            .mode(AgentMode.CHAT)
+            .disallowTransferToParent(true)
+            .disallowTransferToPeers(true)
+            .build();
+    LlmAgent unusedRoot = chat("root", TestLlm.create("ok"), lead, modeless("billing.desk"));
+
+    // Building the workflow does not throw.
+    var unused = workflow(new Edge(START, lead));
+  }
+
+  @Test
+  public void graphWithADottedParentThatIsNotAnLlmAgent_passesValidation() {
+    LlmAgent lead = chat("lead", TestLlm.create("ok"));
+    SequentialAgent unusedParent =
+        SequentialAgent.builder().name("intake.flow").subAgents(lead).build();
+
+    // An agent can hand off only to an LlmAgent parent, so this one is out of its reach.
+    var unused = workflow(new Edge(START, lead));
+  }
+
+  @Test
+  public void graphWithADottedAgentInATreeWithoutModes_passesValidation() {
+    LlmAgent lead =
+        LlmAgent.builder()
+            .name("lead")
+            .model(TestLlm.create("ok"))
+            .subAgents(modeless("billing.desk"))
+            .build();
+
+    // Building the workflow does not throw.
+    var unused = workflow(new Edge(START, lead));
+  }
+
+  @Test
+  public void dottedAgentBelowANodeWhoseTreeGainsAModeLater_failsWhenTheWorkflowRuns() {
+    LlmAgent lead =
+        LlmAgent.builder()
+            .name("lead")
+            .model(TestLlm.create("ok"))
+            .subAgents(modeless("billing.desk"))
+            .build();
+    Workflow workflow = workflow(new Edge(START, lead));
+    LlmAgent unusedRoot = chat("root", TestLlm.create("ok"), lead);
+
+    Throwable error = new WorkflowSession(workflow).failingTurn(go()).error();
+
+    assertThat(error).isInstanceOf(GraphValidationException.class);
+    assertThat(error).hasMessageThat().contains("[billing.desk]");
+  }
+
   private static LlmAgent chat(String name, TestLlm model, BaseAgent... subAgents) {
     return LlmAgent.builder()
         .name(name)
@@ -861,6 +1078,10 @@ public final class LlmAgentModeTest {
         Runner.builder().app(App.builder().name("app").rootAgent(agent).build()).build();
     Session session = runner.sessionService().createSession("app", "user").blockingGet();
     runner.runAsync("user", session.id(), go()).blockingSubscribe();
+  }
+
+  private static LlmAgent modeless(String name) {
+    return LlmAgent.builder().name(name).model(TestLlm.create("ok")).build();
   }
 
   private static LlmAgent agent(String name, AgentMode mode) {

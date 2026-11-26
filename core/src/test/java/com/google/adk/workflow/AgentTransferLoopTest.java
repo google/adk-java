@@ -758,8 +758,10 @@ public final class AgentTransferLoopTest {
             "coordinator",
             TestLlm.create(transferTo("billing.desk")),
             chat("billing.desk", deskModel));
+    // Graph validation does not see the sub-agents of an agent that a node runs itself.
+    Node driver = dispatcher("driver", (ctx, input) -> ctx.runNode(coordinator).toFlowable());
 
-    FailedTurn turn = new WorkflowSession(workflow(new Edge(START, coordinator))).failingTurn(go());
+    FailedTurn turn = new WorkflowSession(workflow(new Edge(START, driver))).failingTurn(go());
 
     assertThat(turn.error()).isInstanceOf(IllegalArgumentException.class);
     assertThat(deskModel.getRequests()).isEmpty();

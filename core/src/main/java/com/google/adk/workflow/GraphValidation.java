@@ -18,13 +18,17 @@ package com.google.adk.workflow;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableListMultimap.toImmutableListMultimap;
+import static com.google.common.collect.ImmutableSortedSet.toImmutableSortedSet;
+import static java.util.Comparator.naturalOrder;
 import static java.util.stream.Collectors.joining;
 
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.annotations.Experimental;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Multimaps;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -58,6 +62,78 @@ final class GraphValidation {
     validateNoUnconditionalCycles(edges, nodeNames);
     validateNodeOutgoingEdges(nodes, edges);
     validateChatAgentWiring(edges);
+    validateChildNodeAgentNames(nodes);
+  }
+
+  /**
+   * Rejects an agent that a graph {@link LlmAgent} node, parallel or not, can hand off to, directly
+   * or through other handoffs, if its name cannot be a node name, since the workflow runs it as a
+   * node. {@link Workflow} checks again when it runs, since a parent built after the graph can give
+   * the tree a mode.
+   */
+  static void validateChildNodeAgentNames(List<Node> nodes) {
+    for (Node node : nodes) {
+      if (!(ParallelWorkers.unwrap(node) instanceof LlmAgent agent) || !agent.waitForOutput()) {
+        continue;
+      }
+      ImmutableSortedSet<String> invalidNames =
+          nodeAgentNames(agent).stream()
+              .filter(name -> !NodeNames.isValid(name))
+              .collect(toImmutableSortedSet(naturalOrder()));
+      if (!invalidNames.isEmpty()) {
+        throw invalid(
+            "Agents "
+                + invalidNames
+                + " that graph node '"
+                + node.name()
+                + "' can hand off to run as nodes, so their names must not contain '.'.");
+      }
+    }
+  }
+
+  /**
+   * Returns the names of the agents that run as nodes when {@code agent} and the agents it reaches
+   * hand off. Only a chat or task {@link LlmAgent} runs its handoff targets as nodes; other agents,
+   * single-turn ones included, run theirs inline.
+   */
+  private static Set<String> nodeAgentNames(LlmAgent agent) {
+    Set<BaseAgent> reached = new HashSet<>();
+    reached.add(agent);
+    Set<String> names = new LinkedHashSet<>();
+    Queue<LlmAgent> toVisit = new ArrayDeque<>();
+    toVisit.add(agent);
+    while (!toVisit.isEmpty()) {
+      for (BaseAgent target : handoffTargets(toVisit.remove())) {
+        if (!reached.add(target)) {
+          continue;
+        }
+        names.add(target.name());
+        if (target instanceof LlmAgent llmAgent && llmAgent.waitForOutput()) {
+          toVisit.add(llmAgent);
+        }
+      }
+    }
+    return names;
+  }
+
+  /** Returns the sub-agents, parent and peers that {@code agent}'s flags let it hand off to. */
+  private static List<BaseAgent> handoffTargets(LlmAgent agent) {
+    List<BaseAgent> targets = new ArrayList<>(agent.subAgents());
+    BaseAgent parent = agent.parentAgent();
+    // As in LlmAgent's transfer targets, only an LlmAgent parent and its sub-agents are reachable.
+    if (!(parent instanceof LlmAgent)) {
+      return targets;
+    }
+    if (!agent.disallowTransferToParent()) {
+      targets.add(parent);
+    }
+    if (!agent.disallowTransferToPeers()) {
+      // A task or single-turn peer runs only as a tool, so no handoff reaches it.
+      parent.subAgents().stream()
+          .filter(peer -> !peer.name().equals(agent.name()) && !LlmAgent.runsAsTool(peer))
+          .forEach(targets::add);
+    }
+    return targets;
   }
 
   /**

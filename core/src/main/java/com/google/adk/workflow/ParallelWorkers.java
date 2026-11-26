@@ -76,6 +76,14 @@ public final class ParallelWorkers {
     return new ParallelWorkerNode(node, maxParallelWorkers);
   }
 
+  /** Returns the node that parallel nodes run on each item, or {@code node} if it is not one. */
+  static Node unwrap(Node node) {
+    while (node instanceof ParallelWorkerNode parallel) {
+      node = parallel.worker;
+    }
+    return node;
+  }
+
   private static final class ParallelWorkerNode extends BaseNode {
 
     // No run ID: FanOut reserves IDs in input order, so each item keeps its ID on resume.

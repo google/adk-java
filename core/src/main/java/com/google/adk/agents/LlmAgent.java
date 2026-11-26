@@ -16,6 +16,7 @@
 
 package com.google.adk.agents;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static java.util.Objects.requireNonNullElse;
@@ -149,7 +150,7 @@ public class LlmAgent extends BaseAgent {
     super(
         builder.name,
         builder.description,
-        builder.subAgents,
+        requireNodeNamesForNodeSubAgents(builder.subAgents),
         builder.beforeAgentCallback,
         builder.afterAgentCallback);
     this.model = Optional.ofNullable(builder.model);
@@ -618,7 +619,9 @@ public class LlmAgent extends BaseAgent {
     /**
      * Sets how this agent converses when it runs as a workflow node. An agent without a mode runs
      * as {@link AgentMode#CHAT} when another agent in its tree sets a mode, and otherwise as it
-     * does outside a workflow.
+     * does outside a workflow. A {@link AgentMode#TASK} or {@link AgentMode#SINGLE_TURN} agent runs
+     * as a child node, so building its parent throws {@link IllegalArgumentException} if its name
+     * contains '.'.
      */
     @CanIgnoreReturnValue
     @Experimental
@@ -659,6 +662,23 @@ public class LlmAgent extends BaseAgent {
       validate();
       return new LlmAgent(this);
     }
+  }
+
+  /**
+   * Returns {@code subAgents}, which must not hold a task or single-turn agent whose name contains
+   * '.', since such an agent runs as a child node. Runs before the sub-agents are linked, so a
+   * rejected agent leaves them free to reuse.
+   */
+  @CanIgnoreReturnValue
+  private static @Nullable List<? extends BaseAgent> requireNodeNamesForNodeSubAgents(
+      @Nullable List<? extends BaseAgent> subAgents) {
+    for (BaseAgent subAgent : requireNonNullElse(subAgents, ImmutableList.<BaseAgent>of())) {
+      checkArgument(
+          !runsAsTool(subAgent) || !subAgent.name().contains("."),
+          "Task or single-turn sub-agent '%s' runs as a node, so its name must not contain '.'.",
+          subAgent.name());
+    }
+    return subAgents;
   }
 
   protected BaseLlmFlow determineLlmFlow() {

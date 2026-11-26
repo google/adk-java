@@ -86,7 +86,8 @@ public final class Workflow extends BaseNode {
    * of the sole terminal node that produces one becomes the workflow's output. The returned {@code
    * Flowable} fails with {@link WorkflowConfigurationException} if more than one terminal node
    * produces an output, or with {@link GraphValidationException}, before any node runs, if a chat
-   * agent follows a node other than {@link Start} or the workflow runs inside another one.
+   * agent follows a node other than {@link Start}, the workflow runs inside another one, or an
+   * agent that a graph agent node hands off to has a name that cannot be a node name.
    */
   @Override
   public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
@@ -102,6 +103,7 @@ public final class Workflow extends BaseNode {
               if (nestedInWorkflow(context)) {
                 GraphValidation.validateNoChatAgentInNestedWorkflow(name(), runGraph.edges());
               }
+              GraphValidation.validateChildNodeAgentNames(runGraph.nodes());
               // Inner nodes inherit the workflow as event author; agent nodes keep their own.
               context.requireNodeState().eventAuthor(name());
               return new Scheduler(this, runGraph, context).run(nodeInput);
