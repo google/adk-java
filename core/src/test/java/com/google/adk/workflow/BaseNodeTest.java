@@ -111,7 +111,8 @@ public final class BaseNodeTest {
     Event event = Event.builder().id("event_id").author("agent").build();
     BaseNode node = new TestNode("node", "", Flowable.just(event));
 
-    List<Event> events = node.run(context(), /* nodeInput= */ null).toList().blockingGet();
+    List<Event> events =
+        node.run(context(), /* nodeInput= */ null, /* checkInput= */ true).toList().blockingGet();
 
     assertThat(events).hasSize(1);
     assertThat(events.get(0)).isSameInstanceAs(event);
@@ -121,7 +122,8 @@ public final class BaseNodeTest {
   public void run_turnsANonEventValueIntoAnOutputEvent() {
     BaseNode node = new TestNode("node", "", Flowable.just("text"));
 
-    Event event = node.run(context(), /* nodeInput= */ null).blockingSingle();
+    Event event =
+        node.run(context(), /* nodeInput= */ null, /* checkInput= */ true).blockingSingle();
 
     assertThat(event.output()).hasValue("text");
     assertThat(event.author()).isEmpty();
@@ -136,7 +138,9 @@ public final class BaseNodeTest {
             .build();
     BaseNode node = new TestNode("node", "", Flowable.just("text"));
 
-    Event event = node.run(context(invocationContext), /* nodeInput= */ null).blockingSingle();
+    Event event =
+        node.run(context(invocationContext), /* nodeInput= */ null, /* checkInput= */ true)
+            .blockingSingle();
 
     assertThat(event.id()).isEqualTo("event_id");
     assertThat(event.timestamp()).isEqualTo(1234);
@@ -146,7 +150,11 @@ public final class BaseNodeTest {
   public void run_emitsNothingWhenRunNodeEmitsNothing() {
     BaseNode node = new TestNode("node", "", Flowable.empty());
 
-    assertThat(node.run(context(), /* nodeInput= */ null).toList().blockingGet()).isEmpty();
+    assertThat(
+            node.run(context(), /* nodeInput= */ null, /* checkInput= */ true)
+                .toList()
+                .blockingGet())
+        .isEmpty();
   }
 
   @Test
@@ -159,7 +167,7 @@ public final class BaseNodeTest {
           }
         };
 
-    Flowable<Event> events = node.run(context(), /* nodeInput= */ null);
+    Flowable<Event> events = node.run(context(), /* nodeInput= */ null, /* checkInput= */ true);
 
     events.test().assertError(IllegalStateException.class);
   }
@@ -168,7 +176,9 @@ public final class BaseNodeTest {
   public void run_rejectsANullContext() {
     BaseNode node = new TestNode("node", "", Flowable.empty());
 
-    assertThrows(NullPointerException.class, () -> node.run(null, /* nodeInput= */ null));
+    assertThrows(
+        NullPointerException.class,
+        () -> node.run(null, /* nodeInput= */ null, /* checkInput= */ true));
   }
 
   private static Context context() {

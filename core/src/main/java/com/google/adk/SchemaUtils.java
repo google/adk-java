@@ -203,13 +203,13 @@ public final class SchemaUtils {
   }
 
   /**
-   * Returns why {@code value} does not match {@code schema}, or empty if it does. The reason names
-   * parts of the schema but never the value, which comes from the user.
+   * Returns why {@code value} does not match {@code schema}, enum values included, or empty if it
+   * does. The reason names parts of the schema but never the value, which comes from the user.
    *
    * <p>This method is only for use by Agent Development Kit.
    */
   public static Optional<String> findMismatch(@Nullable Object value, Schema schema) {
-    return Optional.ofNullable(mismatch(value, schema));
+    return Optional.ofNullable(mismatch(value, schema, /* strict= */ true));
   }
 
   /**
@@ -398,20 +398,41 @@ public final class SchemaUtils {
   }
 
   private static @Nullable String mismatch(@Nullable Object value, Schema schema) {
+    return mismatch(value, schema, /* strict= */ false);
+  }
+
+  /**
+   * Returns why {@code value} does not match. If {@code strict}, it also checks enum values at any
+   * depth and the items of a list under an untyped schema, as a workflow node's schema check does.
+   */
+  private static @Nullable String mismatch(@Nullable Object value, Schema schema, boolean strict) {
     if (value == null && schema.nullable().orElse(false)) {
       return null;
     }
+    Optional<List<String>> allowed = schema.enum_();
+    if (strict
+        && allowed.isPresent()
+        && (value == null || !allowed.get().contains(String.valueOf(value)))) {
+      return "it is not one of the schema's enum values";
+    }
     // Check maps before anyOf so each member is validated as an object with its required keys.
     if (value instanceof Map<?, ?> map) {
-      return mapMismatch(map, schema);
+      return mapMismatch(map, schema, strict);
     }
     List<Schema> anyOf = schema.anyOf().orElse(ImmutableList.of());
-    if (!anyOf.isEmpty() && anyOf.stream().allMatch(member -> mismatch(value, member) != null)) {
+    if (!anyOf.isEmpty()
+        && anyOf.stream().allMatch(member -> mismatch(value, member, strict) != null)) {
       return "it matches none of the schema's anyOf alternatives";
     }
     Type.Known type = typeOf(schema);
     if (type == null || type == Type.Known.TYPE_UNSPECIFIED) {
-      return null;
+      Schema itemSchema = schema.items().orElse(null);
+      return strict
+              && itemSchema != null
+              && value instanceof Collection<?> items
+              && items.stream().anyMatch(item -> mismatch(item, itemSchema, strict) != null)
+          ? "an item does not match the schema's items"
+          : null;
     }
     boolean matches =
         switch (type) {
@@ -431,7 +452,8 @@ public final class SchemaUtils {
             }
             Optional<Schema> itemSchema = schema.items();
             yield itemSchema.isEmpty()
-                || items.stream().allMatch(item -> mismatch(item, itemSchema.get()) == null);
+                || items.stream()
+                    .allMatch(item -> mismatch(item, itemSchema.get(), strict) == null);
           }
           case OBJECT -> false;
           default -> true;
@@ -440,13 +462,14 @@ public final class SchemaUtils {
   }
 
   /** Returns why {@code map} does not match {@code schema}, or {@code null} if it does. */
-  private static @Nullable String mapMismatch(Map<?, ?> map, Schema schema) {
+  private static @Nullable String mapMismatch(Map<?, ?> map, Schema schema, boolean strict) {
     Type.Known type = typeOf(schema);
     if (type != null && type != Type.Known.OBJECT && type != Type.Known.TYPE_UNSPECIFIED) {
       return "the schema's type is " + type + ", not an object";
     }
     List<Schema> anyOf = schema.anyOf().orElse(ImmutableList.of());
-    if (!anyOf.isEmpty() && anyOf.stream().allMatch(member -> mapMismatch(map, member) != null)) {
+    if (!anyOf.isEmpty()
+        && anyOf.stream().allMatch(member -> mismatch(map, member, strict) != null)) {
       return "it matches none of the schema's anyOf alternatives";
     }
     Optional<Map<String, Schema>> properties = schema.properties();
@@ -457,7 +480,7 @@ public final class SchemaUtils {
         if (property == null) {
           return "it has a key the schema does not declare";
         }
-        if (mismatch(entry.getValue(), property) != null) {
+        if (mismatch(entry.getValue(), property, strict) != null) {
           return "property '" + entry.getKey() + "' does not match its schema";
         }
       }

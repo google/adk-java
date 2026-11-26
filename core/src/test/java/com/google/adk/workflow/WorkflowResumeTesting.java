@@ -56,6 +56,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
@@ -90,6 +91,10 @@ final class WorkflowResumeTesting {
     return events.stream()
         .filter(event -> pathOf(event).equals(nodePath) && event.output().isPresent())
         .collect(onlyElement());
+  }
+
+  static Event eventAt(List<Event> events, String nodePath) {
+    return events.stream().filter(event -> pathOf(event).equals(nodePath)).collect(onlyElement());
   }
 
   static ImmutableList<String> pathsOf(List<Event> events) {
@@ -360,6 +365,63 @@ final class WorkflowResumeTesting {
     public Maybe<Session> getSession(
         String appName, String userId, String sessionId, Optional<GetSessionConfig> config) {
       return delegate.getSession(appName, userId, sessionId, config);
+    }
+
+    @Override
+    public Single<ListSessionsResponse> listSessions(String appName, String userId) {
+      return delegate.listSessions(appName, userId);
+    }
+
+    @Override
+    public Completable deleteSession(String appName, String userId, String sessionId) {
+      return delegate.deleteSession(appName, userId, sessionId);
+    }
+
+    @Override
+    public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
+      return delegate.listEvents(appName, userId, sessionId);
+    }
+  }
+
+  /**
+   * Keeps each event as it was emitted in the live session, but reads a session back with each
+   * event in its JSON form, as a persistent store that returns the original event does.
+   */
+  static final class LiveEventSessionService implements BaseSessionService {
+    private final InMemorySessionService delegate = new InMemorySessionService();
+
+    @Override
+    public Single<Event> appendEvent(Session session, Event event) {
+      return delegate.appendEvent(session, event);
+    }
+
+    // BaseSessionService's only abstract createSession overload is deprecated.
+    @SuppressWarnings("deprecation")
+    @Override
+    public Single<Session> createSession(
+        String appName,
+        String userId,
+        @Nullable ConcurrentMap<String, Object> state,
+        @Nullable String sessionId) {
+      return delegate.createSession(appName, userId, state, sessionId);
+    }
+
+    @Override
+    public Maybe<Session> getSession(
+        String appName, String userId, String sessionId, Optional<GetSessionConfig> config) {
+      return delegate
+          .getSession(appName, userId, sessionId, config)
+          .map(session ->
+              Session.builder(session.id())
+                  .appName(session.appName())
+                  .userId(session.userId())
+                  .state(new ConcurrentHashMap<>(session.state()))
+                  .events(
+                      session.immutableEvents().stream()
+                          .map(event -> Event.fromJson(event.toJson()))
+                          .collect(toImmutableList()))
+                  .lastUpdateTime(session.lastUpdateTime())
+                  .build());
     }
 
     @Override

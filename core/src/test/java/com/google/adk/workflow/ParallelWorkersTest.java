@@ -771,7 +771,7 @@ public final class ParallelWorkersTest {
     Run run =
         run(ParallelWorkers.parallelNode(worker), Content.fromParts(Part.fromText("{\"a\":1}")));
 
-    assertThat(run.output()).isEqualTo(ImmutableList.of(ImmutableMap.of("a", 1L)));
+    assertThat(run.output()).isEqualTo(ImmutableList.of(ImmutableMap.of("a", 1)));
   }
 
   @Test
@@ -840,6 +840,28 @@ public final class ParallelWorkersTest {
 
     // Assert
     assertThat(error).hasMessageThat().isEqualTo(expectedError);
+  }
+
+  @Test
+  public void runNode_itemsReadByTheWorkersInputSchema_reachTheWorkerConverted() {
+    Node worker = echoTaking(Schema.builder().type("INTEGER").build());
+
+    Run run = run(ParallelWorkers.parallelNode(worker), ImmutableList.of("3", 4));
+
+    assertThat(run.output()).isEqualTo(ImmutableList.of(3, 4));
+  }
+
+  @Test
+  public void runNode_itemOutsideTheWorkersInputSchema_failsTheNode() {
+    Node worker = echoTaking(Schema.builder().type("INTEGER").build());
+
+    Run run = run(ParallelWorkers.parallelNode(worker), ImmutableList.of(1, "x"));
+
+    assertThat(run.failure().orElseThrow()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(run.failure().orElseThrow())
+        .hasMessageThat()
+        .contains("input of node 'worker' does not match its schema");
+    assertThat(run.output()).isNull();
   }
 
   private enum Status {

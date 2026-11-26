@@ -364,6 +364,48 @@ public final class SchemaUtilsTest {
   }
 
   @Test
+  public void findMismatch_propertyOutsideItsEnum_explainsItWithoutTheValue() {
+    Schema color = Schema.builder().type("STRING").enum_(ImmutableList.of("red", "green")).build();
+    Schema schema =
+        Schema.builder().type("OBJECT").properties(ImmutableMap.of("color", color)).build();
+
+    Optional<String> mismatch = SchemaUtils.findMismatch(ImmutableMap.of("color", "blue"), schema);
+
+    assertThat(mismatch.orElseThrow()).contains("'color'");
+    assertThat(mismatch.orElseThrow()).doesNotContain("blue");
+    assertThat(SchemaUtils.findMismatch(ImmutableMap.of("color", "red"), schema)).isEmpty();
+  }
+
+  @Test
+  public void findMismatch_mapAgainstAnUntypedEnumAlternative_checksTheEnum() {
+    Schema object =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("x", INTEGER))
+            .required(ImmutableList.of("x"))
+            .build();
+    Schema none = Schema.builder().enum_(ImmutableList.of("none")).build();
+    Schema schema = Schema.builder().anyOf(ImmutableList.of(object, none)).build();
+
+    Optional<String> mismatch = SchemaUtils.findMismatch(ImmutableMap.of("wrong", 1), schema);
+
+    assertThat(mismatch.orElseThrow()).contains("anyOf");
+    assertThat(SchemaUtils.findMismatch(ImmutableMap.of("x", 1), schema)).isEmpty();
+  }
+
+  @Test
+  public void findMismatch_itemsOfAnUntypedListSchema_areChecked() {
+    Schema color = Schema.builder().type("STRING").enum_(ImmutableList.of("red", "green")).build();
+    Schema schema = Schema.builder().items(color).build();
+
+    Optional<String> mismatch = SchemaUtils.findMismatch(ImmutableList.of("red", "blue"), schema);
+
+    assertThat(mismatch.orElseThrow()).doesNotContain("blue");
+    assertThat(SchemaUtils.findMismatch(ImmutableList.of(1), schema)).isPresent();
+    assertThat(SchemaUtils.findMismatch(ImmutableList.of("red", "green"), schema)).isEmpty();
+  }
+
+  @Test
   public void findMismatch_mapForANonObjectSchema_explainsIt() {
     assertThat(SchemaUtils.findMismatch(ImmutableMap.of("a", 1), INTEGER)).isPresent();
   }

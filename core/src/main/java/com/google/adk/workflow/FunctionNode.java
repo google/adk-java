@@ -180,6 +180,18 @@ public final class FunctionNode<I, O> extends BaseNode {
     return super.outputSchema().or(() -> Optional.ofNullable(outputCodec.schema()));
   }
 
+  // Schemas set on the builder are not checked yet. An inferred schema needs no check, as the
+  // ports read the values.
+  @Override
+  @Nullable Object checkedInput(@Nullable Object nodeInput) {
+    return nodeInput;
+  }
+
+  @Override
+  @Nullable Object checkedOutput(Object output) {
+    return output;
+  }
+
   /** Whether {@link #inputSchema} was inferred rather than set on the builder. */
   boolean inputSchemaInferred() {
     return super.inputSchema().isEmpty() && inputCodec.schema() != null;

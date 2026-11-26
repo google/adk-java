@@ -224,6 +224,53 @@ public final class LlmAgentTaskModeTest {
   }
 
   @Test
+  public void
+      taskAgentWithAStringEnumOutputSchema_finishingOutsideTheEnum_getsAnErrorAndCanRetry() {
+    Schema color = Schema.builder().type("STRING").enum_("red", "green").build();
+    TestLlm model =
+        TestLlm.create(
+            finishTask(ImmutableMap.of("result", "blue")),
+            finishTask(ImmutableMap.of("result", "red")));
+    LlmAgent task = task(model).outputSchema(color).outputKey("color").build();
+    WorkflowSession session = new WorkflowSession(withSuccessor(task));
+
+    ImmutableList<Event> events = session.turn(go());
+
+    assertThat(errorsIn(model.getLastRequest().contents()))
+        .containsExactly(
+            "Invoking `finish_task()` failed due to validation errors:\n"
+                + "finish_task argument 'result': it is not one of the schema's enum values\n"
+                + "You could retry calling this tool, but it is IMPORTANT for you to provide all"
+                + " the mandatory parameters with correct types.");
+    assertThat(outputEventAt(events, "wf@1/after@1").output())
+        .hasValue(ImmutableMap.of("received", "red"));
+    assertThat(stateValues(session.storedEvents(), "color")).containsExactly("red");
+  }
+
+  @Test
+  public void
+      taskAgentWithAnUntypedListOutputSchema_finishingWithABadItem_getsAnErrorAndCanRetry() {
+    Schema color = Schema.builder().type("STRING").enum_("red", "green").build();
+    TestLlm model =
+        TestLlm.create(
+            finishTask(ImmutableMap.of("result", ImmutableList.of("blue"))),
+            finishTask(ImmutableMap.of("result", ImmutableList.of("red"))));
+    LlmAgent task = task(model).outputSchema(Schema.builder().items(color).build()).build();
+    WorkflowSession session = new WorkflowSession(withSuccessor(task));
+
+    ImmutableList<Event> events = session.turn(go());
+
+    assertThat(errorsIn(model.getLastRequest().contents()))
+        .containsExactly(
+            "Invoking `finish_task()` failed due to validation errors:\n"
+                + "finish_task argument 'result': an item does not match the schema's items\n"
+                + "You could retry calling this tool, but it is IMPORTANT for you to provide all"
+                + " the mandatory parameters with correct types.");
+    assertThat(outputEventAt(events, "wf@1/after@1").output())
+        .hasValue(ImmutableMap.of("received", ImmutableList.of("red")));
+  }
+
+  @Test
   public void taskNodeAfterAnotherNode_opensWithThatNodesOutput() {
     TestLlm model = TestLlm.create(finishTask(ImmutableMap.of("result", "Booked.")));
     Node source = emitter("source", "Book for Friday.");

@@ -437,7 +437,8 @@ public class Context extends ReadonlyContext {
    * IllegalStateException} if this is not a workflow node's context, if this node's {@link
    * Node#rerunOnResume} is false, or if {@code config} delegates an output that this node already
    * has or has delegated; and with {@link IllegalArgumentException} if the child's name cannot form
-   * a node path.
+   * a node path or if the input schema of a child other than a {@link
+   * com.google.adk.workflow.FunctionNode} rejects {@code nodeInput}.
    */
   @Experimental
   public final Maybe<Object> runNode(Node node, @Nullable Object nodeInput, RunNodeConfig config) {

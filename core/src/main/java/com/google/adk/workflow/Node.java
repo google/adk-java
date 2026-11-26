@@ -67,7 +67,9 @@ public interface Node {
    * source's output schema lists a key or type this one rejects, so an open producer such as a map
    * builds, and a {@link FunctionNode} on a {@code Content} port checks the edge against the {@code
    * Content} schema. A node that requires all predecessors applies it to each predecessor's output,
-   * not the joined map.
+   * not the joined map. A run checks a node's schemas only for type, {@code nullable}, {@code
+   * enum}, {@code anyOf}, {@code properties}, {@code required} and {@code items}; it ignores {@code
+   * minimum}, {@code maximum}, {@code pattern}, lengths and {@code format}.
    */
   @Experimental
   default Optional<Schema> inputSchema() {
@@ -76,7 +78,8 @@ public interface Node {
 
   /**
    * Returns the schema that the node's output value must match. The content of a message-as-output
-   * event is not checked against this schema.
+   * event is not checked against this schema. A run checks a record, POJO or enum input or output
+   * in its JSON form and hands on that form: a map for a record, the name for an enum.
    */
   @Experimental
   default Optional<Schema> outputSchema() {

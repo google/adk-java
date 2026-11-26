@@ -93,7 +93,10 @@ public final class JoinNode extends BaseNode {
       return this;
     }
 
-    /** Sets the schema that each predecessor's output must match on its own, not the joined map. */
+    /**
+     * Sets the schema that each predecessor's output must match on its own, not the joined map; the
+     * node receives each output converted to the schema's types.
+     */
     @CanIgnoreReturnValue
     public Builder inputSchema(@Nullable Schema inputSchema) {
       this.inputSchema = inputSchema;

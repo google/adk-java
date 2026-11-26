@@ -92,6 +92,7 @@ public final class NodeRunner {
   private final @Nullable String overrideIsolationScope;
   private final Map<String, @Nullable Object> resumeInputs;
   private final ImmutableSet<String> openInterrupts;
+  private final boolean checkInput;
 
   private NodeRunner(Builder builder) {
     checkState(builder.node != null, "A node runner needs a node.");
@@ -117,6 +118,7 @@ public final class NodeRunner {
     this.overrideIsolationScope = builder.overrideIsolationScope;
     this.resumeInputs = builder.resumeInputs;
     this.openInterrupts = builder.openInterrupts;
+    this.checkInput = builder.checkInput;
   }
 
   /**
@@ -253,22 +255,24 @@ public final class NodeRunner {
         parentState.node().name());
     // No graph validates a child that a node runs itself, so check that it keeps paths intact.
     NodeNames.validate(node.name());
+    // Taken before the input check, as in Kotlin, so a rejected call still uses up its run ID.
+    String runId =
+        reservedRunId != null
+            ? reservedRunId
+            : config.runId().orElseGet(() -> parentState.nextChildRunId(node.name()));
+    // Checked in the caller, as in Kotlin, so a rejected input fails the caller and no child runs.
+    Object input = asBaseNode(node).checkedInput(nodeInput);
     // A workflow takes its output from its terminal node, so it never delegates it to a child.
     boolean delegatesOutput = config.useAsOutput() && !(parentState.node() instanceof Workflow);
     if (delegatesOutput) {
       parentState.claimOutputDelegation();
     }
-    String runId =
-        reservedRunId != null
-            ? reservedRunId
-            : config.runId().orElseGet(() -> parentState.nextChildRunId(node.name()));
-    return sharedChildRun(parent, node, nodeInput, runId, config)
-        .doOnError(
-            error -> {
-              if (delegatesOutput) {
-                parentState.releaseOutputDelegation();
-              }
-            })
+    return sharedChildRun(parent, node, input, runId, config)
+        .doOnError(error -> {
+          if (delegatesOutput) {
+            parentState.releaseOutputDelegation();
+          }
+        })
         .flatMapMaybe(child -> childResult(parent, child, delegatesOutput, config.raiseOnWait()));
   }
 
@@ -358,6 +362,7 @@ public final class NodeRunner {
                 : config.overrideIsolationScope().orElse(null))
         .resumeInputs(interception.resumeInputs())
         .openInterrupts(interception.interrupts())
+        .checkInput(false)
         .build()
         .run(nodeInput);
   }
@@ -565,7 +570,7 @@ public final class NodeRunner {
     Completable run(@Nullable Object nodeInput) {
       Completable body =
           asBaseNode(node)
-              .run(context, nodeInput)
+              .run(context, nodeInput, checkInput)
               // Avoid concatMapCompletable: its prefetch would let the node run ahead of the sink.
               .flatMapCompletable(this::dispatch, /* delayErrors= */ true, /* maxConcurrency= */ 1);
       return withTimeout(body)
@@ -902,12 +907,28 @@ public final class NodeRunner {
         && event.nodeInfo().map(NodeInfo::messageAsOutput).orElse(false);
   }
 
-  /** Adapts any node to a {@link BaseNode}, whose {@link BaseNode#run} turns values into events. */
+  /**
+   * Adapts any node to a {@link BaseNode}, whose {@link BaseNode#run} turns values into events and
+   * checks them against the node's schemas.
+   */
   private static BaseNode asBaseNode(Node node) {
     if (node instanceof BaseNode baseNode) {
       return baseNode;
     }
-    return new BaseNode(node.name(), node.description()) {
+    return new BaseNode(
+        node.name(),
+        node.description(),
+        node.rerunOnResume(),
+        node.waitForOutput(),
+        node.config(),
+        node.inputSchema().orElse(null),
+        node.outputSchema().orElse(null),
+        node.stateSchema().orElse(null)) {
+      @Override
+      public boolean requiresAllPredecessors() {
+        return node.requiresAllPredecessors();
+      }
+
       @Override
       public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
         return node.runNode(context, nodeInput);
@@ -932,6 +953,7 @@ public final class NodeRunner {
     private @Nullable String overrideIsolationScope;
     private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
     private ImmutableSet<String> openInterrupts = ImmutableSet.of();
+    private boolean checkInput = true;
 
     private Builder() {}
 
@@ -1024,6 +1046,16 @@ public final class NodeRunner {
     @CanIgnoreReturnValue
     Builder openInterrupts(ImmutableSet<String> openInterrupts) {
       this.openInterrupts = checkNotNull(openInterrupts);
+      return this;
+    }
+
+    /**
+     * Sets whether the node checks its input against its input schema, which defaults to {@code
+     * true}. A caller that runs a child checks the child's input itself.
+     */
+    @CanIgnoreReturnValue
+    Builder checkInput(boolean checkInput) {
+      this.checkInput = checkInput;
       return this;
     }
 
