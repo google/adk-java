@@ -750,21 +750,6 @@ public final class TaskDelegationTest {
   }
 
   @Test
-  public void taskWaitingInAnEarlierInvocation_isNotRunAgainByANewMessage() {
-    TestLlm workerModel =
-        TestLlm.create(createTextLlmResponse("Which day?"), createTextLlmResponse("unused"));
-    TestLlm model = TestLlm.create(delegate("t1", "worker", "Book."), createTextLlmResponse("x"));
-    WorkflowSession session =
-        new WorkflowSession(workflow(new Edge(START, chat(model, task("worker", workerModel)))));
-    session.advance(go());
-
-    var unused = session.turn(userTurn("Anything else?"));
-
-    assertThat(workerModel.getRequests()).hasSize(1);
-    assertThat(model.getRequests()).hasSize(1);
-  }
-
-  @Test
   public void chatAgent_twoDelegationsInOneTurn_runsBothAndAnswersEach() {
     Content twoDelegations =
         Content.builder()

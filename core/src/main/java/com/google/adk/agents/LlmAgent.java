@@ -65,9 +65,12 @@ import com.google.adk.workflow.WorkflowConfigurationException;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.genai.types.BlockedReason;
 import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
@@ -78,6 +81,8 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -982,14 +987,21 @@ public class LlmAgent extends BaseAgent {
       // A task resumes only its own delegations; a chat agent's may sit in any scope.
       ImmutableList<FunctionCall> pending =
           unansweredDelegations(context, tools, /* ownScopeOnly= */ finishTool != null);
-      ImmutableList<FunctionCall> runnable =
-          pending.stream()
-              .filter(call -> !taskWaitsInAnotherInvocation(context, call))
-              .collect(toImmutableList());
-      Flowable<Event> answers = answerDelegations(context, runnable);
-      // A task waits on the user in another invocation, so it is not run fresh here, and the
-      // agent ends without a model call while it waits.
-      if (runnable.size() < pending.size()) {
+      Map<TaskState, List<FunctionCall>> byState = new EnumMap<>(TaskState.class);
+      for (FunctionCall call : pending) {
+        byState.computeIfAbsent(taskState(context, call), unused -> new ArrayList<>()).add(call);
+      }
+      // A failed task gets an error answer, so the agent goes on without running it again.
+      Flowable<Event> answers =
+          answerWithError(
+                  context,
+                  byState.getOrDefault(TaskState.FAILED, ImmutableList.of()),
+                  "The delegated task failed.")
+              .concatWith(
+                  answerDelegations(
+                      context, byState.getOrDefault(TaskState.RUNNABLE, ImmutableList.of())));
+      // A task that waits on the user elsewhere is not run here, so the agent waits too.
+      if (byState.containsKey(TaskState.WAITING)) {
         return answers;
       }
       return answers.concatWith(
@@ -1005,24 +1017,38 @@ public class LlmAgent extends BaseAgent {
         .collect(toImmutableMap(BaseTool::name, Function.identity(), (first, unused) -> first));
   }
 
+  /** Where the task that a delegation call started stands, as {@link #taskState} reads it. */
+  private enum TaskState {
+    /** The task runs now: it never ran, or it waits in this invocation. */
+    RUNNABLE,
+    /** The task's latest event, from an earlier invocation, is an execution error. */
+    FAILED,
+    /** The task waits on the user in another invocation. */
+    WAITING
+  }
+
   /**
-   * Returns whether the task a delegation {@code call} started waits in another invocation: the
-   * latest event in its scope, named by the call ID, comes from elsewhere and does not end it.
+   * Returns where the task a delegation {@code call} started stands, from the latest event in its
+   * scope, named by the call ID. A task that ended gives its output again, so it runs; one that
+   * failed in an earlier invocation gets an error answer; one whose latest event is from another
+   * invocation waits.
    */
-  private static boolean taskWaitsInAnotherInvocation(Context context, FunctionCall call) {
+  private static TaskState taskState(Context context, FunctionCall call) {
     String callId = call.id().orElseThrow();
     Event latest = null;
     boolean finished = false;
     for (Event event : context.invocationContext().session().immutableEvents()) {
       if (event.isolationScope().filter(callId::equals).isPresent()) {
         latest = event;
-        finished |= FinishTaskTool.isSuccessResponse(event);
+        finished |= finishesTask(event);
       }
     }
-    // A finished task gives its output again even if its answer was never recorded.
-    return latest != null
-        && !finished
-        && !context.invocationContext().invocationId().equals(latest.invocationId());
+    if (latest == null
+        || finished
+        || context.invocationContext().invocationId().equals(latest.invocationId())) {
+      return TaskState.RUNNABLE;
+    }
+    return endsTaskWithError(latest) ? TaskState.FAILED : TaskState.WAITING;
   }
 
   /**
@@ -1263,18 +1289,19 @@ public class LlmAgent extends BaseAgent {
 
   /** Answers each of {@code calls} with an error, so no call is left open for the next round. */
   private static Flowable<Event> rejectCalls(Context context, List<FunctionCall> calls) {
+    return answerWithError(
+        context,
+        calls,
+        "This call was not run because a task delegation was sent in the same turn. Call it again"
+            + " by itself once the delegated result is available.");
+  }
+
+  /** Answers each of {@code calls} with {@code error}, as the user's response. */
+  private static Flowable<Event> answerWithError(
+      Context context, List<FunctionCall> calls, String error) {
     return Flowable.fromIterable(calls)
         .concatMap(call ->
-            asUser(
-                context,
-                taskResponseEvent(
-                    context,
-                    call,
-                    ImmutableMap.of(
-                        "error",
-                        "This call was not run because a task delegation was sent in the same"
-                            + " turn. Call it again by itself once the delegated result is"
-                            + " available."))));
+            asUser(context, taskResponseEvent(context, call, ImmutableMap.of("error", error))));
   }
 
   /** Emits {@code event} as the user's, since the node otherwise stamps its own author. */
@@ -1706,6 +1733,59 @@ public class LlmAgent extends BaseAgent {
   public static boolean runsAsTool(BaseAgent agent) {
     return agent instanceof LlmAgent llmAgent
         && (llmAgent.hasMode(AgentMode.SINGLE_TURN) || llmAgent.hasMode(AgentMode.TASK));
+  }
+
+  /**
+   * Returns whether {@code event} ends a task with its own {@code finish_task} call that succeeded:
+   * one the task agent answered, not the user or an agent it transferred to.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean finishesTask(Event event) {
+    return FinishTaskTool.isSuccessResponse(event) && authoredByTaskRun(event);
+  }
+
+  /**
+   * Returns whether {@code event} reports an execution error of a task's run, such as a failure,
+   * rather than an error code a model gave as its finish or block reason.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean endsTaskWithError(Event event) {
+    if (event.errorCode().isEmpty() || event.finishReason().isPresent()) {
+      return false;
+    }
+    return !MODEL_ERROR_CODES.contains(event.errorCode().get().toString());
+  }
+
+  /**
+   * Error codes a model response gives: finish and block reasons, as Python's {@code
+   * _LLM_RESPONSE_ERROR_CODES}, and two Java-only codes for a response with no candidates and for a
+   * live server message it does not recognize, outcomes Python reaches without a code.
+   */
+  private static final ImmutableSet<String> MODEL_ERROR_CODES =
+      ImmutableSet.<String>builder()
+          .addAll(Arrays.stream(FinishReason.Known.values()).map(Enum::name).iterator())
+          .addAll(Arrays.stream(BlockedReason.Known.values()).map(Enum::name).iterator())
+          .add("Unknown error.", "Unknown server message.")
+          .build();
+
+  /**
+   * Returns whether a task's own run wrote {@code event}: its node path ends at its author, and it
+   * is the run whose scope the event carries, where a task node's scope is its node path and a
+   * delegated task's is its run ID.
+   */
+  private static boolean authoredByTaskRun(Event event) {
+    Optional<NodeInfo> nodeInfo = event.nodeInfo();
+    if (nodeInfo.flatMap(NodeInfo::name).filter(name -> name.equals(event.author())).isEmpty()) {
+      return false;
+    }
+    Optional<String> scope = event.isolationScope();
+    return scope.isEmpty()
+        || nodeInfo.get().path().equals(scope.get())
+        || nodeInfo.get().runId().equals(scope);
   }
 
   /**

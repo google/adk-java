@@ -58,6 +58,7 @@ import com.google.adk.tools.FunctionTool;
 import com.google.adk.utils.CollectionUtils;
 import com.google.adk.workflow.Edge;
 import com.google.adk.workflow.Node;
+import com.google.adk.workflow.NodeInfo;
 import com.google.adk.workflow.NodeRunner;
 import com.google.adk.workflow.Workflow;
 import com.google.common.base.Preconditions;
@@ -84,6 +85,7 @@ import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -539,7 +541,8 @@ public class Runner {
       Content newMessage,
       InvocationContext invocationContext,
       boolean saveInputBlobsAsArtifacts,
-      @Nullable Map<String, Object> stateDelta) {
+      @Nullable Map<String, Object> stateDelta,
+      @Nullable String taskScope) {
     checkArgument(newMessage.parts().isPresent(), "No parts in the new_message.");
     // As in Python, the call that the first answer matches gives the branch and scope.
     Event answeredCall = callAnsweredFirst(session, newMessage).orElse(null);
@@ -582,6 +585,8 @@ public class Runner {
       eventBuilder
           .branch(answeredCall.branch().orElse(null))
           .isolationScope(answeredCall.isolationScope().orElse(null));
+    } else {
+      eventBuilder.isolationScope(taskScope);
     }
 
     // Add state delta if provided
@@ -665,9 +670,10 @@ public class Runner {
   /**
    * Runs the agent, resuming an existing invocation instead of starting a new one. The invocation
    * is resolved from {@code invocationId}, or from a function response carried by {@code
-   * newMessage}. Agent checkpoints are rehydrated from history and an invocation whose active agent
-   * already finished resolves to a no-op, while a workflow node root rebuilds its progress from the
-   * invocation's events even when the app is not resumable.
+   * newMessage}; for a workflow node root, a plain message instead joins the invocation of a task
+   * that waits on the user. Agent checkpoints are rehydrated from history and an invocation whose
+   * active agent already finished resolves to a no-op, while a workflow node root rebuilds its
+   * progress from the invocation's events even when the app is not resumable.
    *
    * @param userId the user id of the session.
    * @param sessionId the session id.
@@ -780,23 +786,28 @@ public class Runner {
       return runResumableFromSession(
           session, /* providedInvocationId= */ null, newMessage, runConfig, stateDelta);
     }
-    return runNewInvocation(session, newMessage, runConfig, stateDelta);
+    return runUserTurn(session, newMessage, runConfig, stateDelta, /* pausedTask= */ null);
   }
 
   /**
-   * Starts an invocation for {@code newMessage}; a node root joins the one a plugin's answers
-   * resolve to.
+   * Runs a user turn for {@code newMessage} in a new invocation; a node root joins the one a
+   * plugin's answers resolve to. When {@code pausedTask}, the latest event of a waiting task, is
+   * set, the message instead joins that task's invocation and scope as its next user turn.
    */
-  private Flowable<Event> runNewInvocation(
+  private Flowable<Event> runUserTurn(
       Session session,
       Content newMessage,
       RunConfig runConfig,
-      @Nullable Map<String, Object> stateDelta) {
+      @Nullable Map<String, Object> stateDelta,
+      @Nullable Event pausedTask) {
     return Flowable.defer(
             () -> {
               Context capturedContext = Context.current();
               BaseAgent rootAgent = this.agent;
-              String invocationId = InvocationContext.newInvocationContextId(this.uuidProvider);
+              String invocationId =
+                  pausedTask != null
+                      ? pausedTask.invocationId()
+                      : InvocationContext.newInvocationContextId(this.uuidProvider);
 
               // Eagerly merge stateDelta into session state so onUserMessageCallback() can see it.
               // Safe: this in-memory update is ahead of time; canonical persistence still happens
@@ -825,7 +836,8 @@ public class Runner {
                             content,
                             context,
                             runConfig.saveInputBlobsAsArtifacts(),
-                            stateDelta)
+                            stateDelta,
+                            pausedTask == null ? null : pausedTask.isolationScope().orElse(null))
                         .flatMapPublisher(userEvent ->
                             runAgentForUserEvent(context, session, userEvent, rootAgent)
                                 .compose(Tracing.<Event>withContext(capturedContext)));
@@ -998,8 +1010,8 @@ public class Runner {
 
   /**
    * Resumes an existing invocation when one resolves from {@code providedInvocationId} or a
-   * function response in {@code rawMessage}; otherwise starts a new invocation. Requires
-   * resumability or a workflow node root.
+   * function response in {@code rawMessage}; otherwise a node root's plain message joins a waiting
+   * task's invocation, or a new invocation starts. Requires resumability or a workflow node root.
    */
   private Flowable<Event> runResumableFromSession(
       Session session,
@@ -1021,13 +1033,24 @@ public class Runner {
             /* requireFirstId= */ node == null || providedInvocationId != null);
       }
       String resolvedInvocationId = resolveInvocationId(session, newMessage, providedInvocationId);
+      // A plain reply continues the task that waits on the user, as in ADK Kotlin.
+      Event pausedTask =
+          newMessage != null
+                  && node != null
+                  && functionResponseIds(newMessage).stream().allMatch(String::isEmpty)
+              ? pausedTaskEvent(session.immutableEvents()).orElse(null)
+              : null;
       if (resolvedInvocationId == null) {
         if (newMessage == null) {
           return Flowable.<Event>error(
               new IllegalArgumentException(
                   "No new message provided and no resumable invocation to resume."));
         }
-        return runNewInvocation(session, newMessage, runConfig, stateDelta);
+        return runUserTurn(session, newMessage, runConfig, stateDelta, pausedTask);
+      }
+      if (pausedTask != null && pausedTask.invocationId().equals(resolvedInvocationId)) {
+        // A reply that names the task's invocation joins the task too.
+        return runUserTurn(session, newMessage, runConfig, stateDelta, pausedTask);
       }
       if (session.immutableEvents().isEmpty()) {
         // Only a wholly empty session is rejected; Python does not reject an unmatched id.
@@ -1099,7 +1122,8 @@ public class Runner {
                       content,
                       initialContext,
                       runConfig.saveInputBlobsAsArtifacts(),
-                      delta);
+                      delta,
+                      /* taskScope= */ null);
                 })
                 // Persist first: an unpersisted response leaves the call looking unanswered.
                 .flatMap(userEvent -> this.sessionService.appendEvent(session, userEvent))
@@ -1256,7 +1280,8 @@ public class Runner {
   /**
    * Resolves which invocation a request targets: the invocation that issued the function call
    * matching {@code newMessage}'s function response, else the caller-supplied {@code invocationId}.
-   * Returns {@code null} when neither applies (a fresh message starts a new invocation).
+   * Returns {@code null} when neither applies: the message joins a waiting task's invocation, if a
+   * task waits under a node root, or else starts a new invocation.
    */
   private static @Nullable String resolveInvocationId(
       Session session, @Nullable Content newMessage, @Nullable String invocationId) {
@@ -1266,6 +1291,79 @@ public class Runner {
           .orElse(invocationId);
     }
     return invocationId;
+  }
+
+  /**
+   * Returns the latest event of a task that waits on the user and did not end since. A task ends
+   * with its own successful {@code finish_task}, an answer to its delegating call, or, as in Python
+   * ADK, an execution error that no later content of its run follows. An end closes only the events
+   * before it and the rest of its invocation, since a task node's scope repeats in each invocation.
+   */
+  private static Optional<Event> pausedTaskEvent(List<Event> events) {
+    Set<String> callIds = new HashSet<>();
+    events.forEach(
+        event -> event.functionCalls().forEach(call -> call.id().ifPresent(callIds::add)));
+    Map<String, Integer> lastEndIndex = new HashMap<>();
+    Map<String, Integer> lastErrorIndex = new HashMap<>();
+    for (int i = 0; i < events.size(); i++) {
+      Event event = events.get(i);
+      // A delegated task whose call is answered ended, such as after a handoff to a chat agent.
+      for (FunctionResponse response : event.functionResponses()) {
+        int index = i;
+        response
+            .id()
+            .filter(callIds::contains)
+            .ifPresent(id -> lastEndIndex.merge(id, index, Math::max));
+      }
+      if (event.isolationScope().isEmpty()) {
+        continue;
+      }
+      String scope = event.isolationScope().get();
+      Integer errorIndex = lastErrorIndex.get(scope);
+      if (LlmAgent.finishesTask(event)) {
+        lastEndIndex.put(scope, i);
+      } else if (LlmAgent.endsTaskWithError(event)) {
+        lastErrorIndex.put(scope, i);
+      } else if (errorIndex != null
+          && event.content().isPresent()
+          && !event.partial().orElse(false)
+          && Objects.equals(event.invocationId(), events.get(errorIndex).invocationId())) {
+        // The run went on after the error, as after a retry.
+        lastErrorIndex.remove(scope);
+      }
+    }
+    lastErrorIndex.forEach((scope, errorIndex) -> lastEndIndex.merge(scope, errorIndex, Math::max));
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event event = events.get(i);
+      Optional<String> scope =
+          event
+              .isolationScope()
+              .filter(s -> !s.isEmpty())
+              .filter(s -> isTaskScope(event, s, callIds));
+      if (scope.isEmpty()) {
+        continue;
+      }
+      Integer endIndex = lastEndIndex.get(scope.get());
+      if (endIndex == null
+          || (i > endIndex
+              && !Objects.equals(event.invocationId(), events.get(endIndex).invocationId()))) {
+        return Optional.of(event);
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Returns whether {@code scope} is that of a task run {@code event} belongs to: a task node's
+   * scope is its node path, and a delegated task's is the ID of the delegating call, among {@code
+   * callIds}, which is also the task's run ID.
+   */
+  private static boolean isTaskScope(Event event, String scope, Set<String> callIds) {
+    if (event.nodeInfo().map(NodeInfo::path).filter(scope::equals).isPresent()) {
+      return true;
+    }
+    return callIds.contains(scope)
+        && event.nodeInfo().flatMap(NodeInfo::runId).filter(scope::equals).isPresent();
   }
 
   /**

@@ -72,8 +72,9 @@ final class ResumeScan {
   /**
    * Reconstructs the direct children of the node at {@code basePath} from the final events of
    * {@code invocationId} in one forward pass, keyed by their {@code name@runId} segment. An empty
-   * base path reconstructs root nodes. A user event can only answer an interrupt; any other event
-   * reports the progress of the node that emitted it.
+   * base path reconstructs root nodes. A user event answers an interrupt, or, as a plain reply in a
+   * task's scope, starts a new turn for the node running that task; any other event reports the
+   * progress of the node that emitted it.
    */
   static ImmutableMap<String, RecoveredNode> scan(
       List<Event> events, String basePath, String invocationId) {
@@ -84,6 +85,7 @@ final class ResumeScan {
       }
       if (Objects.equals(event.author(), Role.USER)) {
         reconstruction.recordAnswers(event);
+        reconstruction.recordReply(event);
       } else {
         reconstruction.recordNodeEvent(event);
       }
@@ -95,10 +97,10 @@ final class ResumeScan {
    * Decides whether {@code node} runs again or replays its result from {@code recovered}. In order:
    * a node with unanswered interrupts waits on them, unless it reruns on resume and has answers; a
    * node that failed, in {@code recovered} or {@code failedThisTurn}, reruns; a recorded output,
-   * route or transfer replays; a node {@code canceledMidRun} in this turn reruns; an answered node
-   * that does not rerun on resume completes with its answers. Otherwise a node that reruns on
-   * resume reruns unless it finished since its last answer, and a {@code dynamic} node reruns while
-   * a graph node does not.
+   * route or transfer replays, though a reply to one of its tasks does not replay a transfer; a
+   * node {@code canceledMidRun} in this turn reruns; an answered node that does not rerun on resume
+   * completes with its answers. Otherwise a node that reruns on resume reruns unless it finished
+   * since its last answer or reply, and a {@code dynamic} node reruns while a graph node does not.
    */
   static Interception intercept(
       Node node,
@@ -131,7 +133,9 @@ final class ResumeScan {
       return Interception.run(resolved);
     }
     Object output = recovered.output;
-    if (output != null || recovered.route != null || transfer != null) {
+    // A reply reruns the node instead of replaying its handoff.
+    boolean replaysTransfer = transfer != null && !recovered.repliedTo;
+    if (output != null || recovered.route != null || replaysTransfer) {
       return Interception.replay(
           recovered.outputFromContent && output instanceof Content content
               ? processRehydratedOutput(node, content, recovered.outputDelegated)
@@ -300,10 +304,19 @@ final class ResumeScan {
     /** The non-empty scope the node ran in, kept on a rerun as Python does, or null for none. */
     @Nullable String isolationScope;
 
+    /** The scopes of the node's own events and its descendants', so a reply finds its node. */
+    final Set<String> taskScopes = new HashSet<>();
+
+    /**
+     * Whether a plain reply in one of {@link #taskScopes} came after the latest event of the node
+     * or its descendants.
+     */
+    boolean repliedTo;
+
     final Set<String> interruptIds = new LinkedHashSet<>();
     final Map<String, @Nullable Object> resolvedResponses = new LinkedHashMap<>();
 
-    /** Whether the node's last direct event, since its last answer, shows that it finished. */
+    /** Whether the node's last direct event, since its last answer or reply, shows it finished. */
     boolean finishedAfterResume;
 
     /** Returns the IDs of the interrupts the node raised that are not answered yet. */
@@ -430,6 +443,9 @@ final class ResumeScan {
       // False for an event that a descendant of the owner emitted.
       boolean isDirect = eventPath.equals(ownerPath);
       RecoveredNode node = recovered.computeIfAbsent(key, unused -> new RecoveredNode());
+      event.isolationScope().filter(scope -> !scope.isEmpty()).ifPresent(node.taskScopes::add);
+      // Any event of the node or a descendant after a reply shows the node already ran for it.
+      node.repliedTo = false;
       if (isDirect) {
         event
             .isolationScope()
@@ -450,6 +466,28 @@ final class ResumeScan {
                 && !node.failed
                 && event.functionCalls().isEmpty()
                 && event.functionResponses().isEmpty();
+      }
+    }
+
+    /**
+     * Records the user event {@code event} as a reply for the nodes whose task scopes hold its
+     * scope, when it is a plain reply: one whose function responses, if any, carry no call ID.
+     */
+    void recordReply(Event event) {
+      if (event.content().isEmpty()
+          || event.functionResponses().stream()
+              .anyMatch(response -> response.id().filter(id -> !id.isEmpty()).isPresent())) {
+        return;
+      }
+      String scope = event.isolationScope().orElse(null);
+      if (scope == null) {
+        return;
+      }
+      for (RecoveredNode node : recovered.values()) {
+        if (node.taskScopes.contains(scope)) {
+          node.finishedAfterResume = false;
+          node.repliedTo = true;
+        }
       }
     }
 

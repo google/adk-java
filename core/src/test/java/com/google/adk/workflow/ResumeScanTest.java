@@ -156,6 +156,32 @@ public final class ResumeScanTest {
   }
 
   @Test
+  public void scan_replyInATasksScope_marksItsNodeRepliedTo() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            nodeEvent("wf@1/coordinator@1/worker@t1").isolationScope("t1").build(),
+            replyEvent("t1"));
+
+    RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("coordinator@1");
+
+    assertThat(recovered.repliedTo).isTrue();
+  }
+
+  @Test
+  public void scan_eventOfTheNodeAfterAReply_clearsRepliedTo() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            nodeEvent("wf@1/coordinator@1/worker@t1").isolationScope("t1").build(),
+            replyEvent("t1"),
+            // The task got the reply and asked again.
+            nodeEvent("wf@1/coordinator@1/worker@t1").isolationScope("t1").build());
+
+    RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("coordinator@1");
+
+    assertThat(recovered.repliedTo).isFalse();
+  }
+
+  @Test
   public void scan_answerFromAnotherInvocation_resolvesNothing() {
     ImmutableList<Event> events =
         ImmutableList.of(
@@ -1089,6 +1115,17 @@ public final class ResumeScanTest {
         .author("user")
         .invocationId("inv")
         .content(answer(interruptId, response))
+        .build();
+  }
+
+  /** A user's plain reply in {@code scope} as a session holds it. */
+  private static Event replyEvent(String scope) {
+    return Event.builder()
+        .id(Event.generateEventId())
+        .author("user")
+        .invocationId("inv")
+        .isolationScope(scope)
+        .content(Content.fromParts(Part.fromText("Tuesday")))
         .build();
   }
 

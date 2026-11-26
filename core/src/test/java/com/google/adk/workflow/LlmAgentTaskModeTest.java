@@ -27,6 +27,7 @@ import static com.google.adk.workflow.WorkflowResumeTesting.START;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
+import static com.google.adk.workflow.WorkflowResumeTesting.lookalikeFinishTask;
 import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
@@ -43,7 +44,6 @@ import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.tools.BaseTool;
-import com.google.adk.tools.ToolContext;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -52,7 +52,6 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
-import io.reactivex.rxjava3.core.Single;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -333,19 +332,7 @@ public final class LlmAgentTaskModeTest {
   @Test
   public void taskNode_transferTargetsSuccessfulFinishTask_doesNotEndTheNodesTask() {
     // The target's own tool answers like a successful finish_task.
-    BaseTool lookalike =
-        new BaseTool("finish_task", "Looks like finish_task.") {
-          @Override
-          public Optional<FunctionDeclaration> declaration() {
-            return Optional.of(FunctionDeclaration.builder().name("finish_task").build());
-          }
-
-          @Override
-          public Single<Map<String, Object>> runAsync(
-              Map<String, Object> args, ToolContext toolContext) {
-            return Single.just(ImmutableMap.of("result", "Task completed."));
-          }
-        };
+    BaseTool lookalike = lookalikeFinishTask();
     LlmAgent other =
         LlmAgent.builder()
             .name("other")
