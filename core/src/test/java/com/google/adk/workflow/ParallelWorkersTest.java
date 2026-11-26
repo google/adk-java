@@ -864,6 +864,22 @@ public final class ParallelWorkersTest {
     assertThat(run.output()).isNull();
   }
 
+  @Test
+  public void runNode_itemTheFunctionNodeWorkersPortCannotRead_failsTheNode() {
+    FunctionNode<Integer, Integer> worker =
+        FunctionNodes.of("worker", Integer.class, Integer.class, (ctx, n) -> n + 1);
+
+    Run run = run(ParallelWorkers.parallelNode(worker), ImmutableList.of(1, "x"));
+
+    assertThat(run.failure().orElseThrow()).isInstanceOf(NodeInputValidationException.class);
+    assertThat(run.failure().orElseThrow())
+        .hasMessageThat()
+        .startsWith("validation error: input of node 'worker'");
+    assertThat(run.eventsUnder("worker@1/").stream().filter(e -> e.errorCode().isPresent()))
+        .isEmpty();
+    assertThat(run.output()).isNull();
+  }
+
   private enum Status {
     OPEN,
     SHIPPED

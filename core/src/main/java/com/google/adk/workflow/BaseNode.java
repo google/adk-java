@@ -195,6 +195,16 @@ public abstract class BaseNode implements Node {
   }
 
   /**
+   * Returns {@code nodeInput} as the node receives it when a caller runs it with {@code
+   * ctx.runNode}, which calls this before the node starts: {@link #checkedInput} by default.
+   *
+   * @throws IllegalArgumentException if the input does not match
+   */
+  @Nullable Object childInput(@Nullable Object nodeInput) {
+    return checkedInput(nodeInput);
+  }
+
+  /**
    * Returns {@code output} converted to the types of {@link #outputSchema}, which it must match.
    *
    * @throws IllegalArgumentException if the output does not match
@@ -209,7 +219,12 @@ public abstract class BaseNode implements Node {
    * returns the converted value as a stored session reads it back.
    */
   private static @Nullable Object coerce(Object value, Schema schema, String what) {
-    Object coerced = ValueCoercer.coerceValue(jsonForm(value, what), schema, what);
+    return coerceAsIs(jsonForm(value, what), schema, what);
+  }
+
+  /** Checks {@code value} as it is and returns the converted value as a stored session reads it. */
+  static @Nullable Object coerceAsIs(@Nullable Object value, Schema schema, String what) {
+    Object coerced = ValueCoercer.coerceValue(value, schema, what);
     // The conversion returns mutable collections and a Long for a converted integer.
     return coerced instanceof Event ? coerced : encode(coerced, what);
   }
@@ -231,7 +246,7 @@ public abstract class BaseNode implements Node {
   }
 
   /** Whether {@code value} is JSON-native, with any message in it read as its text or JSON. */
-  private static boolean isJsonForm(@Nullable Object value) {
+  static boolean isJsonForm(@Nullable Object value) {
     return value == null
         || value instanceof String
         || value instanceof Number

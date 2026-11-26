@@ -830,7 +830,7 @@ public final class WorkflowTest {
   }
 
   @Test
-  public void run_functionNodeOutputOutsideItsBuilderSchema_isHandedOnUnchecked() {
+  public void run_functionNodeOutputOutsideItsBuilderSchema_failsTheNodeWithoutTheValue() {
     // Arrange
     Schema colors = Schema.builder().type(Type.Known.STRING).enum_("red", "green").build();
     FunctionNode<Object, String> producer =
@@ -844,10 +844,18 @@ public final class WorkflowTest {
             workflow(new Edge(START, producer), new Edge(producer, captureInput("reply"))));
 
     // Act
-    ImmutableList<Event> events = session.turn(go());
+    FailedTurn turn = session.failingTurn(go());
 
     // Assert
-    assertThat(replyInput(events)).isEqualTo("blue");
+    assertThat(turn.error()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(turn.error())
+        .hasMessageThat()
+        .isEqualTo(
+            "validation error: output of node 'producer' does not match its schema: the value is"
+                + " not one of the schema's enum values");
+    assertThat(eventAt(turn.events(), "wf@1/producer@1").errorCode())
+        .hasValue(new FinishReason("IllegalArgumentException"));
+    assertThat(pathsOf(turn.events())).doesNotContain("wf@1/reply@1");
   }
 
   /** A plain fan-in node, not a {@link BaseNode}, that outputs what it received. */

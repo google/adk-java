@@ -66,6 +66,11 @@ import org.jspecify.annotations.Nullable;
  * <p>Every output, including the output of a {@code useAsOutput} child, is written as {@code O} in
  * JSON form, so a successor reads the same value live or from a stored session.
  *
+ * <p>A schema set on the builder is checked on each run, and the node receives or outputs the value
+ * converted to the schema's types: the input before the port reads it, the output after it is
+ * written in JSON form. A rejected confirmation's output and a {@code requestInput} answer used as
+ * the output are not checked; neither is an inferred schema.
+ *
  * <p>The body may send events before its output with {@link Context#emit(Event)}:
  *
  * <ul>
@@ -180,16 +185,88 @@ public final class FunctionNode<I, O> extends BaseNode {
     return super.outputSchema().or(() -> Optional.ofNullable(outputCodec.schema()));
   }
 
-  // Schemas set on the builder are not checked yet. An inferred schema needs no check, as the
-  // ports read the values.
+  /**
+   * Returns {@code nodeInput} converted to the types of the builder input schema, which it must
+   * match, as a stored session reads it back; on a {@code Content} port the schema checks the
+   * message text and the node receives the message. An inferred schema checks nothing, as the port
+   * reads the value.
+   *
+   * @throws NodeInputValidationException if the input does not match the schema or the port cannot
+   *     read it
+   */
   @Override
   @Nullable Object checkedInput(@Nullable Object nodeInput) {
-    return nodeInput;
+    Schema schema = super.inputSchema().orElse(null);
+    if (schema == null || nodeInput == null) {
+      return nodeInput;
+    }
+    String what = "input of node '" + name() + "'";
+    boolean takesContent = inputCodec.takesContent();
+    Object formed = takesContent ? inputCodec.decode(nodeInput, what) : schemaForm(nodeInput, what);
+    Object checked;
+    try {
+      checked = coerceAsIs(formed, schema, what);
+    } catch (IllegalArgumentException e) {
+      throw new NodeInputValidationException(e.getMessage(), e);
+    }
+    return takesContent ? formed : checked;
   }
 
+  /**
+   * Reads the input for the port in the caller, as ADK Kotlin does, so an input the port cannot
+   * read fails the caller and the child never starts.
+   *
+   * @throws NodeInputValidationException if the input does not match the builder schema or the port
+   *     cannot read it
+   */
+  @Override
+  Object childInput(@Nullable Object nodeInput) {
+    String what = "input of node '" + name() + "'";
+    return new CallerReadInput(inputCodec.decode(checkedInput(nodeInput), what));
+  }
+
+  /** An input that a {@code ctx.runNode} caller already read for the port. */
+  private record CallerReadInput(@Nullable Object value) {}
+
+  /**
+   * Returns {@code value} as a schema checks it: JSON, a message or an event as it is, and any
+   * other value read by the port and written in JSON form, as ADK Kotlin does. A {@code Void} port
+   * reads nothing, so the schema checks the value's own JSON form.
+   */
+  private @Nullable Object schemaForm(Object value, String what) {
+    if (isJsonForm(value) || value instanceof Event || inputCodec.rawType() == Event.class) {
+      return value;
+    }
+    if (inputCodec.rawType() == Void.class) {
+      return encode(ANY, value, what);
+    }
+    // Throws a NodeInputValidationException of its own if the port cannot read the value.
+    I read = inputCodec.decode(value, what);
+    // A value such as an empty Optional reads as null, which the schema then checks.
+    return read == null ? null : encode(inputCodec, read, what);
+  }
+
+  private static @Nullable Object encode(PortCodec<?> codec, Object value, String what) {
+    try {
+      return codec.encode(value, what);
+    } catch (IllegalArgumentException e) {
+      throw new NodeInputValidationException("validation error: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Returns {@code output}, in JSON form, as a builder schema reads it. An inferred schema checks
+   * nothing, and neither does a rejected run's output.
+   */
   @Override
   @Nullable Object checkedOutput(Object output) {
-    return output;
+    Schema schema = super.outputSchema().orElse(null);
+    if (schema == null || (confirmationPredicate != null && output.equals(REJECTED_OUTPUT))) {
+      return output;
+    }
+    String what = "output of node '" + name() + "'";
+    // In JSON form, as a stored session reads it back: the conversion returns mutable maps.
+    return ANY.encode(ValueCoercer.coerceValue(output, schema, what), what);
   }
 
   /** Whether {@link #inputSchema} was inferred rather than set on the builder. */
@@ -308,7 +385,11 @@ public final class FunctionNode<I, O> extends BaseNode {
       Context context, @Nullable Object nodeInput, BodyRun run, FlowableEmitter<Object> events)
       throws Exception {
     String what = "input of node '" + name() + "'";
-    I input = inputCodec.decode(nodeInput, what);
+    @SuppressWarnings("unchecked") // The caller read it with inputCodec.
+    I input =
+        nodeInput instanceof CallerReadInput read
+            ? (I) read.value()
+            : inputCodec.decode(nodeInput, what);
     ToolConfirmation confirmation =
         confirmationPredicate != null ? ToolConfirmations.answer(context, name()) : null;
     if (confirmation != null) {
@@ -368,7 +449,8 @@ public final class FunctionNode<I, O> extends BaseNode {
    * Writes the output of a child the body gave its output to with {@code useAsOutput} as if the
    * body had returned it, and has the node send it as its own output if that changes it.
    *
-   * @throws IllegalArgumentException if the child's output is not an {@code O}
+   * @throws IllegalArgumentException if the child's output is not an {@code O} or does not match a
+   *     builder output schema
    */
   private void encodeDelegatedOutput(NodeExecutionState state) {
     Optional<Object> delegated = state.delegatedOutput();
@@ -393,8 +475,9 @@ public final class FunctionNode<I, O> extends BaseNode {
         throw new IllegalArgumentException(e.getMessage(), e);
       }
     }
-    if (encoded != null && !encoded.equals(delegated.get())) {
-      state.replaceDelegatedOutput(encoded);
+    Object checked = encoded == null ? null : checkedOutput(encoded);
+    if (checked != null && !checked.equals(delegated.get())) {
+      state.replaceDelegatedOutput(checked);
     }
   }
 
@@ -613,8 +696,9 @@ public final class FunctionNode<I, O> extends BaseNode {
     }
 
     /**
-     * Sets the schema that describes the node's input, in place of one inferred from its type. On a
-     * {@code Content} port, the schema describes the message's text.
+     * Sets the schema that describes the node's input, in place of one inferred from its type, and
+     * that each run checks the input against. On a {@code Content} port, the schema describes the
+     * message's text.
      */
     @CanIgnoreReturnValue
     public Builder<I, O> inputSchema(@Nullable Schema inputSchema) {
@@ -622,7 +706,10 @@ public final class FunctionNode<I, O> extends BaseNode {
       return this;
     }
 
-    /** Sets the schema that describes the node's output, in place of one inferred from its type. */
+    /**
+     * Sets the schema that describes the node's output, in place of one inferred from its type, and
+     * that each run checks the output against.
+     */
     @CanIgnoreReturnValue
     public Builder<I, O> outputSchema(@Nullable Schema outputSchema) {
       this.outputSchema = outputSchema;

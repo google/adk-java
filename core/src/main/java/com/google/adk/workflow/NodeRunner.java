@@ -261,7 +261,7 @@ public final class NodeRunner {
             ? reservedRunId
             : config.runId().orElseGet(() -> parentState.nextChildRunId(node.name()));
     // Checked in the caller, as in Kotlin, so a rejected input fails the caller and no child runs.
-    Object input = asBaseNode(node).checkedInput(nodeInput);
+    Object input = asBaseNode(node).childInput(nodeInput);
     // A workflow takes its output from its terminal node, so it never delegates it to a child.
     boolean delegatesOutput = config.useAsOutput() && !(parentState.node() instanceof Workflow);
     if (delegatesOutput) {

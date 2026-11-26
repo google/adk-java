@@ -78,6 +78,7 @@ import com.google.adk.sessions.ListSessionsResponse;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
+import com.google.adk.workflow.WorkflowResumeTesting.JsonSessionService;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -708,6 +709,9 @@ public final class FunctionNodeTest {
 
   /** A record whose {@code total} collides with {@link Invoice}'s derived total, as a string. */
   record Quote(String id, int quantity, String total) {}
+
+  /** A record with {@link Order}'s keys, whose quantity is a string. */
+  record Stock(String id, String quantity) {}
 
   /** A class that writes its label under another name than the one its setter reads. */
   static final class Slip {
@@ -3089,6 +3093,520 @@ public final class FunctionNodeTest {
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/text@1")).isEqualTo("hi");
     assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge full -> text.");
+  }
+
+  @Test
+  public void builder_inputSchema_readsTheInputBeforeThePortDoes() {
+    // Arrange
+    FunctionNode<Order, Integer> quantity =
+        FunctionNodes.builder(Order.class, Integer.class)
+            .name("quantity")
+            .inputSchema(object(ImmutableMap.of("quantity", INTEGER)))
+            .body((ctx, order) -> order.quantity())
+            .build();
+
+    // Act
+    RunResult quoted =
+        run(chain(emitter("make", ImmutableMap.of("id", "a1", "quantity", "3")), quantity));
+    RunResult words =
+        run(chain(emitter("make", ImmutableMap.of("id", "a1", "quantity", "three")), quantity));
+
+    // Assert
+    quoted.assertCompleted();
+    assertThat(quoted.outputAt("wf@1/quantity@1")).isEqualTo(3);
+    assertThat(words.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'quantity' does not match its schema: 'quantity' is"
+                + " not an integer");
+  }
+
+  @Test
+  public void builder_inputSchema_takesTheInputsThePortReadsWithoutIt() {
+    // Arrange: neither JSON nor of the port's type, each input is read by its port.
+    FunctionNode<Order, Integer> quantity =
+        FunctionNodes.builder(Order.class, Integer.class)
+            .name("read")
+            .inputSchema(object(ImmutableMap.of("quantity", INTEGER)))
+            .body((ctx, order) -> order.quantity())
+            .build();
+    FunctionNode<String, String> text =
+        FunctionNodes.builder(String.class, String.class)
+            .name("read")
+            .inputSchema(STRING)
+            .body((ctx, value) -> value)
+            .build();
+    FunctionNode<List<String>, String> joined =
+        FunctionNodes.builder(new TypeReference<List<String>>() {}, String.class)
+            .name("read")
+            .inputSchema(Schema.builder().type(Type.Known.ARRAY).items(STRING).build())
+            .body((ctx, items) -> String.join(",", items))
+            .build();
+    Object record = new Invoice("a1", 3);
+    Object strings = new String[] {"a", "b"};
+
+    // Act
+    List<@Nullable Object> withSchema =
+        Arrays.asList(
+            readWith(record, quantity), readWith(Color.RED, text), readWith(strings, joined));
+    List<@Nullable Object> withoutSchema =
+        Arrays.asList(
+            readWith(record, quantity.toBuilder().inputSchema(null).build()),
+            readWith(Color.RED, text.toBuilder().inputSchema(null).build()),
+            readWith(strings, joined.toBuilder().inputSchema(null).build()));
+
+    // Assert
+    assertThat(withSchema).containsExactly(3, "red", "a,b").inOrder();
+    assertThat(withoutSchema).isEqualTo(withSchema);
+  }
+
+  @Test
+  public void builder_inputSchema_recordWhoseJsonFormDoesNotFit_failsWithOneValidationError() {
+    // Arrange
+    FunctionNode<Order, Integer> quantity =
+        FunctionNodes.builder(Order.class, Integer.class)
+            .name("quantity")
+            .inputSchema(object(ImmutableMap.of("quantity", INTEGER)))
+            .body((ctx, order) -> order.quantity())
+            .build();
+
+    // Act
+    RunResult result = run(chain(emitter("make", new Stock("a1", "three")), quantity));
+
+    // Assert
+    assertThat(result.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'quantity' does not match "
+                + Order.class.getName()
+                + ".");
+  }
+
+  @Test
+  public void builder_inputSchemaOnAVoidPort_checksTheJsonFormOfARecordOrEnumInput() {
+    // Arrange
+    FunctionNode<Void, String> ignoring =
+        FunctionNodes.builder(Void.class, String.class)
+            .name("read")
+            .inputSchema(object(ImmutableMap.of("quantity", INTEGER)))
+            .body((ctx, unused) -> "ran")
+            .build();
+    FunctionNode<Void, String> ignoringColor =
+        ignoring.toBuilder().inputSchema(STRING.toBuilder().enum_("red").build()).build();
+
+    // Act
+    List<@Nullable Object> outputs =
+        Arrays.asList(
+            readWith(new Invoice("a1", 3), ignoring),
+            readWith(new Stock("a1", "three"), ignoring),
+            readWith(Color.RED, ignoringColor),
+            readWith(Color.BLUE, ignoringColor));
+    RunResult child = run(chain(handing(new Invoice("a1", 3), ignoring)));
+
+    // Assert
+    assertThat(outputs).containsExactly("ran", "fails", "ran", "fails").inOrder();
+    child.assertCompleted();
+    assertThat(child.outputAt("wf@1/parent@1/read@1")).isEqualTo("ran");
+  }
+
+  @Test
+  public void builder_inputSchema_checksAnInputThePortReadsAsNullAgainstItsNullability() {
+    // Arrange
+    FunctionNode<String, String> text =
+        FunctionNodes.builder(String.class, String.class)
+            .name("read")
+            .inputSchema(STRING)
+            .body((ctx, value) -> String.valueOf(value))
+            .build();
+    FunctionNode<String, String> nullableText =
+        text.toBuilder().inputSchema(STRING.toBuilder().nullable(true).build()).build();
+
+    // Act
+    List<@Nullable Object> outputs =
+        Arrays.asList(
+            readWith(Optional.empty(), text),
+            readWith(JsonNodeFactory.instance.nullNode(), text),
+            readWith(Optional.empty(), nullableText),
+            readWith(JsonNodeFactory.instance.nullNode(), nullableText));
+
+    // Assert
+    assertThat(outputs).containsExactly("fails", "fails", "null", "null").inOrder();
+  }
+
+  @Test
+  public void builder_inputSchema_leavesAMissingInputUnchecked() {
+    // Arrange: the schema does not take null, and the predecessor has no output.
+    FunctionNode<String, String> text =
+        FunctionNodes.builder(String.class, String.class)
+            .name("read")
+            .inputSchema(STRING)
+            .body((ctx, value) -> String.valueOf(value))
+            .build();
+
+    // Act
+    RunResult result = run(chain(TestNode.of("make"), text));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/read@1")).isEqualTo("null");
+  }
+
+  @Test
+  public void builder_inputSchema_checksAnEventInputOrAnInputForAnEventPortAsItIs() {
+    // Arrange
+    FunctionNode<Object, String> anything =
+        FunctionNodes.builder(Object.class, String.class)
+            .name("child")
+            .inputSchema(typed(Type.Known.OBJECT))
+            .body((ctx, value) -> "ran")
+            .build();
+    FunctionNode<Event, String> eventPort =
+        FunctionNodes.builder(Event.class, String.class)
+            .name("child")
+            .inputSchema(typed(Type.Known.OBJECT))
+            .body((ctx, event) -> "ran")
+            .build();
+    Event event = Event.builder().id("e1").author("someone").build();
+
+    // Act
+    RunResult eventIntoObject = run(chain(handing(event, anything)));
+    RunResult recordIntoEvent = run(chain(handing(new Invoice("a1", 3), eventPort)));
+
+    // Assert
+    String notAnObject =
+        "validation error: input of node 'child' does not match its schema: the value is not an"
+            + " object";
+    assertThat(eventIntoObject.errorMessage("NodeInputValidationException")).isEqualTo(notAnObject);
+    assertThat(recordIntoEvent.errorMessage("NodeInputValidationException")).isEqualTo(notAnObject);
+  }
+
+  @Test
+  public void builder_inputSchema_inputWithoutAJsonForm_failsWithOneValidationError() {
+    // Arrange
+    FunctionNode<BasicOrder, String> order =
+        FunctionNodes.builder(BasicOrder.class, String.class)
+            .name("order")
+            .inputSchema(object(ImmutableMap.of("id", STRING)))
+            .body((ctx, value) -> value.id())
+            .build();
+
+    // Act
+    RunResult result = run(chain(emitter("make", new BasicOrder("a1", Double.NaN)), order));
+
+    // Assert
+    assertThat(result.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'order' holds a NaN or infinite number, which JSON"
+                + " lacks.");
+  }
+
+  @Test
+  public void builder_inputSchemaOnAContentPort_checksTheTextAndHandsOnTheMessage() {
+    // Arrange
+    FunctionNode<Content, String> answer =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("answer")
+            .inputSchema(STRING.toBuilder().enum_("yes", "no").build())
+            .body((ctx, message) -> message.text())
+            .build();
+
+    // Act
+    RunResult yes = runOn(chain(answer), "yes");
+    RunResult maybe = runOn(chain(answer), "maybe");
+
+    // Assert
+    yes.assertCompleted();
+    assertThat(yes.outputAt("wf@1/answer@1")).isEqualTo("yes");
+    assertThat(maybe.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'answer' does not match its schema: the value is not"
+                + " one of the schema's enum values");
+  }
+
+  @Test
+  public void of_inferredInputSchema_isNotCheckedAtRunTime() {
+    // Arrange: the inferred Order schema rejects a null id, which the port reads.
+    Map<String, @Nullable Object> withoutId = new HashMap<>();
+    withoutId.put("id", null);
+    withoutId.put("quantity", 3);
+    FunctionNode<Order, String> describe =
+        FunctionNodes.of(
+            "describe",
+            Order.class,
+            String.class,
+            (ctx, order) -> order.id() + " x" + order.quantity());
+
+    // Act
+    RunResult result = run(chain(emitter("make", withoutId), describe));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/describe@1")).isEqualTo("null x3");
+  }
+
+  @Test
+  public void builder_outputSchema_handsOnTheOutputAsItReadsIt() {
+    // Arrange
+    FunctionNode<Content, Map<String, String>> count =
+        FunctionNodes.builder(Content.class, new TypeReference<Map<String, String>>() {})
+            .name("count")
+            .outputSchema(object(ImmutableMap.of("count", INTEGER)))
+            .body((ctx, message) -> ImmutableMap.of("count", "3"))
+            .build();
+
+    // Act
+    RunResult result = run(chain(count));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/count@1")).isEqualTo(ImmutableMap.of("count", 3));
+  }
+
+  @Test
+  public void builder_outputSchema_checksTheOutputOfAUseAsOutputChild() {
+    // Arrange
+    Schema colors = STRING.toBuilder().enum_("red", "green").build();
+    FunctionNode<Content, String> red =
+        delegating(String.class, "red").toBuilder().outputSchema(colors).build();
+    FunctionNode<Content, String> blue =
+        delegating(String.class, "blue").toBuilder().outputSchema(colors).build();
+
+    // Act
+    RunResult kept = run(chain(red));
+    RunResult rejected = run(chain(blue));
+
+    // Assert
+    kept.assertCompleted();
+    assertThat(kept.outputAt("wf@1/router@1/child@1")).isEqualTo("red");
+    assertThat(rejected.errorMessage("IllegalArgumentException"))
+        .isEqualTo(
+            "validation error: output of node 'router' does not match its schema: the value is not"
+                + " one of the schema's enum values");
+  }
+
+  @Test
+  public void builder_inputSchemaOnAMapPort_handsOnTheConvertedInputAsAStoredSessionReadsIt() {
+    // Arrange
+    List<Map<String, Object>> inputs = new CopyOnWriteArrayList<>();
+    FunctionNode<Map<String, Object>, String> count =
+        FunctionNodes.builder(new TypeReference<Map<String, Object>>() {}, String.class)
+            .name("count")
+            .inputSchema(object(ImmutableMap.of("count", INTEGER)))
+            .body((ctx, input) -> {
+              inputs.add(input);
+              return "done";
+            })
+            .build();
+    ImmutableMap<String, String> quoted = ImmutableMap.of("count", "3");
+
+    // Act
+    RunResult inGraph = run(chain(emitter("make", quoted), count));
+    RunResult asChild = run(chain(handing(quoted, count)));
+
+    // Assert
+    inGraph.assertCompleted();
+    asChild.assertCompleted();
+    // An Integer 3, as a stored session reads it back; a map holding a Long 3 is not equal.
+    assertThat(inputs).containsExactly(ImmutableMap.of("count", 3), ImmutableMap.of("count", 3));
+    assertThrows(UnsupportedOperationException.class, () -> inputs.get(0).put("count", 4));
+    assertThrows(UnsupportedOperationException.class, () -> inputs.get(1).put("count", 4));
+  }
+
+  @Test
+  public void builder_outputSchema_convertsTheOutputOfAUseAsOutputChild() {
+    // Arrange
+    FunctionNode<Content, Object> router =
+        delegating(Object.class, ImmutableMap.of("count", "3")).toBuilder()
+            .outputSchema(object(ImmutableMap.of("count", INTEGER)))
+            .build();
+
+    // Act
+    RunResult result = run(chain(router));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/router@1")).isEqualTo(ImmutableMap.of("count", 3));
+  }
+
+  @Test
+  public void builder_outputSchema_leavesARejectedRunsOutputUnchecked() {
+    // Arrange
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer =
+        transfer(runs).requireConfirmation(true).outputSchema(STRING).build();
+    WorkflowSession session = new WorkflowSession(chain(transfer, captureInput("reply")));
+    session.advance(go());
+
+    // Act
+    ImmutableList<Event> events = session.turn(confirmation(TRANSFER_CONFIRMATION, false));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo(REJECTED);
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void builder_outputSchema_handsOnTheSameUnmodifiableOutputLiveAndFromAStoredSession() {
+    // Arrange
+    FunctionNode<Content, Map<String, String>> count =
+        FunctionNodes.builder(Content.class, new TypeReference<Map<String, String>>() {})
+            .name("count")
+            .outputSchema(object(ImmutableMap.of("count", INTEGER)))
+            .body((ctx, message) -> ImmutableMap.of("count", "3"))
+            .build();
+    AtomicReference<Map<String, Object>> live = new AtomicReference<>();
+    FunctionNode<Map<String, Object>, String> mutate =
+        FunctionNodes.of(
+            "mutate",
+            new TypeReference<Map<String, Object>>() {},
+            String.class,
+            (ctx, input) -> {
+              live.set(new HashMap<>(input));
+              try {
+                input.put("count", 4);
+                return "modified";
+              } catch (UnsupportedOperationException e) {
+                return "unmodifiable";
+              }
+            });
+    Node ask = longRunningAsk("ask", "ask_1");
+    JoinNode join = JoinNode.builder().name("join").build();
+    Workflow workflow =
+        Workflow.builder()
+            .name("wf")
+            .edges(
+                new Edge(Start.INSTANCE, count),
+                new Edge(Start.INSTANCE, ask),
+                new Edge(count, mutate),
+                new Edge(count, join),
+                new Edge(mutate, join),
+                new Edge(ask, join),
+                new Edge(join, captureInput("reply")))
+            .build();
+    WorkflowSession session = new WorkflowSession(workflow, new JsonSessionService());
+    session.advance(go());
+
+    // Act: the join reads the count from the stored session.
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    // Assert: the successor got the live output, the join the stored one.
+    assertThat(live.get()).isEqualTo(ImmutableMap.of("count", 3));
+    assertThat(replyInput(resumed))
+        .isEqualTo(
+            ImmutableMap.of(
+                "count", live.get(), "mutate", "unmodifiable", "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void builder_outputSchema_keepsTheJsonFormOfNullsLargeNumbersFractionsAndMessages() {
+    // Arrange
+    Map<String, @Nullable Object> values = new HashMap<>();
+    values.put("note", null);
+    values.put("huge", new BigInteger("123456789012345678901234567890"));
+    values.put("wide", 1L << 40);
+    values.put("half", 2.5);
+    FunctionNode<Content, Map<String, Object>> numbers =
+        FunctionNodes.builder(Content.class, new TypeReference<Map<String, Object>>() {})
+            .name("numbers")
+            .outputSchema(
+                object(
+                    ImmutableMap.of(
+                        "note",
+                        nullable(STRING),
+                        "huge",
+                        INTEGER,
+                        "wide",
+                        INTEGER,
+                        "half",
+                        typed(Type.Known.NUMBER))))
+            .body((ctx, message) -> values)
+            .build();
+    FunctionNode<Content, Content> message =
+        reply().toBuilder().outputSchema(reply().outputSchema().orElseThrow()).build();
+
+    // Act
+    RunResult numbersRun = run(chain(numbers));
+    RunResult messageRun = run(chain(message));
+    RunResult uncheckedMessageRun = run(chain(reply()));
+
+    // Assert
+    assertThat(numbersRun.outputAt("wf@1/numbers@1")).isEqualTo(values);
+    assertThat(numbersRun.outputAt("wf@1/numbers@1"))
+        .isEqualTo(numbersRun.storedOutputAt("wf@1/numbers@1"));
+    assertThat(messageRun.outputAt("wf@1/reply@1"))
+        .isEqualTo(uncheckedMessageRun.outputAt("wf@1/reply@1"));
+    assertThat(messageRun.outputAt("wf@1/reply@1"))
+        .isEqualTo(messageRun.storedOutputAt("wf@1/reply@1"));
+  }
+
+  @Test
+  public void runNode_functionNodeChildWithAnInputOutsideItsBuilderSchema_failsTheCaller() {
+    // Arrange
+    AtomicInteger childRuns = new AtomicInteger();
+    FunctionNode<Order, String> child =
+        countingOrderNode(childRuns).toBuilder()
+            .inputSchema(object(ImmutableMap.of("quantity", INTEGER)))
+            .build();
+
+    // Act
+    RunResult result = run(chain(handing(ImmutableMap.of("id", "a1", "quantity", "three"), child)));
+
+    // Assert
+    assertThat(result.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'child' does not match its schema: 'quantity' is not"
+                + " an integer");
+    assertThat(result.eventsAt("wf@1/parent@1").stream().map(Event::errorCode))
+        .contains(Optional.of(new FinishReason("NodeInputValidationException")));
+    assertThat(result.eventsAt("wf@1/parent@1/child@1")).isEmpty();
+    assertThat(childRuns.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void runNode_functionNodeChildWithAnInputItsPortCannotRead_failsTheCallerBeforeItStarts() {
+    // Arrange
+    AtomicInteger childRuns = new AtomicInteger();
+    FunctionNode<Order, String> child = countingOrderNode(childRuns);
+
+    // Act
+    RunResult result = run(chain(handing("three", child)));
+
+    // Assert: the caller fails with the port's error itself, and the child sends nothing.
+    assertThat(result.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'child' does not match "
+                + Order.class.getName()
+                + ".");
+    assertThat(result.eventsAt("wf@1/parent@1").stream().map(Event::errorCode))
+        .contains(Optional.of(new FinishReason("NodeInputValidationException")));
+    assertThat(result.eventsAt("wf@1/parent@1/child@1")).isEmpty();
+    assertThat(childRuns.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void runNode_callerCatchingAnInputItsFunctionNodeChildCannotRead_continues() {
+    // Arrange
+    AtomicInteger childRuns = new AtomicInteger();
+    FunctionNode<Order, String> child = countingOrderNode(childRuns);
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              try {
+                return String.valueOf(ctx.runNode(child, "three").blockingGet());
+              } catch (NodeInputValidationException e) {
+                return "fallback";
+              }
+            })
+            .build();
+
+    // Act
+    RunResult result = run(chain(parent));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/parent@1")).isEqualTo("fallback");
+    assertThat(result.eventsAt("wf@1/parent@1/child@1")).isEmpty();
+    assertThat(childRuns.get()).isEqualTo(0);
   }
 
   @Test
@@ -7665,6 +8183,18 @@ public final class FunctionNodeTest {
           return null;
         })
         .build();
+  }
+
+  /** Returns a node named {@code child} that reads an Order and counts its runs. */
+  private static FunctionNode<Order, String> countingOrderNode(AtomicInteger runs) {
+    return FunctionNodes.of(
+        "child",
+        Order.class,
+        String.class,
+        (ctx, order) -> {
+          runs.incrementAndGet();
+          return order.id();
+        });
   }
 
   /** Returns a node named {@code parent} that runs {@code child} on {@code input}. */
