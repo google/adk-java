@@ -16,6 +16,8 @@
 
 package com.google.adk.workflow;
 
+import static com.google.adk.testing.WorkflowTestNodes.workflow;
+import static com.google.adk.workflow.WorkflowResumeTesting.START;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
@@ -51,6 +53,40 @@ public final class NodeExecutionStateTest {
         NodeExecutionState.builder().node(TestNode.of("worker")).eventSink(SINK);
 
     assertThrows(IllegalStateException.class, builder::build);
+  }
+
+  @Test
+  public void nextTopLevelRunId_inARetriedWorkflowRoot_restartsTheCount() {
+    Workflow wf = workflow("wf", new Edge(START, TestNode.of("a")));
+    NodeExecutionState first =
+        NodeExecutionState.builder().node(wf).eventSink(SINK).runId("1").build();
+    String unused = first.nextTopLevelRunId("coordinator");
+    NodeExecutionState retry =
+        NodeExecutionState.builder()
+            .node(wf)
+            .eventSink(SINK)
+            .runId("1")
+            .previousAttempt(first)
+            .build();
+
+    // As its node numbering restarts, a retry's top-level hops get the same IDs again.
+    assertThat(retry.nextTopLevelRunId("coordinator")).isEqualTo("1");
+  }
+
+  @Test
+  public void nextTopLevelRunId_fromATopLevelPeer_continuesTheRootsCount() {
+    NodeExecutionState root =
+        NodeExecutionState.builder().node(TestNode.of("wf")).eventSink(SINK).runId("1").build();
+    NodeExecutionState peer =
+        NodeExecutionState.builder()
+            .node(TestNode.of("parent"))
+            .eventSink(SINK)
+            .runId(root.nextTopLevelRunId("parent"))
+            .topLevelPeer(root)
+            .build();
+
+    assertThat(peer.nextTopLevelRunId("wf")).isEqualTo("2");
+    assertThat(root.nextTopLevelRunId("parent")).isEqualTo("2");
   }
 
   @Test

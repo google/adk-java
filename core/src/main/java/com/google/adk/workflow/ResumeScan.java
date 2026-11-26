@@ -183,7 +183,7 @@ final class ResumeScan {
   /**
    * Returns the context that {@code node} would have finished with, carrying the replayed result of
    * {@code interception} without running the node. The node replays on the branch it recorded, or
-   * else on the branch of {@code scheduled}.
+   * else on the branch of {@code scheduled}, and in the scope it recorded, if any.
    */
   static Context replayContext(
       Context parent,
@@ -191,6 +191,7 @@ final class ResumeScan {
       Node node,
       String runId,
       boolean useAsOutput,
+      @Nullable RecoveredNode recovered,
       Interception interception) {
     InvocationContext invocationContext =
         interception.branch() == null
@@ -205,6 +206,7 @@ final class ResumeScan {
                 .parent(parent)
                 .runId(runId)
                 .useAsOutput(useAsOutput)
+                .isolationScope(recovered == null ? null : recovered.isolationScope)
                 .build());
     interception.replayOn(context);
     return context;

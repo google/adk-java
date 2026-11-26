@@ -908,14 +908,13 @@ public class LlmAgent extends BaseAgent {
   }
 
   /**
-   * Runs this agent as a workflow node. A {@link AgentMode#SINGLE_TURN} agent sees no history
-   * unless {@link Builder#includeContents} was set, gets the node input as its user turn, runs a
-   * transfer target inside its node, and gives the first final model turn, its own or the target's,
-   * as the node output. A {@link AgentMode#TASK} agent works on its task until a {@code
-   * finish_task} call succeeds. A {@link AgentMode#CHAT} agent runs the tasks it delegates, and its
-   * node stays open, as {@link #waitForOutput} says. The flow of a chat or task agent stops at a
-   * handoff to a sub-agent, which the workflow runs as a node. Any other agent runs as {@link
-   * BaseAgent#runNode} runs it.
+   * Runs this agent as a workflow node: a {@link AgentMode#SINGLE_TURN} agent takes the node input
+   * as its user turn and gives the first final reply, its own or its inline target's, as output; a
+   * {@link AgentMode#TASK} agent works until {@code finish_task} succeeds; and a {@link
+   * AgentMode#CHAT} agent runs the tasks it delegates and stays open ({@link #waitForOutput}). The
+   * flow of a chat or task agent stops at a handoff, and the workflow runs the target as a node, or
+   * fails the run if the handoff is invalid. Any other agent runs as {@link BaseAgent#runNode} runs
+   * it.
    */
   @Experimental
   @Override
@@ -1260,17 +1259,21 @@ public class LlmAgent extends BaseAgent {
 
   /**
    * Returns the task delegations this agent made that nothing answered yet. With {@code
-   * ownScopeOnly}, only delegations made in this node's scope count.
+   * ownScopeOnly}, only delegations made in this node's scope count. A delegation made by another
+   * run still in progress is that run's to answer, as when its task handed off to this run.
    */
   private ImmutableList<FunctionCall> unansweredDelegations(
       Context context, Map<String, BaseTool> tools, boolean ownScopeOnly) {
-    Optional<String> nodeScope = context.requireNodeState().isolationScope();
+    NodeExecutionState nodeState = context.requireNodeState();
+    Optional<String> nodeScope = nodeState.isolationScope();
     Map<String, FunctionCall> calls = new LinkedHashMap<>();
     Set<String> answered = new HashSet<>();
     for (Event event : context.invocationContext().session().immutableEvents()) {
       // Only this agent's own calls delegate; a user's event can only answer them.
       boolean inScope = !ownScopeOnly || event.isolationScope().equals(nodeScope);
-      if (name().equals(event.author()) && inScope) {
+      boolean delegatorRuns =
+          event.nodeInfo().map(NodeInfo::path).filter(nodeState::otherRunInProgress).isPresent();
+      if (name().equals(event.author()) && inScope && !delegatorRuns) {
         taskDelegationsIn(event, tools).forEach(call -> calls.put(call.id().orElseThrow(), call));
       }
       event.functionResponses().forEach(response -> response.id().ifPresent(answered::add));

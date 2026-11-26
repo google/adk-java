@@ -118,6 +118,7 @@ public final class ResumeScanTest {
             TestNode.of("a"),
             "1",
             /* useAsOutput= */ false,
+            /* recovered= */ null,
             Interception.replay(
                 "out", /* route= */ null, /* branch= */ null, /* transferToAgent= */ null));
 
@@ -136,6 +137,7 @@ public final class ResumeScanTest {
             TestNode.of("a"),
             "1",
             /* useAsOutput= */ false,
+            /* recovered= */ null,
             Interception.replay("out", /* route= */ null, "recorded", /* transferToAgent= */ null));
 
     assertThat(replayed.invocationContext().branch()).hasValue("recorded");

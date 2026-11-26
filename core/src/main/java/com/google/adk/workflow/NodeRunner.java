@@ -93,6 +93,7 @@ public final class NodeRunner {
   private final Map<String, @Nullable Object> resumeInputs;
   private final ImmutableSet<String> openInterrupts;
   private final boolean checkInput;
+  private final @Nullable NodeExecutionState topLevelPeer;
 
   private NodeRunner(Builder builder) {
     checkState(builder.node != null, "A node runner needs a node.");
@@ -119,6 +120,7 @@ public final class NodeRunner {
     this.resumeInputs = builder.resumeInputs;
     this.openInterrupts = builder.openInterrupts;
     this.checkInput = builder.checkInput;
+    this.topLevelPeer = builder.topLevelPeer;
   }
 
   /**
@@ -311,7 +313,7 @@ public final class NodeRunner {
             // Defer so a throw from scan or intercept fails the run instead of leaking it.
             Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
                 .flatMap(first ->
-                    followHandoffs(node, first, config)
+                    followHandoffs(parent, node, first, config)
                         .doOnSuccess(last -> {
                           // A handoff keeps the run unless its last target failed.
                           if (!keepsItsRun(first)
@@ -352,7 +354,7 @@ public final class NodeRunner {
               runId);
       return Single.just(
           ResumeScan.replayContext(
-              parent, scheduled, node, runId, config.useAsOutput(), interception));
+              parent, scheduled, node, runId, config.useAsOutput(), recovered, interception));
     }
     return builder()
         .node(node)
@@ -375,11 +377,19 @@ public final class NodeRunner {
   }
 
   /**
-   * Follows the handoffs that {@code first}, a run of {@code node} started with {@code config},
-   * requests, and returns the context of the run that ends the loop. Each target runs, or replays,
-   * as a child of the node that handed off to it, on the branch settings of {@code config}.
+   * Follows the handoffs that {@code first}, a run of {@code node} that {@code caller} started with
+   * {@code config}, requests, and returns the context of the run that ends the loop. Each target
+   * runs, or replays, with the sub-branch setting of {@code config} on the branch and in the scope
+   * of the run that handed off, under the context it resolves to or at the top of the invocation.
    */
-  static Single<Context> followHandoffs(Node node, Context first, RunNodeConfig config) {
+  static Single<Context> followHandoffs(
+      Context caller, Node node, Context first, RunNodeConfig config) {
+    // As in Python, each hop keeps the scope of the run that handed off, such as a task's.
+    AtomicReference<@Nullable String> scope =
+        new AtomicReference<>(first.requireNodeState().isolationScope().orElse(null));
+    // Unlike Python, each hop also branches from the run that handed off, so it sees that history.
+    AtomicReference<@Nullable String> branch =
+        new AtomicReference<>(first.invocationContext().branch().orElse(null));
     return TransferTarget.followHandoffs(
         node,
         first,
@@ -387,12 +397,52 @@ public final class NodeRunner {
           String name = target.agent().name();
           // An agent name may contain '.', which no node path or branch can hold.
           NodeNames.validate(name);
-          String runId = target.parent().requireNodeState().nextChildRunId(name);
-          // The target runs under the node that handed off, not as the caller's output or branch.
-          RunNodeConfig hop = config.toBuilder().useAsOutput(false).overrideBranch(null).build();
-          return runOrReplayChild(
-              target.parent(), target.agent(), /* nodeInput= */ null, runId, hop);
+          RunNodeConfig scoped =
+              config.toBuilder()
+                  .overrideIsolationScope(scope.get())
+                  .overrideBranch(branch.get())
+                  .build();
+          Context parent = target.parent();
+          Single<Context> hop;
+          if (parent == null) {
+            hop = runAtTopLevel(target.agent(), caller, scoped);
+          } else {
+            String runId = parent.requireNodeState().nextChildRunId(name);
+            // Only a run under the caller takes the caller's output.
+            RunNodeConfig child =
+                scoped.toBuilder()
+                    .useAsOutput(config.useAsOutput() && parent.equals(caller))
+                    .build();
+            hop = runOrReplayChild(parent, target.agent(), /* nodeInput= */ null, runId, child);
+          }
+          return hop.doOnSuccess(next -> {
+            scope.set(next.requireNodeState().isolationScope().orElse(scope.get()));
+            branch.set(next.invocationContext().branch().orElse(null));
+          });
         });
+  }
+
+  /**
+   * Runs {@code node} at the top of the invocation, beside the root node above {@code context}, or
+   * replays it from history, with the branch and isolation settings of {@code config}.
+   */
+  private static Single<Context> runAtTopLevel(Node node, Context context, RunNodeConfig config) {
+    Context root = context;
+    while (root.requireNodeState().parent().isPresent()) {
+      root = root.requireNodeState().parent().get();
+    }
+    NodeExecutionState rootState = root.requireNodeState();
+    return builder()
+        .node(node)
+        .invocationContext(root.invocationContext())
+        .eventSink(rootState.eventSink())
+        .runId(rootState.nextTopLevelRunId(node.name()))
+        .topLevelPeer(rootState)
+        .useSubBranch(config.useSubBranch())
+        .overrideBranch(config.overrideBranch().orElse(null))
+        .overrideIsolationScope(config.overrideIsolationScope().orElse(null))
+        .build()
+        .run(/* nodeInput= */ null);
   }
 
   /**
@@ -466,31 +516,44 @@ public final class NodeRunner {
    * rather than signaled, while an {@code Error} other than a pause propagates.
    */
   Single<Context> run(@Nullable Object nodeInput) {
-    return Single.defer(
-        () -> {
-          if (parent != null) {
-            return runAttempts(nodeInput, resumeInputs);
+    return Single.defer(() -> {
+      if (parent != null) {
+        return runAttempts(nodeInput, resumeInputs, openInterrupts);
+      }
+      // A root scans its own progress and resumes like a dynamic child.
+      String path = segment(node.name(), runId);
+      ResumeScan.RecoveredNode recovered =
+          ResumeScan.scan(invocationContext, /* basePath= */ "").get(path);
+      Interception interception =
+          ResumeScan.intercept(
+              node,
+              recovered,
+              /* dynamic= */ true,
+              topLevelPeer != null && topLevelPeer.runCanceledMidRun(path),
+              topLevelPeer != null && topLevelPeer.runFailedThisTurn(path));
+      if (!interception.shouldRun()) {
+        Context context = newContext(interception.resumeInputs(), /* previousAttempt= */ null);
+        interception.replayOn(context);
+        // A hop at the top does not resend what an earlier turn's events carried.
+        if (topLevelPeer != null && recovered != null) {
+          NodeExecutionState state = context.requireNodeState();
+          if (recovered.output != null && state.output().isPresent()) {
+            state.markOutputEmitted();
           }
-          // A root scans its own progress and resumes like a dynamic child.
-          Interception interception =
-              ResumeScan.intercept(
-                  node,
-                  ResumeScan.scan(invocationContext, /* basePath= */ "")
-                      .get(segment(node.name(), runId)),
-                  /* dynamic= */ true,
-                  /* canceledMidRun= */ false,
-                  /* failedThisTurn= */ false);
-          if (!interception.shouldRun()) {
-            Context context = newContext(interception.resumeInputs(), /* previousAttempt= */ null);
-            interception.replayOn(context);
-            return new Activation(context).flushPending().toSingleDefault(context);
+          if (recovered.route != null) {
+            state.markRoutesEmitted();
           }
-          return runAttempts(nodeInput, interception.resumeInputs());
-        });
+        }
+        return new Activation(context).flushPending().toSingleDefault(context);
+      }
+      return runAttempts(nodeInput, interception.resumeInputs(), interception.interrupts());
+    });
   }
 
   private Single<Context> runAttempts(
-      @Nullable Object nodeInput, Map<String, @Nullable Object> resumeInputs) {
+      @Nullable Object nodeInput,
+      Map<String, @Nullable Object> resumeInputs,
+      ImmutableSet<String> openInterrupts) {
     RetryConfig policy = node.config().retryConfig().orElse(null);
     int maxAttempts = policy == null ? 1 : Math.max(1, policy.maxAttempts());
     AtomicReference<@Nullable NodeExecutionState> previousAttempt = new AtomicReference<>();
@@ -511,14 +574,14 @@ public final class NodeRunner {
                         .compose(Tracing.withContext(traceContext))))
         .takeUntil(activation -> !activation.retries(policy))
         .lastOrError()
-        .map(activation -> keepOpenInterrupts(activation.context));
+        .map(activation -> keepOpenInterrupts(activation.context, openInterrupts));
   }
 
   /**
-   * Keeps {@code context} waiting on the interrupts this rerun started with if it finishes without
-   * a failure, output, or route, since only an answer closes them.
+   * Keeps {@code context} waiting on {@code openInterrupts}, those this rerun started with, if it
+   * finishes without a failure, output, or route, since only an answer closes them.
    */
-  private Context keepOpenInterrupts(Context context) {
+  private static Context keepOpenInterrupts(Context context, ImmutableSet<String> openInterrupts) {
     NodeExecutionState state = context.requireNodeState();
     boolean hasResult =
         state.failure().isPresent()
@@ -553,6 +616,7 @@ public final class NodeRunner {
             .isolationScope(overrideIsolationScope)
             .resumeInputs(resumeInputs)
             .previousAttempt(previousAttempt)
+            .topLevelPeer(topLevelPeer)
             .build());
   }
 
@@ -724,7 +788,8 @@ public final class NodeRunner {
     private Completable send(Event event) {
       boolean messageAsOutput = isMessageAsOutput(event);
       // A message-as-output event's content is its output, so drop the repeated output field.
-      Event stamped = stamp(messageAsOutput ? event.toBuilder().output(null).build() : event);
+      Event stamped =
+          stamp(context, messageAsOutput ? event.toBuilder().output(null).build() : event);
       Event outgoing = stamped.partial().orElse(false) ? stamped : withPendingDeltas(stamped);
       return eventSink
           .send(outgoing, /* nodeFailure= */ null)
@@ -760,7 +825,8 @@ public final class NodeRunner {
       Event event =
           withPendingDeltas(
               stamp(
-                  newEvent()
+                  context,
+                  newEvent(context)
                       .output(pendingOutput ? nodeState.output().get() : null)
                       .actions(
                           EventActions.builder()
@@ -785,13 +851,7 @@ public final class NodeRunner {
      * made before the failure, then records the failure on the node state.
      */
     private Completable fail(Exception failure) {
-      Event errorEvent =
-          withPendingDeltas(
-              stamp(
-                  newEvent()
-                      .errorCode(new FinishReason(RetryConfig.errorTypeName(failure)))
-                      .errorMessage(nullToEmpty(failure.getMessage()))
-                      .build()));
+      Event errorEvent = withPendingDeltas(errorEvent(context, failure));
       return eventSink.send(errorEvent, failure).doOnComplete(() -> nodeState.failure(failure));
     }
 
@@ -820,35 +880,44 @@ public final class NodeRunner {
         from.remove(entry.getKey(), entry.getValue());
       }
     }
+  }
 
-    /** Attributes {@code event} to its author and to this run of the node. */
-    private Event stamp(Event event) {
-      InvocationContext eventContext = context.invocationContext();
-      String author = nodeState.eventAuthor();
-      NodeInfo nodeInfo = event.nodeInfo().orElseGet(() -> NodeInfo.builder().build());
-      boolean carriesOutput = event.output().isPresent() || isMessageAsOutput(event);
-      // Marked, so that a stored session reads the output back as a message, not as a map.
-      boolean messageInOutput = event.output().orElse(null) instanceof Content;
-      return event.toBuilder()
-          .author(author.isEmpty() ? node.name() : author)
-          .invocationId(eventContext.invocationId())
-          .branch(event.branch().orElse(eventContext.branch().orElse(null)))
-          .isolationScope(event.isolationScope().orElse(nodeState.isolationScope().orElse(null)))
-          .nodeInfo(
-              nodeInfo.toBuilder()
-                  .path(nodeState.nodePath())
-                  .outputFor(carriesOutput ? nodeState.outputFor() : nodeInfo.outputFor())
-                  .messageAsOutput(nodeInfo.messageAsOutput() || messageInOutput)
-                  .build())
-          .build();
-    }
+  /** Returns an error event for {@code failure}, attributed to {@code run}. */
+  static Event errorEvent(Context run, Exception failure) {
+    return stamp(
+        run,
+        newEvent(run)
+            .errorCode(new FinishReason(RetryConfig.errorTypeName(failure)))
+            .errorMessage(nullToEmpty(failure.getMessage()))
+            .build());
+  }
 
-    private Event.Builder newEvent() {
-      InvocationContext eventContext = context.invocationContext();
-      return Event.builder()
-          .id(eventContext.newUuid())
-          .timestamp(eventContext.now().toEpochMilli());
-    }
+  /** Attributes {@code event} to its author and to {@code run}. */
+  private static Event stamp(Context run, Event event) {
+    NodeExecutionState nodeState = run.requireNodeState();
+    InvocationContext eventContext = run.invocationContext();
+    String author = nodeState.eventAuthor();
+    NodeInfo nodeInfo = event.nodeInfo().orElseGet(() -> NodeInfo.builder().build());
+    boolean carriesOutput = event.output().isPresent() || isMessageAsOutput(event);
+    // Marked, so that a stored session reads the output back as a message, not as a map.
+    boolean messageInOutput = event.output().orElse(null) instanceof Content;
+    return event.toBuilder()
+        .author(author.isEmpty() ? nodeState.node().name() : author)
+        .invocationId(eventContext.invocationId())
+        .branch(event.branch().orElse(eventContext.branch().orElse(null)))
+        .isolationScope(event.isolationScope().orElse(nodeState.isolationScope().orElse(null)))
+        .nodeInfo(
+            nodeInfo.toBuilder()
+                .path(nodeState.nodePath())
+                .outputFor(carriesOutput ? nodeState.outputFor() : nodeInfo.outputFor())
+                .messageAsOutput(nodeInfo.messageAsOutput() || messageInOutput)
+                .build())
+        .build();
+  }
+
+  private static Event.Builder newEvent(Context run) {
+    InvocationContext eventContext = run.invocationContext();
+    return Event.builder().id(eventContext.newUuid()).timestamp(eventContext.now().toEpochMilli());
   }
 
   /**
@@ -987,6 +1056,7 @@ public final class NodeRunner {
     private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
     private ImmutableSet<String> openInterrupts = ImmutableSet.of();
     private boolean checkInput = true;
+    private @Nullable NodeExecutionState topLevelPeer;
 
     private Builder() {}
 
@@ -1069,6 +1139,13 @@ public final class NodeRunner {
     @CanIgnoreReturnValue
     Builder resumeInputs(Map<String, @Nullable Object> resumeInputs) {
       this.resumeInputs = checkNotNull(resumeInputs);
+      return this;
+    }
+
+    /** Sets the root run that this parentless run starts beside, whose turn records it shares. */
+    @CanIgnoreReturnValue
+    Builder topLevelPeer(@Nullable NodeExecutionState topLevelPeer) {
+      this.topLevelPeer = topLevelPeer;
       return this;
     }
 

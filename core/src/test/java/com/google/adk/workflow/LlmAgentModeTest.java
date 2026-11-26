@@ -599,7 +599,7 @@ public final class LlmAgentModeTest {
             .failingTurn(go());
 
     assertThat(helperModel.getRequests()).isEmpty();
-    assertThat(failed.error()).hasMessageThat().contains("which runs only as a tool");
+    assertThat(failed.error()).hasMessageThat().contains("Cannot transfer to 'helper'");
   }
 
   @Test

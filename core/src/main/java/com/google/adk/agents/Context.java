@@ -433,20 +433,21 @@ public class Context extends ReadonlyContext {
    * node waits too, which {@code catch (Exception e)} lets through but {@code catch (Throwable t)}
    * and Rx error handlers such as {@code onErrorResumeNext} stop.
    *
-   * <p>When {@code node} is a chat or task agent that hands off to a sub-agent in an agent tree
-   * with modes, the sub-agent runs as a child of {@code node}, and the result is that of the last
-   * agent to run. A single-turn agent runs its target inside its own run.
+   * <p>When {@code node} is a chat or task agent that hands off to another agent in an agent tree
+   * with modes, that agent runs as a node too, and the result is that of the last agent to run. A
+   * single-turn agent runs its target inside its own run.
    *
-   * <p>It fails with {@link DynamicNodeFailedException} if the child fails, as when an LLM agent
-   * hands off to a task or single-turn sub-agent; with {@link IllegalStateException} if this is not
-   * a workflow node's context, if this node's {@link Node#rerunOnResume} is false, or if {@code
-   * config} delegates an output that this node already has or has delegated; with {@link
-   * IllegalArgumentException} if the name of the child, or of an agent it hands off to, cannot form
-   * a node path, if an agent other than an LLM agent hands off to a task or single-turn sub-agent,
-   * or if the child's input schema rejects {@code nodeInput}; or with {@link
-   * com.google.adk.workflow.NodeInputValidationException} (an {@code IllegalArgumentException}) if
-   * the input port or builder input schema of a {@link com.google.adk.workflow.FunctionNode} child
-   * rejects {@code nodeInput}. A child whose input is rejected does not start.
+   * <p>It fails with {@link DynamicNodeFailedException} if the child fails, as when an agent's
+   * handoff is invalid: to the agent itself, to a task or single-turn sub-agent or peer, to a
+   * parent or peer its flags forbid, or to an agent outside its sub-agents, parent and peers. It
+   * fails with {@link IllegalStateException} if this is not a workflow node's context, if this
+   * node's {@link Node#rerunOnResume} is false, or if {@code config} delegates an output that this
+   * node already has or has delegated; with {@link IllegalArgumentException} if a child or handoff
+   * target name cannot form a node path, or if the child's input schema rejects {@code nodeInput};
+   * or with {@link com.google.adk.workflow.NodeInputValidationException} (an {@code
+   * IllegalArgumentException}) if the input port or builder input schema of a {@link
+   * com.google.adk.workflow.FunctionNode} child rejects {@code nodeInput}. A child whose input is
+   * rejected does not start.
    */
   @Experimental
   public final Maybe<Object> runNode(Node node, @Nullable Object nodeInput, RunNodeConfig config) {

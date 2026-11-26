@@ -1239,24 +1239,16 @@ public abstract class BaseLlmFlow implements BaseFlow {
   }
 
   /**
-   * Returns whether {@code event} is a complete handoff, by the chat or task workflow node that
-   * {@code context} runs, to a sub-agent that the workflow runs as a node.
+   * Returns whether {@code event} is a complete handoff by the chat or task workflow node that
+   * {@code context} runs; the workflow runs its target as a node and checks that target itself.
    */
   private static boolean handsOffToANode(InvocationContext context, Event event) {
-    if (event.partial().orElse(false)
-        || context
+    return !event.partial().orElse(false)
+        && context
             .agentMode(context.agent())
             .filter(mode -> mode == AgentMode.CHAT || mode == AgentMode.TASK)
-            .isEmpty()) {
-      return false;
-    }
-    return event
-        .actions()
-        .transferToAgent()
-        .filter(target ->
-            context.agent().subAgents().stream()
-                .anyMatch(sub -> sub.name().equals(target) && !LlmAgent.runsAsTool(sub)))
-        .isPresent();
+            .isPresent()
+        && event.actions().transferToAgent().isPresent();
   }
 
   /**
@@ -1270,7 +1262,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
     if (event.partial().orElse(false) || event.actions().transferToAgent().isEmpty()) {
       return self;
     }
-    // The workflow runs a chat or task node's handoff to its own sub-agent as a node.
+    // The workflow runs a chat or task node's handoff as a node.
     if (handsOffToANode(context, event)) {
       return self;
     }

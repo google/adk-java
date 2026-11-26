@@ -33,6 +33,7 @@ import static com.google.adk.workflow.WorkflowResumeTesting.pathOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
@@ -46,18 +47,27 @@ import com.google.adk.models.LlmResponse;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils.EchoTool;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.adk.workflow.WorkflowResumeTesting.FailedTurn;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -294,18 +304,6 @@ public final class AgentTransferLoopTest {
 
     // The stored reply keeps its output, so the resume replays it instead of parsing it again.
     assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1));
-  }
-
-  @Test
-  public void chatNodeHandoffToItsParent_stillRunsTheParentInline() {
-    TestLlm parentModel = says("parent here");
-    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
-    LlmAgent unusedCoordinator = chat("coordinator", parentModel, child);
-
-    var unused = new WorkflowSession(workflow(new Edge(START, child))).turn(go());
-
-    // Only a sub-agent handoff runs as a node here, so the parent still runs, inside the node.
-    assertThat(parentModel.getRequests()).hasSize(1);
   }
 
   @Test
@@ -727,8 +725,8 @@ public final class AgentTransferLoopTest {
 
     FailedTurn turn = new WorkflowSession(workflow(new Edge(START, coordinator))).failingTurn(go());
 
-    assertThat(turn.error()).isInstanceOf(IllegalStateException.class);
-    assertThat(turn.error()).hasMessageThat().contains("which runs only as a tool");
+    assertThat(turn.error()).isInstanceOf(WorkflowDataException.class);
+    assertThat(turn.error()).hasMessageThat().contains("Cannot transfer to 'worker'");
     assertThat(workerModel.getRequests()).isEmpty();
   }
 
@@ -1016,18 +1014,871 @@ public final class AgentTransferLoopTest {
     }
   }
 
+  @Test
+  public void peerHandoff_runsThePeerUnderTheCaller() {
+    LlmAgent first = chat("first", TestLlm.create(transferTo("second")));
+    OutputAgent second = new OutputAgent("second", "from second");
+    LlmAgent unusedRoot = chat("root", says("unused"), first, second);
+    Node driver = dispatcher("driver", (ctx, input) -> ctx.runNode(first).toFlowable());
+
+    ImmutableList<Event> events =
+        new WorkflowSession(
+                workflow(new Edge(START, driver), new Edge(driver, captureInput("reply"))))
+            .turn(go());
+
+    assertThat(second.runs.get()).isEqualTo(1);
+    assertThat(outputAt("wf@1/driver@1/second@1", events)).isEqualTo("from second");
+    assertThat(replyInput(events)).isEqualTo("from second");
+  }
+
+  @Test
+  public void terminalNodePeerHandoff_carriesTheOutputForTheWorkflow() {
+    LlmAgent first = chat("first", TestLlm.create(transferTo("second")));
+    OutputAgent second = new OutputAgent("second", "from second");
+    LlmAgent unusedRoot = chat("root", says("unused"), first, second);
+
+    ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, first))).turn(go());
+
+    assertThat(outputEventAt(events, "wf@1/second@1").nodeInfo().orElseThrow().outputFor())
+        .contains("wf@1");
+  }
+
+  @Test
+  public void parentHandoff_runsTheParentAgainWhereItRanBefore() {
+    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
+    LlmAgent coordinator =
+        chat(
+            "coordinator",
+            TestLlm.create(transferTo("child"), createTextLlmResponse("back again")),
+            child);
+
+    ImmutableList<Event> events =
+        new WorkflowSession(workflow(new Edge(START, coordinator))).turn(go());
+
+    Event answer = contentOf("coordinator", events);
+    assertThat(answer.stringifyContent()).isEqualTo("back again");
+    assertThat(pathOf(answer)).isEqualTo("wf@1/coordinator@2");
+  }
+
+  @Test
+  public void handoffToAParentThatNeverRan_runsItAtTheTopOfTheInvocation() {
+    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
+    LlmAgent unusedCoordinator = chat("coordinator", says("coordinator here"), child);
+
+    ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, child))).turn(go());
+
+    assertThat(pathOf(contentOf("coordinator", events))).isEqualTo("coordinator@1");
+  }
+
+  @Test
+  public void handoffToAParentThatNeverRan_keepsTheCallersBranch() {
+    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
+    LlmAgent unusedCoordinator = chat("coordinator", says("coordinator here"), child);
+    Node driver =
+        dispatcher(
+            "driver",
+            (ctx, input) ->
+                ctx.runNode(child, null, RunNodeConfig.builder().overrideBranch("b1").build())
+                    .toFlowable());
+
+    ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, driver))).turn(go());
+
+    // As in Python, a top-level hop keeps the branch settings of the run that handed off.
+    assertThat(contentOf("coordinator", events).branch()).hasValue("b1");
+  }
+
+  @Test
+  public void handoffToAParentWithItsOwnParent_runsItAtTheTopWithoutItsTreePath() {
+    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
+    LlmAgent coordinator = chat("coordinator", says("coordinator here"), child);
+    LlmAgent unusedRoot = chat("root", says("unused"), coordinator);
+
+    ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, child))).turn(go());
+
+    // Python derives "root@1/coordinator@1" from the agent tree; Java runs the hop at the top.
+    assertThat(pathOf(contentOf("coordinator", events))).isEqualTo("coordinator@1");
+  }
+
+  @Test
+  public void topLevelHandoffTargetThatPauses_resumesWhenAnswered() {
+    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
+    TestLlm coordinatorModel =
+        TestLlm.create(
+            createFunctionCallLlmResponse("ask_1", "pendingTool", ImmutableMap.of("message", "?")),
+            createTextLlmResponse("coordinator done"));
+    LlmAgent unusedCoordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .model(coordinatorModel)
+            .mode(AgentMode.CHAT)
+            .tools(pendingFunctionTool())
+            .subAgents(child)
+            .build();
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, child)));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(answer("ask_1", ImmutableMap.of("ok", true), "pendingTool"));
+
+    // As in Python, the answer resumes the target that paused.
+    assertThat(coordinatorModel.getRequests()).hasSize(2);
+    Event reply = contentOf("coordinator", events);
+    assertThat(reply.stringifyContent()).isEqualTo("coordinator done");
+    assertThat(pathOf(reply)).isEqualTo("coordinator@1");
+  }
+
+  @Test
+  public void dynamicPeerHandoffAsOutput_givesTheDriverThePeersOutput() {
+    LlmAgent first = chat("first", TestLlm.create(transferTo("second")));
+    OutputAgent second = new OutputAgent("second", "from second");
+    LlmAgent unusedRoot = chat("root", says("unused"), first, second);
+    RunNodeConfig asOutput = RunNodeConfig.builder().useAsOutput(true).build();
+    Node driver =
+        dispatcher("driver", (ctx, input) -> ctx.runNode(first, null, asOutput).toFlowable());
+
+    ImmutableList<Event> events =
+        new WorkflowSession(
+                workflow(new Edge(START, driver), new Edge(driver, captureInput("reply"))))
+            .turn(go());
+
+    assertThat(second.runs.get()).isEqualTo(1);
+    assertThat(replyInput(events)).isEqualTo("from second");
+  }
+
+  @Test
+  public void outputAndTopLevelHandoffAsOutput_givesTheDriverTheTargetsOutput() {
+    HandingOffAgent child = new HandingOffAgent("child", "coordinator", "from child");
+    OutputAgent coordinator = new OutputAgent("coordinator", "from coordinator", child);
+    LlmAgent unusedRoot = chat("root", says("unused"), coordinator);
+    RunNodeConfig asOutput = RunNodeConfig.builder().useAsOutput(true).build();
+    Node driver =
+        dispatcher("driver", (ctx, input) -> ctx.runNode(child, null, asOutput).toFlowable());
+
+    ImmutableList<Event> events =
+        new WorkflowSession(
+                workflow(new Edge(START, driver), new Edge(driver, captureInput("reply"))))
+            .turn(go());
+
+    // The target's output replaces the one the child already sent for the driver.
+    assertThat(replyInput(events)).isEqualTo("from coordinator");
+  }
+
+  @Test
+  public void topLevelHandoffNamedLikeTheRootNode_takesTheNextRunId() {
+    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
+    LlmAgent unusedCoordinator = chat("coordinator", says("coordinator here"), child);
+
+    ImmutableList<Event> events =
+        new WorkflowSession(workflow("coordinator", new Edge(START, child))).turn(go());
+
+    assertThat(pathOf(contentOf("coordinator", events))).isEqualTo("coordinator@2");
+  }
+
+  @Test
+  public void parentHandoffBelowANodeNamedLikeTheParent_runsTheParentAtTheTop() {
+    HandingOffAgent child = new HandingOffAgent("child", "coordinator");
+    OutputAgent coordinator = new OutputAgent("coordinator", "from coordinator", child);
+    LlmAgent unusedRoot = chat("root", says("unused"), coordinator);
+    RunNodeConfig asOutput = RunNodeConfig.builder().useAsOutput(true).build();
+    Node driver =
+        dispatcher("coordinator", (ctx, input) -> ctx.runNode(child, null, asOutput).toFlowable());
+
+    ImmutableList<Event> events =
+        new WorkflowSession(
+                workflow(new Edge(START, driver), new Edge(driver, captureInput("reply"))))
+            .turn(go());
+
+    // Only an earlier run of the parent agent itself places the parent's next run.
+    assertThat(outputAt("coordinator@1", events)).isEqualTo("from coordinator");
+    assertThat(replyInput(events)).isEqualTo("from coordinator");
+  }
+
+  @Test
+  public void topLevelHandoffThatFailedOnAWorkflowRetry_sendsEachOutputOnce() {
+    HandingOffAgent child = new HandingOffAgent("child", "coordinator");
+    OutputAgent coordinator =
+        new OutputAgent("coordinator", "from coordinator", /* failures= */ 1, child);
+    LlmAgent unusedRoot = chat("root", says("unused"), coordinator);
+    Node driver = dispatcher("driver", (ctx, input) -> ctx.runNode(child).toFlowable());
+
+    ImmutableList<Event> events =
+        new WorkflowSession(retriedWorkflow(new Edge(START, driver))).turn(go());
+
+    // The target sends its own output and the driver sends the result it returned, once each.
+    assertThat(coordinator.runs.get()).isEqualTo(2);
+    assertThat(
+            events.stream().filter(event -> event.output().isPresent()).map(event -> pathOf(event)))
+        .containsExactly("coordinator@1", "wf@1/driver@1");
+  }
+
+  @Test
+  public void topLevelHandoffThatHandsOffAgain_runsItsTargetOnce() {
+    LlmAgent child =
+        chat(
+            "child",
+            TestLlm.create(
+                transferTo("coordinator"),
+                createTextLlmResponse("child again"),
+                createTextLlmResponse("child again")));
+    LlmAgent unusedCoordinator = chat("coordinator", TestLlm.create(transferTo("child")), child);
+
+    ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, child))).turn(go());
+
+    assertThat(pathOf(contentOf("child", events))).isEqualTo("coordinator@1/child@1");
+  }
+
+  @Test
+  public void peerHandoffAfterASubAgentHandoff_runsThePeerUnderTheSameAgent() {
+    OutputAgent peer = new OutputAgent("peer", "from peer");
+    LlmAgent coordinator =
+        chat(
+            "coordinator",
+            TestLlm.create(transferTo("helper")),
+            chat("helper", TestLlm.create(transferTo("peer"))),
+            peer);
+
+    ImmutableList<Event> events =
+        new WorkflowSession(workflow(new Edge(START, coordinator))).turn(go());
+
+    assertThat(outputAt("wf@1/coordinator@1/peer@1", events)).isEqualTo("from peer");
+  }
+
+  @Test
+  public void taskNodeWithAnInvalidHandoff_endsItsTaskSoLaterMessagesStartFresh() {
+    LlmAgent booker =
+        LlmAgent.builder()
+            .name("booker")
+            .model(TestLlm.create(transferTo("nobody")))
+            .mode(AgentMode.TASK)
+            .build();
+    LlmAgent unusedRoot = chat("root", says("unused"), booker);
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, booker)));
+    Throwable error = session.failingTurn(go()).error();
+
+    var unused = session.failingTurn(userText("again")).error();
+
+    // The failed handoff ended the task, so the next message does not join its invocation.
+    assertThat(error).isInstanceOf(WorkflowDataException.class);
+    assertThat(session.invocationIds()).hasSize(2);
+  }
+
+  @Test
+  public void taskNodeHandoffToAPeer_runsThePeerInTheTasksScope() {
+    TestLlm peerModel = says("from peer");
+    LlmAgent peer = chat("peer", peerModel);
+    LlmAgent booker =
+        LlmAgent.builder()
+            .name("booker")
+            .model(TestLlm.create(transferTo("peer")))
+            .mode(AgentMode.TASK)
+            .build();
+    LlmAgent unusedRoot = chat("root", says("unused"), booker, peer);
+
+    ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, booker))).turn(go());
+
+    // As in Python, the peer works in the task's scope, so it sees the task's history.
+    assertThat(contentOf("peer", events).isolationScope()).hasValue("wf@1/booker@1");
+  }
+
+  @Test
+  public void peerOfATaskNodeWithALookalikeFinishTask_leavesTheTaskOpen() {
+    BaseTool lookalike =
+        new BaseTool("finish_task", "Looks like finish_task.") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(FunctionDeclaration.builder().name(name()).build());
+          }
+
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            return Single.just(ImmutableMap.of("result", "Task completed."));
+          }
+        };
+    LlmAgent peer =
+        LlmAgent.builder()
+            .name("peer")
+            .model(
+                TestLlm.create(
+                    createFunctionCallLlmResponse("f1", "finish_task", ImmutableMap.of()),
+                    createTextLlmResponse("Which day?")))
+            .tools(lookalike)
+            .build();
+    LlmAgent booker =
+        LlmAgent.builder()
+            .name("booker")
+            .model(TestLlm.create(transferTo("peer")))
+            .mode(AgentMode.TASK)
+            .build();
+    LlmAgent unusedRoot = chat("root", says("unused"), booker, peer);
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, booker)));
+
+    session.advance(go());
+
+    // The peer runs in the task's scope, but only the task's own finish_task ends it.
+    assertThat(session.storedEvents().stream().filter(LlmAgent::finishesTask)).isEmpty();
+  }
+
+  @Test
+  public void topLevelHopThatHandsBack_takesTheNextRunIdBesideTheRoot() {
+    // child hands off to its parent at the top; the parent hands back, and child hands up again.
+    LlmAgent child =
+        chat("child", TestLlm.create(transferTo("coordinator"), transferTo("coordinator")));
+    LlmAgent unusedCoordinator =
+        chat(
+            "coordinator",
+            TestLlm.create(transferTo("child"), createTextLlmResponse("coordinator done")),
+            child);
+
+    ImmutableList<Event> events =
+        new WorkflowSession(workflow("coordinator", new Edge(START, child))).turn(go());
+
+    // The root counts as coordinator@1 and each top-level hop takes the next run ID beside it.
+    assertThat(pathOf(contentOf("coordinator", events))).isEqualTo("coordinator@3");
+  }
+
+  @Test
+  public void finishedTopLevelHandoffTarget_isNotSentAgainOnEachLaterTurn() {
+    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
+    TestLlm coordinatorModel = says("coordinator done");
+    LlmAgent unusedCoordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .model(coordinatorModel)
+            .mode(AgentMode.SINGLE_TURN)
+            .subAgents(child)
+            .build();
+    Node ask = longRunningAsk("ask", "ask_1");
+    Node join = captureInput("reply");
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, child),
+                new Edge(START, ask),
+                new Edge(child, join),
+                new Edge(ask, join)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    // The target's output was sent in the first turn, so the resume does not store it again.
+    assertThat(
+            events.stream()
+                .filter(event -> pathOf(event).equals("coordinator@1"))
+                .filter(event -> event.output().isPresent()))
+        .isEmpty();
+    assertThat(coordinatorModel.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void handoffToAParentThatTheFlagsForbid_failsTheWorkflow() {
+    LlmAgent child =
+        LlmAgent.builder()
+            .name("child")
+            .model(TestLlm.create(transferTo("root")))
+            .mode(AgentMode.CHAT)
+            .disallowTransferToParent(true)
+            .build();
+    // A peer keeps the transfer tool offered, so the model can name the parent anyway.
+    LlmAgent unusedRoot = chat("root", says("unused"), child, chat("peer", says("unused")));
+
+    Throwable error = handoffError(child);
+
+    assertThat(error).isInstanceOf(WorkflowDataException.class);
+    assertThat(error).hasMessageThat().contains("disallowTransferToParent is set");
+  }
+
+  @Test
+  public void handoffToAPeerThatTheFlagsForbid_failsTheWorkflow() {
+    LlmAgent child =
+        LlmAgent.builder()
+            .name("child")
+            .model(TestLlm.create(transferTo("peer")))
+            .mode(AgentMode.CHAT)
+            .disallowTransferToPeers(true)
+            .build();
+    LlmAgent unusedRoot = chat("root", says("unused"), child, chat("peer", says("unused")));
+
+    Throwable error = handoffError(child);
+
+    assertThat(error).isInstanceOf(WorkflowDataException.class);
+    assertThat(error).hasMessageThat().contains("disallowTransferToPeers is set");
+  }
+
+  @Test
+  public void handoffToATaskPeer_failsWithoutRunningThePeer() {
+    TestLlm bookerModel = says("unused");
+    LlmAgent booker =
+        LlmAgent.builder().name("booker").model(bookerModel).mode(AgentMode.TASK).build();
+    // A callback names the peer, since a task peer is not offered as a transfer target.
+    LlmAgent child =
+        LlmAgent.builder()
+            .name("child")
+            .model(says("handing off"))
+            .mode(AgentMode.CHAT)
+            .afterModelCallback((callbackContext, response) -> {
+              callbackContext.eventActions().setTransferToAgent("booker");
+              return Maybe.empty();
+            })
+            .build();
+    LlmAgent unusedRoot = chat("root", says("unused"), child, booker);
+
+    Throwable error = handoffError(child);
+
+    assertThat(error).isInstanceOf(WorkflowDataException.class);
+    assertThat(error).hasMessageThat().contains("a task or single-turn agent runs as a tool");
+    assertThat(bookerModel.getRequests()).isEmpty();
+  }
+
+  @Test
+  public void handoffToAParentThatNeverRan_keepsTheCallersSubBranchAndScope() {
+    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
+    LlmAgent unusedCoordinator = chat("coordinator", says("coordinator here"), child);
+    Node driver =
+        dispatcher(
+            "driver",
+            (ctx, input) ->
+                ctx.runNode(
+                        child,
+                        null,
+                        RunNodeConfig.builder()
+                            .useSubBranch(true)
+                            .overrideIsolationScope("scope1")
+                            .build())
+                    .toFlowable());
+
+    ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, driver))).turn(go());
+
+    // A top-level hop keeps the caller's settings and branches from the run that handed off.
+    Event reply = contentOf("coordinator", events);
+    assertThat(reply.branch()).hasValue("child@1.coordinator@1");
+    assertThat(reply.isolationScope()).hasValue("scope1");
+  }
+
+  @Test
+  public void replayedHandoffs_keepTheCallersScopeForTheNextHop() {
+    LlmAgent first = chat("first", TestLlm.create(transferTo("second")));
+    LlmAgent second = chat("second", TestLlm.create(transferTo("third")));
+    LlmAgent third = chat("third", says("third here"));
+    LlmAgent unusedRoot = chat("root", says("unused"), first, second, third);
+    Node driver =
+        dispatcher(
+            "driver",
+            (ctx, input) ->
+                ctx.runNode(
+                        first, null, RunNodeConfig.builder().overrideIsolationScope("s1").build())
+                    .toFlowable());
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, driver)));
+    var unused =
+        session.turnUntil(
+            go(),
+            event ->
+                event.author().equals("second") && event.actions().transferToAgent().isPresent());
+    String invocationId = session.storedEvents().get(0).invocationId();
+
+    ImmutableList<Event> resumed = session.resume(invocationId);
+
+    // The first two hops replay in the scope they recorded, so the last one runs there too.
+    assertThat(contentOf("third", resumed).isolationScope()).hasValue("s1");
+  }
+
+  @Test
+  public void dynamicPeerHandoffWithAnOverrideBranch_runsThePeerOnTheCallersBranch() {
+    LlmAgent first = chat("first", TestLlm.create(transferTo("second")));
+    LlmAgent second = chat("second", says("from second"));
+    LlmAgent unusedRoot = chat("root", says("unused"), first, second);
+    RunNodeConfig config =
+        RunNodeConfig.builder().useSubBranch(true).overrideBranch("forkA@1").build();
+    Node driver =
+        dispatcher("driver", (ctx, input) -> ctx.runNode(first, null, config).toFlowable());
+
+    ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, driver))).turn(go());
+
+    // The peer branches from the agent that handed off, which ran on the caller's override.
+    assertThat(contentOf("second", events).branch()).hasValue("forkA@1.first@1.second@1");
+  }
+
+  @Test
+  public void handoffToItself_failsTheWorkflow() {
+    LlmAgent leaf = chat("leaf", TestLlm.create(transferTo("leaf")));
+    LlmAgent unusedRoot = chat("root", says("unused"), leaf);
+
+    Throwable error = handoffError(leaf);
+
+    assertThat(error).isInstanceOf(WorkflowDataException.class);
+    assertThat(error).hasMessageThat().isEqualTo("Agent 'leaf' cannot transfer to itself.");
+  }
+
+  @Test
+  public void handoffToAnUnknownAgent_failsWithoutNamingIt() {
+    LlmAgent leaf = chat("leaf", TestLlm.create(transferTo("nobody")));
+    LlmAgent unusedRoot = chat("root", says("unused"), leaf);
+
+    Throwable error = handoffError(leaf);
+
+    assertThat(error).isInstanceOf(WorkflowDataException.class);
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'leaf' requested a transfer to an agent that is not in the agent tree.");
+  }
+
+  @Test
+  public void handoffToAnUnrelatedAgent_failsAndListsTheAgents() {
+    LlmAgent leaf = chat("leaf", TestLlm.create(transferTo("cousin")));
+    LlmAgent left = chat("left", says("unused"), leaf);
+    LlmAgent right = chat("right", says("unused"), chat("cousin", says("unused")));
+    LlmAgent unusedRoot = chat("root", says("unused"), left, right);
+
+    Throwable error = handoffError(leaf);
+
+    assertThat(error).isInstanceOf(WorkflowDataException.class);
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "Cannot transfer from 'leaf' to unrelated agent 'cousin'.\n"
+                + "Available agents: root, left, leaf, right, cousin");
+  }
+
+  @Test
+  public void delegatedTaskHandoffToAPeer_letsThePeerSeeTheTasksHistory() {
+    TestLlm peerModel = says("I see the flight");
+    LlmAgent booker =
+        LlmAgent.builder()
+            .name("booker")
+            .model(
+                TestLlm.create(
+                    createFunctionCallLlmResponse("c1", "lookup", ImmutableMap.of()),
+                    transferTo("peer")))
+            .mode(AgentMode.TASK)
+            .tools(lookupTool())
+            .build();
+    LlmAgent coordinator =
+        chat(
+            "coordinator",
+            TestLlm.create(
+                createFunctionCallLlmResponse("t1", "booker", ImmutableMap.of("request", "book")),
+                createTextLlmResponse("done")),
+            booker,
+            chat("peer", peerModel));
+
+    var unused = new WorkflowSession(workflow(new Edge(START, coordinator))).turn(go());
+
+    // The task runs on a sub-branch, which the peer branches from rather than beside.
+    assertThat(peerModel.getLastRequest().contents().toString()).contains("LH123");
+  }
+
+  @Test
+  public void fannedOutPeerHandoff_letsThePeerSeeTheHistoryOfTheAgentThatHandedOff() {
+    TestLlm peerModel = says("I see it");
+    LlmAgent first =
+        LlmAgent.builder()
+            .name("first")
+            .model(
+                TestLlm.create(
+                    createFunctionCallLlmResponse("c1", "lookup", ImmutableMap.of()),
+                    transferTo("peer")))
+            .mode(AgentMode.CHAT)
+            .tools(lookupTool())
+            .build();
+    LlmAgent unusedRoot = chat("root", says("unused"), first, chat("peer", peerModel));
+
+    ImmutableList<Event> events =
+        new WorkflowSession(workflow(new Edge(START, first), new Edge(START, TestNode.of("other"))))
+            .turn(go());
+
+    assertThat(peerModel.getLastRequest().contents().toString()).contains("LH123");
+    assertThat(contentOf("peer", events).branch()).hasValue("first@1.peer@1");
+  }
+
+  @Test
+  public void fannedOutParentRoundTrip_letsTheParentSeeTheChildsHistory() {
+    LlmAgent child =
+        LlmAgent.builder()
+            .name("child")
+            .model(
+                TestLlm.create(
+                    createFunctionCallLlmResponse("c1", "lookup", ImmutableMap.of()),
+                    transferTo("coordinator")))
+            .mode(AgentMode.CHAT)
+            .tools(lookupTool())
+            .build();
+    TestLlm coordinatorModel =
+        TestLlm.create(transferTo("child"), createTextLlmResponse("back again"));
+    LlmAgent coordinator = chat("coordinator", coordinatorModel, child);
+
+    var unused =
+        new WorkflowSession(
+                workflow(new Edge(START, coordinator), new Edge(START, TestNode.of("other"))))
+            .turn(go());
+
+    assertThat(coordinatorModel.getLastRequest().contents().toString()).contains("LH123");
+  }
+
+  @Test
+  public void delegatedTaskHandoffToItsParent_callsTheParentsModelInsteadOfTheTaskAgain() {
+    TestLlm bookerModel =
+        TestLlm.create(transferTo("coordinator"), createTextLlmResponse("booker again"));
+    LlmAgent booker =
+        LlmAgent.builder().name("booker").model(bookerModel).mode(AgentMode.TASK).build();
+    TestLlm coordinatorModel =
+        TestLlm.create(
+            createFunctionCallLlmResponse("t1", "booker", ImmutableMap.of("request", "book")),
+            createTextLlmResponse("coordinator took over"));
+    LlmAgent coordinator = chat("coordinator", coordinatorModel, booker);
+
+    var unused = new WorkflowSession(workflow(new Edge(START, coordinator))).turn(go());
+
+    // The delegation belongs to the coordinator run that is still waiting on it.
+    assertThat(bookerModel.getRequests()).hasSize(1);
+    assertThat(coordinatorModel.getRequests()).hasSize(2);
+  }
+
+  @Test
+  public void topLevelHopThatRoutedEarlier_doesNotResendItsRouteOnResume() {
+    HandingOffAgent child = new HandingOffAgent("child", "router");
+    ScriptedAgent unusedRouter =
+        new ScriptedAgent(
+            "router",
+            /* rerunOnResume= */ false,
+            (context, run) ->
+                Flowable.just(
+                    Event.builder()
+                        .id(Event.generateEventId())
+                        .author("router")
+                        .actions(
+                            EventActions.builder()
+                                .route(ImmutableList.of(new Route.Tag("go_route")))
+                                .build())
+                        .build()),
+            child,
+            modeMarker());
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(new Edge(START, child), new Edge(START, longRunningAsk("ask", "ask_1"))));
+    session.advance(go());
+
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    assertThat(
+            resumed.stream()
+                .filter(event -> pathOf(event).equals("router@1"))
+                .filter(event -> event.actions().route().isPresent()))
+        .isEmpty();
+  }
+
+  @Test
+  public void answeredTopLevelHopThatDoesNotRerun_sendsTheAnswerAsItsOutput() {
+    HandingOffAgent child = new HandingOffAgent("child", "asker");
+    ScriptedAgent unusedAsker =
+        new ScriptedAgent(
+            "asker",
+            /* rerunOnResume= */ false,
+            (context, run) -> Flowable.just(WorkflowResumeTesting.interrupt("ask_1")),
+            child,
+            modeMarker());
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, child)));
+    session.advance(go());
+
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    // No earlier event carried the answer, so the resume sends it.
+    assertThat(outputAt("asker@1", resumed)).isEqualTo(ImmutableMap.of("ok", true));
+  }
+
+  @Test
+  public void topLevelHopThatFailedThroughAChildOnAWorkflowRetry_runsAgain() {
+    AtomicInteger flakyRuns = new AtomicInteger();
+    Node flaky =
+        new TestNode(
+            "flaky",
+            (ctx, input) ->
+                flakyRuns.incrementAndGet() == 1
+                    ? Flowable.error(new IllegalStateException("not yet"))
+                    : Flowable.just("ok"));
+    HandingOffAgent child = new HandingOffAgent("child", "coordinator");
+    ScriptedAgent coordinator =
+        new ScriptedAgent(
+            "coordinator",
+            /* rerunOnResume= */ true,
+            (context, run) ->
+                Flowable.just(
+                        Event.builder()
+                            .id(Event.generateEventId())
+                            .author("coordinator")
+                            .output("out-" + run)
+                            .build())
+                    .concatWith(context.runNode(flaky).ignoreElement().toFlowable()),
+            child,
+            modeMarker());
+
+    var unused = new WorkflowSession(retriedWorkflow(new Edge(START, child))).turn(go());
+
+    // The failure came from a child, so no error event of its own shows that the hop failed.
+    assertThat(coordinator.runs.get()).isEqualTo(2);
+  }
+
+  @Test
+  public void topLevelHopCanceledByAFailingSiblingOnAWorkflowRetry_runsAgain() {
+    CountDownLatch started = new CountDownLatch(1);
+    AtomicInteger siblingRuns = new AtomicInteger();
+    HandingOffAgent child = new HandingOffAgent("child", "coordinator");
+    ScriptedAgent coordinator =
+        new ScriptedAgent(
+            "coordinator",
+            /* rerunOnResume= */ true,
+            (context, run) ->
+                run == 1
+                    ? Flowable.just(textEvent("coordinator", "working"))
+                        .concatWith(
+                            Flowable.<Event>never().doOnSubscribe(unused -> started.countDown()))
+                    : Flowable.just(
+                        Event.builder()
+                            .id(Event.generateEventId())
+                            .author("coordinator")
+                            .output("finished on retry")
+                            .build()),
+            child,
+            modeMarker());
+    Node sibling =
+        new TestNode(
+            "sibling",
+            (ctx, input) -> {
+              if (siblingRuns.incrementAndGet() > 1) {
+                return Flowable.empty();
+              }
+              return Flowable.defer(() -> {
+                started.await(5, SECONDS);
+                return Flowable.error(new IllegalStateException("sibling failed"));
+              });
+            });
+
+    var unused =
+        new WorkflowSession(retriedWorkflow(new Edge(START, child), new Edge(START, sibling)))
+            .turn(go());
+
+    assertThat(coordinator.runs.get()).isEqualTo(2);
+  }
+
+  @Test
+  public void topLevelHopWithTwoOpenCallsOneAnswered_waitsForTheOther() {
+    TestLlm coordinatorModel =
+        TestLlm.create(
+            createLlmResponse(
+                Content.builder()
+                    .role("model")
+                    .parts(pendingCallPart("p1"), pendingCallPart("p2"))
+                    .build()),
+            createTextLlmResponse("all done"));
+    LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
+    LlmAgent unusedCoordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .model(coordinatorModel)
+            .mode(AgentMode.CHAT)
+            .tools(pendingFunctionTool())
+            .subAgents(child)
+            .build();
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, child)));
+    session.advance(go());
+    session.advance(answer("p1", ImmutableMap.of("ok", true), "pendingTool"));
+    int requestsAfterFirstAnswer = coordinatorModel.getRequests().size();
+
+    ImmutableList<Event> events =
+        session.turn(answer("p2", ImmutableMap.of("ok", true), "pendingTool"));
+
+    assertThat(requestsAfterFirstAnswer).isEqualTo(1);
+    assertThat(contentOf("coordinator", events).stringifyContent()).isEqualTo("all done");
+  }
+
+  @Test
+  public void handoffsAfterATopLevelTaskHop_keepTheTasksScope() {
+    LlmAgent child = chat("child", TestLlm.create(transferTo("booker")));
+    LlmAgent booker =
+        LlmAgent.builder()
+            .name("booker")
+            .model(TestLlm.create(transferTo("peer")))
+            .mode(AgentMode.TASK)
+            .subAgents(child)
+            .build();
+    LlmAgent unusedRoot = chat("root", says("unused"), booker, chat("peer", says("from peer")));
+
+    ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, child))).turn(go());
+
+    // booker runs at the top in a scope of its own, which the next hop takes on.
+    assertThat(contentOf("peer", events).isolationScope()).hasValue("booker@1");
+  }
+
+  @Test
+  public void handoffToAParentWithAPeerOfTheSameName_runsTheParent() {
+    LlmAgent current =
+        LlmAgent.builder()
+            .name("current")
+            .model(TestLlm.create(transferTo("shared")))
+            .mode(AgentMode.CHAT)
+            .disallowTransferToPeers(true)
+            .build();
+    TestLlm peerModel = says("from peer");
+    TestLlm parentModel = says("from parent");
+    LlmAgent unusedParent = chat("shared", parentModel, current, chat("shared", peerModel));
+
+    ImmutableList<Event> events =
+        new WorkflowSession(workflow(new Edge(START, current))).turn(go());
+
+    // As in Python, the parent is checked before the peers.
+    assertThat(peerModel.getRequests()).isEmpty();
+    assertThat(parentModel.getRequests()).hasSize(1);
+    assertThat(pathOf(contentOf("shared", events))).isEqualTo("shared@1");
+  }
+
+  /** An agent whose node run is {@code body}, given the run's context and its 1-based count. */
+  private static final class ScriptedAgent extends BaseAgent {
+    final AtomicInteger runs = new AtomicInteger();
+    private final boolean rerunOnResume;
+    private final BiFunction<Context, Integer, Flowable<Event>> body;
+
+    ScriptedAgent(
+        String name,
+        boolean rerunOnResume,
+        BiFunction<Context, Integer, Flowable<Event>> body,
+        BaseAgent... subAgents) {
+      super(name, "", ImmutableList.copyOf(subAgents), null, null);
+      this.rerunOnResume = rerunOnResume;
+      this.body = body;
+    }
+
+    @Override
+    public boolean rerunOnResume() {
+      return rerunOnResume;
+    }
+
+    @Override
+    public Flowable<Event> runNode(Context context, @Nullable Object nodeInput) {
+      return Flowable.defer(() -> body.apply(context, runs.incrementAndGet()));
+    }
+
+    @Override
+    protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
+      return Flowable.empty();
+    }
+
+    @Override
+    protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
+      return Flowable.empty();
+    }
+  }
+
   /** An agent whose node run fails its first {@code failures} times, then outputs {@code value}. */
   private static final class OutputAgent extends BaseAgent {
     final AtomicInteger runs = new AtomicInteger();
     private final String value;
     private final int failures;
 
-    OutputAgent(String name, String value) {
-      this(name, value, /* failures= */ 0);
+    OutputAgent(String name, String value, BaseAgent... subAgents) {
+      this(name, value, /* failures= */ 0, subAgents);
     }
 
-    OutputAgent(String name, String value, int failures) {
-      super(name, "", ImmutableList.of(), null, null);
+    OutputAgent(String name, String value, int failures, BaseAgent... subAgents) {
+      super(name, "", ImmutableList.copyOf(subAgents), null, null);
       this.value = value;
       this.failures = failures;
     }
@@ -1051,6 +1902,63 @@ public final class AgentTransferLoopTest {
     protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
       return Flowable.empty();
     }
+  }
+
+  /** Returns a workflow that its retry policy runs twice if it fails. */
+  private static Workflow retriedWorkflow(Edge... edges) {
+    return Workflow.builder()
+        .name("wf")
+        .edges(edges)
+        .config(
+            NodeConfig.builder()
+                .retryConfig(
+                    RetryConfig.builder().maxAttempts(2).initialDelay(Duration.ZERO).build())
+                .build())
+        .build();
+  }
+
+  /** Returns a chat agent that only gives its parent's tree modes. */
+  private static LlmAgent modeMarker() {
+    return chat("marker", says("unused"));
+  }
+
+  /** Returns a tool that looks up flight LH123. */
+  private static BaseTool lookupTool() {
+    return new BaseTool("lookup", "Looks up a flight.") {
+      @Override
+      public Optional<FunctionDeclaration> declaration() {
+        return Optional.of(FunctionDeclaration.builder().name(name()).build());
+      }
+
+      @Override
+      public Single<Map<String, Object>> runAsync(
+          Map<String, Object> args, ToolContext toolContext) {
+        return Single.just(ImmutableMap.of("flight", "LH123"));
+      }
+    };
+  }
+
+  private static Part pendingCallPart(String callId) {
+    return Part.builder()
+        .functionCall(
+            FunctionCall.builder()
+                .name("pendingTool")
+                .id(callId)
+                .args(ImmutableMap.of("message", "ok?")))
+        .build();
+  }
+
+  private static Event textEvent(String author, String text) {
+    return Event.builder()
+        .id(Event.generateEventId())
+        .author(author)
+        .content(Content.builder().role("model").parts(Part.fromText(text)).build())
+        .build();
+  }
+
+  /** Returns the failure of a turn of a workflow that runs {@code node} after its start. */
+  private static Throwable handoffError(Node node) {
+    return new WorkflowSession(workflow(new Edge(START, node))).failingTurn(go()).error();
   }
 
   private static LlmAgent chat(String name, TestLlm model, BaseAgent... subAgents) {

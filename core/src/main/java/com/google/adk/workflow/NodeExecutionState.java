@@ -77,6 +77,8 @@ public final class NodeExecutionState {
   private final Set<String> unfinishedNodePaths;
   // Paths of runs that failed this turn and have not finished cleanly since, shared the same way.
   private final Set<String> failedNodePaths;
+  // Run counts of the nodes that run beside this run's root, shared under the root.
+  private final ConcurrentMap<String, Integer> topLevelRunCounts;
   private final Set<String> interruptIds = new CopyOnWriteArraySet<>();
   private final AtomicReference<OutputState> outputState = new AtomicReference<>(NO_OUTPUT);
   // Set once the node drops its own output because a useAsOutput child holds the output.
@@ -122,11 +124,22 @@ public final class NodeExecutionState {
     }
     NodeExecutionState previousAttempt = builder.previousAttempt;
     this.attemptCount = previousAttempt == null ? 1 : previousAttempt.attemptCount + 1;
-    NodeExecutionState turnRecords = parentState != null ? parentState : previousAttempt;
+    // A hop at the top shares the root's records, so its run IDs and paths cannot collide.
+    NodeExecutionState turnRecords =
+        parentState != null
+            ? parentState
+            : previousAttempt != null ? previousAttempt : builder.topLevelPeer;
     this.unfinishedNodePaths =
         turnRecords == null ? ConcurrentHashMap.newKeySet() : turnRecords.unfinishedNodePaths;
     this.failedNodePaths =
         turnRecords == null ? ConcurrentHashMap.newKeySet() : turnRecords.failedNodePaths;
+    boolean restartsTopLevelRuns =
+        parentState == null && previousAttempt != null && node instanceof Workflow;
+    // Seeded with the root's own run, so a top-level hop named like the root gets the next ID.
+    this.topLevelRunCounts =
+        turnRecords == null || restartsTopLevelRuns
+            ? new ConcurrentHashMap<>(ImmutableMap.of(node.name(), 1))
+            : turnRecords.topLevelRunCounts;
     this.resumeInputs = Collections.unmodifiableMap(new LinkedHashMap<>(builder.resumeInputs));
     // A retried workflow restarts its node numbering, so its finished nodes replay.
     boolean continuesChildRuns = previousAttempt != null && !(node instanceof Workflow);
@@ -163,7 +176,10 @@ public final class NodeExecutionState {
     return attemptCount;
   }
 
-  /** Returns the context of the node that ran this node, or empty if this is a root node. */
+  /**
+   * Returns the context of the node that ran this node, or empty for a run at the top of the
+   * invocation: a root node or a handoff target that runs beside it.
+   */
   public Optional<Context> parent() {
     return Optional.ofNullable(parent);
   }
@@ -329,6 +345,14 @@ public final class NodeExecutionState {
   }
 
   /**
+   * Returns the next run ID for a node named {@code name} that runs at the top of the invocation,
+   * beside this run's root.
+   */
+  String nextTopLevelRunId(String name) {
+    return String.valueOf(topLevelRunCounts.merge(name, 1, Integer::sum));
+  }
+
+  /**
    * Returns the runs of the children this node runs itself, keyed by {@code name@runId}, which
    * calls with the same run ID share.
    */
@@ -376,6 +400,27 @@ public final class NodeExecutionState {
    */
   boolean childFailedThisTurn(String childKey) {
     return failedNodePaths.contains(nodePath + "/" + childKey);
+  }
+
+  /**
+   * Returns whether another run at {@code path}, under the same root, started in this turn and has
+   * not finished, such as a delegator whose task handed off to this run.
+   */
+  public boolean otherRunInProgress(String path) {
+    return !path.equals(nodePath) && unfinishedNodePaths.contains(path);
+  }
+
+  /**
+   * Returns whether the run at {@code path}, under the same root, started in this turn and has not
+   * finished; read before it runs again, this means it was canceled mid-run.
+   */
+  boolean runCanceledMidRun(String path) {
+    return unfinishedNodePaths.contains(path);
+  }
+
+  /** Returns whether the run at {@code path}, under the same root, failed in this turn. */
+  boolean runFailedThisTurn(String path) {
+    return failedNodePaths.contains(path);
   }
 
   /**
@@ -593,6 +638,7 @@ public final class NodeExecutionState {
     private @Nullable String isolationScope;
     private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
     private @Nullable NodeExecutionState previousAttempt;
+    private @Nullable NodeExecutionState topLevelPeer;
 
     private Builder() {}
 
@@ -656,6 +702,16 @@ public final class NodeExecutionState {
     @CanIgnoreReturnValue
     Builder previousAttempt(@Nullable NodeExecutionState previousAttempt) {
       this.previousAttempt = previousAttempt;
+      return this;
+    }
+
+    /**
+     * Sets the state of the root run that this parentless run starts beside, whose records of
+     * top-level run IDs and of unfinished and failed runs it shares, or null for a root run.
+     */
+    @CanIgnoreReturnValue
+    Builder topLevelPeer(@Nullable NodeExecutionState topLevelPeer) {
+      this.topLevelPeer = topLevelPeer;
       return this;
     }
 

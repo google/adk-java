@@ -257,7 +257,8 @@ final class Scheduler {
                 nodeName,
                 runId);
         Context replayContext =
-            ResumeScan.replayContext(context, scheduled, node, runId, useAsOutput, interception);
+            ResumeScan.replayContext(
+                context, scheduled, node, runId, useAsOutput, recoveredNode, interception);
         // Only a replay that completes an answered transfer marks a new step, as a run does.
         boolean completesTransfer =
             interception.transferToAgent() != null
@@ -299,6 +300,7 @@ final class Scheduler {
       }
       RunNodeConfig handoffConfig =
           RunNodeConfig.builder()
+              .useAsOutput(useAsOutput)
               .useSubBranch(trigger.useSubBranch())
               .overrideBranch(trigger.branch())
               .build();
@@ -310,7 +312,7 @@ final class Scheduler {
               .andThen(nodeRun)
               // A resumed handoff runs its target here too, so the trace context covers it.
               .flatMap(first ->
-                  NodeRunner.followHandoffs(node, first, handoffConfig)
+                  NodeRunner.followHandoffs(context, node, first, handoffConfig)
                       .compose(Tracing.withContext(traceContext)))
               .subscribe(
                   childContext -> {
@@ -355,7 +357,7 @@ final class Scheduler {
     Optional<Object> output = childState.output();
     if (output.isPresent()) {
       nodeOutputs.put(nodeName, output.get());
-      // A replay or a handoff target emits no output for the workflow.
+      // A replay, or a handoff target below another node, emits no output for the workflow.
       if (wasReplayed || !childState.outputFor().contains(workflowState.nodePath())) {
         outputsNotCarried.add(nodeName);
       } else {
