@@ -207,6 +207,111 @@ public final class WorkflowHitlTest {
   }
 
   @Test
+  public void resume_jsonQuotedEnumAnswer_isReadAsTheEnumValue() {
+    // Arrange
+    WorkflowSession session =
+        sessionAwaitingAnswer(
+            Schema.builder().type(Type.Known.STRING).enum_("red", "green").build());
+
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("result", "\"red\"")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo("red");
+  }
+
+  @Test
+  public void resume_jsonQuotedTextAnswerToAStringSchema_keepsTheQuotes() {
+    // Arrange
+    WorkflowSession session =
+        sessionAwaitingAnswer(Schema.builder().type(Type.Known.STRING).build());
+
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("result", "\"red\"")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo("\"red\"");
+  }
+
+  @Test
+  public void resume_jsonQuotedEnumAnswerToAnAnyOfWithAFreeString_keepsTheQuotes() {
+    // Arrange
+    Schema redOrAnyText =
+        Schema.builder()
+            .anyOf(
+                Schema.builder().type(Type.Known.STRING).enum_("red").build(),
+                Schema.builder().type(Type.Known.STRING).build())
+            .build();
+    WorkflowSession session = sessionAwaitingAnswer(redOrAnyText);
+
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("result", "\"red\"")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo("\"red\"");
+  }
+
+  @Test
+  public void resume_jsonQuotedEnumAnswerToAnAnyOfWithAnUntypedBranch_keepsTheQuotes() {
+    // Arrange
+    Schema redOrAnything =
+        Schema.builder()
+            .anyOf(
+                Schema.builder().type(Type.Known.STRING).enum_("red").build(),
+                Schema.builder().build())
+            .build();
+    WorkflowSession session = sessionAwaitingAnswer(redOrAnything);
+
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("result", "\"red\"")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo("\"red\"");
+  }
+
+  @Test
+  public void resume_jsonQuotedEnumAnswerToAnAnyOfWithAnUnspecifiedTypeBranch_keepsTheQuotes() {
+    // Arrange
+    Schema redOrUnspecified =
+        Schema.builder()
+            .anyOf(
+                Schema.builder().type(Type.Known.STRING).enum_("red").build(),
+                Schema.builder().type(Type.Known.TYPE_UNSPECIFIED).build())
+            .build();
+    WorkflowSession session = sessionAwaitingAnswer(redOrUnspecified);
+
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("result", "\"red\"")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo("\"red\"");
+  }
+
+  @Test
+  public void resume_jsonQuotedEnumAnswerToAnAnyOfWithoutAFreeString_isReadAsTheEnumValue() {
+    // Arrange
+    Schema redOrInt =
+        Schema.builder()
+            .anyOf(
+                Schema.builder().type(Type.Known.STRING).enum_("red").build(),
+                Schema.builder().type(Type.Known.INTEGER).build())
+            .build();
+    WorkflowSession session = sessionAwaitingAnswer(redOrInt);
+
+    // Act
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("result", "\"red\"")));
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo("red");
+  }
+
+  @Test
   public void resume_objectAnswerWithoutAnOptionalProperty_leavesItOut() {
     Schema schema =
         Schema.builder()
