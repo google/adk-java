@@ -1013,6 +1013,48 @@ public final class LlmAgentAsNodeTest {
   }
 
   @Test
+  public void runAsync_chatAgentPausedAfterItsSubAgentHandsControlBack_resumesOnTheAnswer() {
+    assertThat(textsOnTheAnswerTo(handsOffThenPausesAfterTheHandBack())).contains("guide resumed");
+  }
+
+  @Test
+  public void runNode_chatAgentPausedAfterItsSubAgentHandsControlBack_resumesOnTheAnswer() {
+    LlmAgent guide = handsOffThenPausesAfterTheHandBack();
+    Node caller = dispatcher("caller", (ctx, input) -> ctx.runNode(guide, input).toFlowable());
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, caller)).build());
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(answer("p1", ImmutableMap.of("ok", true), "pendingTool"));
+
+    assertThat(events.stream().map(Event::stringifyContent)).contains("guide resumed");
+  }
+
+  @Test
+  public void runAsync_chatAgentWhoseSubAgentPausesAfterTheHandOff_resumesTheSubAgentOnTheAnswer() {
+    LlmAgent guide = handsOffToAHelperThatPauses(AgentMode.CHAT, /* helperHandsOffFirst= */ false);
+
+    assertThat(textsOnTheAnswerTo(guide)).contains("helper resumed");
+  }
+
+  @Test
+  public void runAsync_subAgentPausedAfterItsOwnSubAgentHandsControlBack_resumesOnTheAnswer() {
+    LlmAgent guide = handsOffToAHelperThatPauses(AgentMode.CHAT, /* helperHandsOffFirst= */ true);
+
+    assertThat(textsOnTheAnswerTo(guide)).contains("helper resumed");
+  }
+
+  @Test
+  public void runAsync_agentWithoutAModeWhoseSubAgentPauses_resumesTheSubAgentOnTheAnswer() {
+    LlmAgent guide =
+        handsOffToAHelperThatPauses(/* mode= */ null, /* helperHandsOffFirst= */ false);
+
+    assertThat(textsOnTheAnswerTo(guide)).contains("helper resumed");
+  }
+
+  @Test
   public void runAsync_taskAgentWithTwoOpenCallsOneAnswered_finishesOnceBothAreAnswered() {
     TestLlm model =
         TestLlm.create(
@@ -1592,6 +1634,93 @@ public final class LlmAgentAsNodeTest {
         .role("model")
         .parts(pendingCallPart("p1"), pendingCallPart("p2"))
         .build();
+  }
+
+  /**
+   * Returns a chat agent named {@code guide} that hands off to its sub-agent {@code helper},
+   * regains control, and pauses on the {@code pendingTool} call {@code p1}. Once answered, it
+   * responds with "guide resumed".
+   */
+  private static LlmAgent handsOffThenPausesAfterTheHandBack() {
+    LlmAgent helper =
+        LlmAgent.builder()
+            .name("helper")
+            .model(
+                TestLlm.create(
+                    createFunctionCallLlmResponse(
+                        "transfer_2", "transfer_to_agent", ImmutableMap.of("agent_name", "guide"))))
+            .build();
+    return LlmAgent.builder()
+        .name("guide")
+        .model(
+            TestLlm.create(
+                createFunctionCallLlmResponse(
+                    "transfer_1", "transfer_to_agent", ImmutableMap.of("agent_name", "helper")),
+                createFunctionCallLlmResponse(
+                    "p1", "pendingTool", ImmutableMap.of("message", "hello")),
+                createTextLlmResponse("guide resumed")))
+        .mode(AgentMode.CHAT)
+        .tools(pendingFunctionTool())
+        .subAgents(helper)
+        .build();
+  }
+
+  /**
+   * Returns an agent named {@code guide} that hands off to its sub-agent {@code helper}, which
+   * pauses on the {@code pendingTool} call {@code p1} and responds with "helper resumed" once it is
+   * answered. When {@code helperHandsOffFirst} is set, {@code helper} first hands off to its own
+   * sub-agent {@code deep}, which hands control back to it.
+   */
+  private static LlmAgent handsOffToAHelperThatPauses(
+      @Nullable AgentMode mode, boolean helperHandsOffFirst) {
+    ImmutableList.Builder<LlmResponse> helperResponses = ImmutableList.builder();
+    LlmAgent.Builder helper = LlmAgent.builder().name("helper").tools(pendingFunctionTool());
+    if (helperHandsOffFirst) {
+      helperResponses.add(
+          createFunctionCallLlmResponse(
+              "transfer_2", "transfer_to_agent", ImmutableMap.of("agent_name", "deep")));
+      helper.subAgents(
+          LlmAgent.builder()
+              .name("deep")
+              .model(
+                  TestLlm.create(
+                      createFunctionCallLlmResponse(
+                          "transfer_3",
+                          "transfer_to_agent",
+                          ImmutableMap.of("agent_name", "helper"))))
+              .build());
+    }
+    helperResponses.add(
+        createFunctionCallLlmResponse("p1", "pendingTool", ImmutableMap.of("message", "hello")),
+        createTextLlmResponse("helper resumed"));
+    LlmAgent.Builder guide =
+        LlmAgent.builder()
+            .name("guide")
+            .model(
+                TestLlm.create(
+                    createFunctionCallLlmResponse(
+                        "transfer_1",
+                        "transfer_to_agent",
+                        ImmutableMap.of("agent_name", "helper"))))
+            .subAgents(helper.model(TestLlm.create(helperResponses.build())).build());
+    if (mode != null) {
+      guide.mode(mode);
+    }
+    return guide.build();
+  }
+
+  /**
+   * Runs {@code agent} as the only node of a workflow until it pauses on {@code p1}, and returns
+   * the texts of the events of the turn that answers it.
+   */
+  private static ImmutableList<String> textsOnTheAnswerTo(LlmAgent agent) {
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, agent)).build());
+    session.advance(go());
+    return session.turn(answer("p1", ImmutableMap.of("ok", true), "pendingTool")).stream()
+        .map(Event::stringifyContent)
+        .collect(toImmutableList());
   }
 
   /** Returns the events of {@code events} in which the workflow {@code wf} ends its turn. */

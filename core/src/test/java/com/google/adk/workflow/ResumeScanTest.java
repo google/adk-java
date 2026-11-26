@@ -31,6 +31,7 @@ import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.workflow.ResumeScan.Interception;
@@ -350,6 +351,158 @@ public final class ResumeScanTest {
 
     assertThat(recovered.output).isNull();
     assertThat(recovered.failed).isTrue();
+  }
+
+  @Test
+  public void scan_transferToAnotherAgent_isTheNodesTransfer() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            nodeEvent("wf@1/root@1")
+                .actions(EventActions.builder().transferToAgent("helper").build())
+                .build());
+
+    RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("root@1");
+
+    assertThat(recovered.transferToAgent).isEqualTo("helper");
+  }
+
+  @Test
+  public void scan_transferBackToTheNode_clearsTheTransfer() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            nodeEvent("wf@1/root@1")
+                .actions(EventActions.builder().transferToAgent("helper").build())
+                .build(),
+            nodeEvent("wf@1/root@1")
+                .actions(EventActions.builder().transferToAgent("root").build())
+                .build());
+
+    RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("root@1");
+
+    assertThat(recovered.transferToAgent).isNull();
+  }
+
+  @Test
+  public void scan_transferBackToTheNodeBeforeAnInterrupt_rerunsTheAnsweredNode() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            nodeEvent("wf@1/root@1")
+                .actions(EventActions.builder().transferToAgent("helper").build())
+                .build(),
+            nodeEvent("wf@1/root@1")
+                .actions(EventActions.builder().transferToAgent("root").build())
+                .build(),
+            interruptEvent("wf@1/root@1", "ask_1"),
+            answerEvent("ask_1", ImmutableMap.of("v", 1)));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("root")
+            .model(TestUtils.createTestLlm(TestUtils.createTextLlmResponse("unused")))
+            .build();
+
+    RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("root@1");
+    Interception interception =
+        ResumeScan.intercept(
+            agent,
+            recovered,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
+
+    assertThat(recovered.transferToAgent).isNull();
+    assertThat(interception.shouldRun()).isTrue();
+    assertThat(interception.resumeInputs()).containsExactly("ask_1", ImmutableMap.of("v", 1));
+  }
+
+  @Test
+  public void scan_transferBackToTheNodeBeforeADescendantsInterrupt_rerunsTheAnsweredNode() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            nodeEvent("wf@1/root@1")
+                .actions(EventActions.builder().transferToAgent("helper").build())
+                .build(),
+            nodeEvent("wf@1/root@1")
+                .actions(EventActions.builder().transferToAgent("root").build())
+                .build(),
+            interruptEvent("wf@1/root@1/worker@d1", "ask_1"),
+            answerEvent("ask_1", ImmutableMap.of("v", 1)));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("root")
+            .model(TestUtils.createTestLlm(TestUtils.createTextLlmResponse("unused")))
+            .build();
+
+    RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("root@1");
+    Interception interception =
+        ResumeScan.intercept(
+            agent,
+            recovered,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
+
+    assertThat(recovered.transferToAgent).isNull();
+    assertThat(interception.shouldRun()).isTrue();
+  }
+
+  @Test
+  public void scan_interruptAfterATransfer_rerunsTheAnsweredNode() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            nodeEvent("wf@1/root@1")
+                .actions(EventActions.builder().transferToAgent("helper").build())
+                .build(),
+            interruptEvent("wf@1/root@1", "ask_1"),
+            answerEvent("ask_1", ImmutableMap.of("v", 1)));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("root")
+            .model(TestUtils.createTestLlm(TestUtils.createTextLlmResponse("unused")))
+            .build();
+
+    RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("root@1");
+    Interception interception =
+        ResumeScan.intercept(
+            agent,
+            recovered,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
+
+    assertThat(recovered.transferToAgent).isNull();
+    assertThat(interception.shouldRun()).isTrue();
+    assertThat(interception.resumeInputs()).containsExactly("ask_1", ImmutableMap.of("v", 1));
+  }
+
+  @Test
+  public void scan_interruptOnTheTransferEvent_keepsTheTransfer() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            nodeEvent("wf@1/root@1")
+                .content(callContent(LONG_RUNNING_CALL, "ask_1"))
+                .longRunningToolIds(ImmutableSet.of("ask_1"))
+                .actions(EventActions.builder().transferToAgent("helper").build())
+                .build());
+
+    RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("root@1");
+
+    assertThat(recovered.transferToAgent).isEqualTo("helper");
+  }
+
+  @Test
+  public void scan_transferBackToTheNodeOnAnEventWithAnErrorCode_isAFailure() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            nodeEvent("wf@1/root@1").output("stale").build(),
+            nodeEvent("wf@1/root@1")
+                .actions(EventActions.builder().transferToAgent("root").build())
+                .errorCode(new FinishReason("IllegalStateException"))
+                .build());
+
+    RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("root@1");
+
+    assertThat(recovered.failed).isTrue();
+    assertThat(recovered.output).isNull();
   }
 
   @Test

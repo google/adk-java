@@ -437,8 +437,13 @@ final class ResumeScan {
             .ifPresent(scope -> node.isolationScope = scope);
       }
       // The finish check below reads the failure and the interrupts that these record.
-      recordOutcome(event, isDirect, ownerPath, node);
+      int at = key.lastIndexOf('@');
+      recordOutcome(event, isDirect, ownerPath, at < 0 ? key : key.substring(0, at), node);
       boolean raisedAny = recordRaisedInterrupts(event, node);
+      if (isDirect && raisedAny && event.actions().transferToAgent().isEmpty()) {
+        // A later interrupt means the run continued, so the earlier transfer is not its result.
+        node.transferToAgent = null;
+      }
       if (isDirect) {
         node.finishedAfterResume =
             !raisedAny
@@ -506,12 +511,12 @@ final class ResumeScan {
     }
 
     /**
-     * Records the output, routes, transfer and failure that {@code event} shows for the node at
-     * {@code ownerPath}. A descendant's event counts only if the descendant's output is also the
-     * owner's, as with {@code useAsOutput}.
+     * Records the output, routes, transfer and failure that {@code event} shows for the node named
+     * {@code nodeName} at {@code ownerPath}. A descendant's event counts only if the descendant's
+     * output is also the owner's, as with {@code useAsOutput}.
      */
     private static void recordOutcome(
-        Event event, boolean isDirect, String ownerPath, RecoveredNode node) {
+        Event event, boolean isDirect, String ownerPath, String nodeName, RecoveredNode node) {
       Object eventOutput = event.output().orElse(null);
       boolean fromContent = false;
       if (event.nodeInfo().map(NodeInfo::messageAsOutput).orElse(false)) {
@@ -539,10 +544,13 @@ final class ResumeScan {
       }
       Optional<ImmutableList<Route>> route = event.actions().route();
       Optional<String> transfer = event.actions().transferToAgent();
+      // Within the same node run, a sub-agent can return control to its agent node; that ends the
+      // hand-off rather than recording a transfer.
+      boolean handsOff = transfer.filter(agent -> !agent.equals(nodeName)).isPresent();
       route.ifPresent(routes -> node.route = routes);
-      transfer.ifPresent(agent -> node.transferToAgent = agent);
+      transfer.ifPresent(agent -> node.transferToAgent = handsOff ? agent : null);
       // A result or a later event without an error clears a failure; a failure drops the result.
-      boolean hasResult = eventOutput != null || route.isPresent() || transfer.isPresent();
+      boolean hasResult = eventOutput != null || route.isPresent() || handsOff;
       if (hasResult || event.errorCode().isEmpty()) {
         node.failed = false;
       } else {
