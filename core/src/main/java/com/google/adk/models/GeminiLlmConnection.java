@@ -76,6 +76,8 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
   // Both used only by handleServerMessage, which genai's WebSocket listener calls one at a time.
   private final PendingText pendingText = new PendingText();
   private final PendingTranscriptions pendingTranscriptions;
+  // Gemini 3.x Live models expect audio and video in dedicated fields, as in ADK Python.
+  private final boolean sendsAudioAndVideoSeparately;
 
   /**
    * Establishes a new connection over the given live transport.
@@ -85,6 +87,8 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
    */
   GeminiLlmConnection(String modelName, CompletableFuture<GeminiLiveTransport> transportFuture) {
     this.pendingTranscriptions = new PendingTranscriptions(isGemini3xLive(modelName));
+    this.sendsAudioAndVideoSeparately =
+        isGemini3xLive(modelName) || isGemini35LiveTranslate(modelName);
     this.transportFuture =
         Objects.requireNonNull(transportFuture)
             .whenCompleteAsync(
@@ -298,11 +302,21 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
    * transcription once, in full.
    */
   static boolean isGemini3xLive(@Nullable String modelName) {
-    String name = Strings.nullToEmpty(modelName);
-    String modelId = name.substring(name.lastIndexOf('/') + 1);
+    String modelId = modelId(modelName);
     return modelId.startsWith("gemini-3.")
         && modelId.contains("-live")
-        && !modelId.startsWith("gemini-3.5-live-translate");
+        && !isGemini35LiveTranslate(modelName);
+  }
+
+  /** Returns whether {@code modelName} names a Gemini 3.5 Live Translate model. */
+  static boolean isGemini35LiveTranslate(@Nullable String modelName) {
+    return modelId(modelName).startsWith("gemini-3.5-live-translate");
+  }
+
+  /** Returns the trailing model id from {@code modelName}, which may be a resource path. */
+  private static String modelId(@Nullable String modelName) {
+    String name = Strings.nullToEmpty(modelName);
+    return name.substring(name.lastIndexOf('/') + 1);
   }
 
   /** Returns whether {@code part} has text; an empty string does not count. */
@@ -455,11 +469,21 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
 
   @Override
   public Completable sendRealtime(Blob blob) {
+    LiveSendRealtimeInputParameters.Builder parameters = LiveSendRealtimeInputParameters.builder();
+    String mimeType = blob.mimeType().orElse("");
+    if (!sendsAudioAndVideoSeparately) {
+      parameters.media(blob);
+    } else if (mimeType.startsWith("audio/")) {
+      parameters.audio(blob);
+    } else if (mimeType.startsWith("image/")) {
+      parameters.video(blob);
+    } else {
+      logger.warn("Blob not sent. Unknown or empty mime type for realtime input: {}", mimeType);
+      return Completable.complete();
+    }
+    LiveSendRealtimeInputParameters built = parameters.build();
     return Completable.fromFuture(
-        transportFuture.thenCompose(
-            transport ->
-                transport.sendRealtimeInput(
-                    LiveSendRealtimeInputParameters.builder().media(blob).build())));
+        transportFuture.thenCompose(transport -> transport.sendRealtimeInput(built)));
   }
 
   /** Helper to send client content parameters. */

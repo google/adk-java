@@ -31,6 +31,7 @@ import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.ExecutableCode;
 import com.google.genai.types.FunctionCall;
@@ -758,6 +759,66 @@ public final class GeminiLlmConnectionTest {
   }
 
   @Test
+  public void sendRealtime_gemini3xLive_sendsAudioAndVideoInTheirOwnFields() {
+    Blob audio = Blob.builder().mimeType("audio/pcm;rate=16000").data(new byte[] {1}).build();
+    Blob frame = Blob.builder().mimeType("image/jpeg").data(new byte[] {2}).build();
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture("gemini-3.8-live")) {
+      fixture.connection.sendRealtime(audio).test().awaitDone(5, TimeUnit.SECONDS).assertComplete();
+      fixture.connection.sendRealtime(frame).test().awaitDone(5, TimeUnit.SECONDS).assertComplete();
+
+      assertThat(fixture.transport.realtimeInputs)
+          .containsExactly(
+              LiveSendRealtimeInputParameters.builder().audio(audio).build(),
+              LiveSendRealtimeInputParameters.builder().video(frame).build())
+          .inOrder();
+    }
+  }
+
+  @Test
+  public void sendRealtime_gemini35LiveTranslate_sendsAudioInItsOwnField() {
+    Blob audio = Blob.builder().mimeType("audio/pcm;rate=16000").data(new byte[] {1}).build();
+    try (LiveConnectionFixture fixture =
+        new LiveConnectionFixture(
+            "projects/p/locations/l/publishers/google/models/gemini-3.5-live-translate-preview")) {
+      fixture.connection.sendRealtime(audio).test().awaitDone(5, TimeUnit.SECONDS).assertComplete();
+
+      assertThat(fixture.transport.realtimeInputs)
+          .containsExactly(LiveSendRealtimeInputParameters.builder().audio(audio).build());
+    }
+  }
+
+  @Test
+  public void sendRealtime_gemini3xLiveAndNoAudioOrImageMimeType_sendsNothing() {
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture("gemini-3.8-live")) {
+      fixture
+          .connection
+          .sendRealtime(Blob.builder().mimeType("text/plain").data(new byte[] {1}).build())
+          .test()
+          .awaitDone(5, TimeUnit.SECONDS)
+          .assertComplete();
+      fixture
+          .connection
+          .sendRealtime(Blob.builder().data(new byte[] {1}).build())
+          .test()
+          .awaitDone(5, TimeUnit.SECONDS)
+          .assertComplete();
+
+      assertThat(fixture.transport.realtimeInputs).isEmpty();
+    }
+  }
+
+  @Test
+  public void sendRealtime_olderLiveModel_sendsMedia() {
+    Blob frame = Blob.builder().mimeType("image/jpeg").data(new byte[] {2}).build();
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture()) {
+      fixture.connection.sendRealtime(frame).test().awaitDone(5, TimeUnit.SECONDS).assertComplete();
+
+      assertThat(fixture.transport.realtimeInputs)
+          .containsExactly(LiveSendRealtimeInputParameters.builder().media(frame).build());
+    }
+  }
+
+  @Test
   public void sendHistory_endsWithUserTurn_completesTurn() {
     ImmutableList<Content> history =
         ImmutableList.of(
@@ -1479,6 +1540,17 @@ public final class GeminiLlmConnectionTest {
         .containsExactly(grounding, grounding);
   }
 
+  @Test
+  public void isGemini35LiveTranslate_matchesOnlyLiveTranslateModels() {
+    assertThat(GeminiLlmConnection.isGemini35LiveTranslate("gemini-3.5-live-translate")).isTrue();
+    assertThat(
+            GeminiLlmConnection.isGemini35LiveTranslate(
+                "projects/p/locations/l/publishers/google/models/gemini-3.5-live-translate-preview"))
+        .isTrue();
+    assertThat(GeminiLlmConnection.isGemini35LiveTranslate("gemini-3.8-live")).isFalse();
+    assertThat(GeminiLlmConnection.isGemini35LiveTranslate(null)).isFalse();
+  }
+
   /**
    * Runs an agent live through {@link InMemoryRunner} on a Gemini named {@code modelName} whose
    * transport delivers {@code messages}, and describes the transcriptions the session saved.
@@ -1738,8 +1810,15 @@ public final class GeminiLlmConnectionTest {
   /** Exercises the real connection's send path without opening a WebSocket or using credentials. */
   private static final class LiveConnectionFixture implements AutoCloseable {
     final FakeTransport transport = new FakeTransport(/* endStreamOnReceive= */ false);
-    final GeminiLlmConnection connection =
-        new GeminiLlmConnection("gemini-live", CompletableFuture.completedFuture(transport));
+    final GeminiLlmConnection connection;
+
+    LiveConnectionFixture() {
+      this("gemini-live");
+    }
+
+    LiveConnectionFixture(String modelName) {
+      connection = new GeminiLlmConnection(modelName, CompletableFuture.completedFuture(transport));
+    }
 
     @Override
     public void close() {
