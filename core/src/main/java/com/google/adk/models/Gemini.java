@@ -467,7 +467,7 @@ public class Gemini extends BaseLlm {
       llmRequest = GeminiUtil.sanitizeRequestForGeminiApi(llmRequest);
     }
     logger.debug("Establishing Gemini connection.");
-    LiveConnectConfig liveConnectConfig = llmRequest.liveConnectConfig();
+    LiveConnectConfig liveConnectConfig = liveConnectConfigFor(llmRequest);
     String effectiveModelName = llmRequest.model().orElse(model());
 
     logger.debug("Connecting to model {}", effectiveModelName);
@@ -478,6 +478,29 @@ public class Gemini extends BaseLlm {
 
     return new GeminiLlmConnection(
         effectiveModelName, connectLiveTransport(effectiveModelName, liveConnectConfig));
+  }
+
+  /**
+   * Returns the request's live config with tools and safety settings from its generate content
+   * config, as in ADK Python's connect. Built-in tools such as Google Search are added only to the
+   * generate content config and would otherwise be lost.
+   */
+  private static LiveConnectConfig liveConnectConfigFor(LlmRequest llmRequest) {
+    LiveConnectConfig liveConnectConfig = llmRequest.liveConnectConfig();
+    if (llmRequest.config().isEmpty()) {
+      return liveConnectConfig;
+    }
+    GenerateContentConfig config = llmRequest.config().get();
+    LiveConnectConfig.Builder builder = liveConnectConfig.toBuilder();
+    config.tools().ifPresent(builder::tools);
+    // A safety setting on the live config takes precedence.
+    if (liveConnectConfig.safetySettings().isEmpty()) {
+      config.safetySettings().ifPresent(builder::safetySettings);
+    }
+    // Unlike ADK Python, do not copy the thinking config: Gemini 2.5 Live models reject it,
+    // gemini-3.8-live accepts it only for allowlisted projects, and the Java genai SDK hangs on
+    // rejection instead of failing the connection.
+    return builder.build();
   }
 
   /**

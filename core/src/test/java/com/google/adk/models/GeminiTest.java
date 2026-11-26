@@ -24,12 +24,15 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.sessions.Session;
+import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
+import com.google.adk.tools.GoogleSearchTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -39,12 +42,20 @@ import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponsePromptFeedback;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.GoogleSearch;
+import com.google.genai.types.HarmBlockThreshold;
+import com.google.genai.types.HarmCategory;
+import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
+import com.google.genai.types.SafetySetting;
 import com.google.genai.types.Schema;
+import com.google.genai.types.ThinkingConfig;
+import com.google.genai.types.Tool;
 import com.google.genai.types.ToolCall;
 import com.google.genai.types.ToolResponse;
 import io.reactivex.rxjava3.core.Flowable;
@@ -60,6 +71,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -3288,5 +3300,135 @@ public final class GeminiTest {
         }
       };
     }
+  }
+
+  @Test
+  public void connect_sendsToolsAndSafetySettingsButNotThinkingConfigOfTheRequestConfig() {
+    AtomicReference<LiveConnectConfig> sent = new AtomicReference<>();
+    Tool search = Tool.builder().googleSearch(GoogleSearch.builder().build()).build();
+    ThinkingConfig thinking = ThinkingConfig.builder().thinkingBudget(128).build();
+    SafetySetting safety =
+        SafetySetting.builder()
+            .category(HarmCategory.Known.HARM_CATEGORY_HARASSMENT)
+            .threshold(HarmBlockThreshold.Known.BLOCK_ONLY_HIGH)
+            .build();
+    LlmRequest request =
+        LlmRequest.builder()
+            .model("gemini-live-test")
+            .config(
+                GenerateContentConfig.builder()
+                    .tools(ImmutableList.of(search))
+                    .thinkingConfig(thinking)
+                    .safetySettings(ImmutableList.of(safety))
+                    .build())
+            .build();
+
+    BaseLlmConnection unused = liveConfigRecordingGemini(sent).connect(request);
+
+    assertThat(sent.get().tools()).hasValue(ImmutableList.of(search));
+    assertThat(sent.get().safetySettings()).hasValue(ImmutableList.of(safety));
+    // Gemini 2.5 Live models reject a thinking config; the Java genai SDK then hangs, not fails.
+    assertThat(sent.get().thinkingConfig()).isEmpty();
+  }
+
+  @Test
+  public void connect_safetySettingsOfTheLiveConfig_takePrecedence() {
+    AtomicReference<LiveConnectConfig> sent = new AtomicReference<>();
+    SafetySetting live =
+        SafetySetting.builder()
+            .category(HarmCategory.Known.HARM_CATEGORY_HARASSMENT)
+            .threshold(HarmBlockThreshold.Known.BLOCK_NONE)
+            .build();
+    SafetySetting config =
+        live.toBuilder().threshold(HarmBlockThreshold.Known.BLOCK_ONLY_HIGH).build();
+    LlmRequest request =
+        LlmRequest.builder()
+            .model("gemini-live-test")
+            .config(
+                GenerateContentConfig.builder().safetySettings(ImmutableList.of(config)).build())
+            .liveConnectConfig(
+                LiveConnectConfig.builder().safetySettings(ImmutableList.of(live)).build())
+            .build();
+
+    BaseLlmConnection unused = liveConfigRecordingGemini(sent).connect(request);
+
+    assertThat(sent.get().safetySettings()).hasValue(ImmutableList.of(live));
+  }
+
+  @Test
+  public void runLive_googleSearchAsOnlyTool_reachesTheLiveConfig() throws Exception {
+    LiveConfig tools = liveConfigOfAgentWith(GoogleSearchTool.INSTANCE);
+
+    assertThat(tools.googleSearchTools).isEqualTo(1);
+  }
+
+  @Test
+  public void runLive_googleSearchAfterFunctionTool_sendsEachToolOnce() throws Exception {
+    LiveConfig tools =
+        liveConfigOfAgentWith(
+            FunctionTool.create(GeminiTest.class, "lookup"), GoogleSearchTool.INSTANCE);
+
+    assertThat(tools.googleSearchTools).isEqualTo(1);
+    assertThat(tools.functionNames).containsExactly("lookup");
+  }
+
+  /** The tools a live connection opened with. */
+  private static final class LiveConfig {
+    final long googleSearchTools;
+    final ImmutableList<String> functionNames;
+
+    LiveConfig(LiveConnectConfig config) {
+      List<Tool> tools = config.tools().orElse(ImmutableList.of());
+      this.googleSearchTools =
+          tools.stream().filter(tool -> tool.googleSearch().isPresent()).count();
+      this.functionNames =
+          tools.stream()
+              .flatMap(tool -> tool.functionDeclarations().orElse(ImmutableList.of()).stream())
+              .map(declaration -> declaration.name().orElse(""))
+              .collect(toImmutableList());
+    }
+  }
+
+  /** Starts a live run of an agent with {@code tools} and returns the config it connects with. */
+  private static LiveConfig liveConfigOfAgentWith(BaseTool... tools) throws Exception {
+    AtomicReference<LiveConnectConfig> sent = new AtomicReference<>();
+    CountDownLatch connected = new CountDownLatch(1);
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(liveConfigRecordingGemini(sent, connected))
+            .tools(ImmutableList.copyOf(tools))
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent);
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+
+    TestSubscriber<Event> run =
+        runner.runLive(session, new LiveRequestQueue(), RunConfig.builder().build()).test();
+    try {
+      run.assertNoErrors();
+      assertThat(connected.await(5, SECONDS)).isTrue();
+      run.assertNoErrors();
+    } finally {
+      run.cancel();
+    }
+    return new LiveConfig(sent.get());
+  }
+
+  /** Returns a Gemini that records the live config it connects with and never opens a session. */
+  private static Gemini liveConfigRecordingGemini(AtomicReference<LiveConnectConfig> sent) {
+    return liveConfigRecordingGemini(sent, new CountDownLatch(1));
+  }
+
+  private static Gemini liveConfigRecordingGemini(
+      AtomicReference<LiveConnectConfig> sent, CountDownLatch connected) {
+    return new Gemini("gemini-live-test", new FakeGeminiApi().vertexClient()) {
+      @Override
+      protected CompletableFuture<GeminiLiveTransport> connectLiveTransport(
+          String modelName, LiveConnectConfig config) {
+        sent.set(config);
+        connected.countDown();
+        return new CompletableFuture<>();
+      }
+    };
   }
 }
