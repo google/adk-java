@@ -26,10 +26,13 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.models.LlmResponse;
 import com.google.adk.platform.UuidProvider;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
@@ -39,9 +42,19 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** An LLM-based event summarizer for sliding window compaction. */
 public final class LlmEventSummarizer implements BaseEventSummarizer {
+
+  private static final Logger logger = LoggerFactory.getLogger(LlmEventSummarizer.class);
+
+  // Compare values: knownEnum() also maps unknown reasons to FINISH_REASON_UNSPECIFIED.
+  private static final ImmutableSet<FinishReason> COMPLETE_FINISH_REASONS =
+      ImmutableSet.of(
+          new FinishReason(FinishReason.Known.STOP),
+          new FinishReason(FinishReason.Known.FINISH_REASON_UNSPECIFIED));
 
   private static final String DEFAULT_PROMPT_TEMPLATE =
       """
@@ -108,28 +121,60 @@ public final class LlmEventSummarizer implements BaseEventSummarizer {
     return baseLlm
         .generateContent(llmRequest, false)
         .firstElement()
-        .flatMap(
-            llmResponse ->
-                Maybe.fromOptional(
-                    llmResponse
-                        .content()
-                        .map(content -> content.toBuilder().role("model").build())
-                        .map(
-                            summaryContent ->
-                                EventCompaction.builder()
-                                    .startTimestamp(events.get(0).timestamp())
-                                    .endTimestamp(events.get(events.size() - 1).timestamp())
-                                    .compactedContent(summaryContent)
-                                    .build())
-                        .map(
-                            compaction ->
-                                Event.builder()
-                                    .id(uuidProvider.newUuid())
-                                    .timestamp(instantSource.instant().toEpochMilli())
-                                    .author(Role.USER)
-                                    .actions(EventActions.builder().compaction(compaction).build())
-                                    .invocationId(uuidProvider.newUuid())
-                                    .build())));
+        .filter(LlmEventSummarizer::isComplete)
+        .flatMap(llmResponse ->
+            Maybe.fromOptional(
+                llmResponse
+                    .content()
+                    .filter(LlmEventSummarizer::isUsableSummary)
+                    .map(content -> content.toBuilder().role("model").build())
+                    .map(summaryContent ->
+                        EventCompaction.builder()
+                            .startTimestamp(events.get(0).timestamp())
+                            .endTimestamp(events.get(events.size() - 1).timestamp())
+                            .compactedContent(summaryContent)
+                            .build())
+                    .map(compaction ->
+                        Event.builder()
+                            .id(uuidProvider.newUuid())
+                            .timestamp(instantSource.instant().toEpochMilli())
+                            .author(Role.USER)
+                            .actions(EventActions.builder().compaction(compaction).build())
+                            .invocationId(uuidProvider.newUuid())
+                            .build())));
+  }
+
+  /**
+   * Rejects explicit failure reasons, while allowing custom models that omit the reason. A response
+   * without content is rejected too. Logs why, never the model content.
+   */
+  private static boolean isComplete(LlmResponse response) {
+    Optional<FinishReason> finishReason = response.finishReason();
+    if (finishReason.isPresent() && !COMPLETE_FINISH_REASONS.contains(finishReason.get())) {
+      logger.warn("Skipping compaction: summary finished with reason {}", finishReason.get());
+      return false;
+    }
+    if (response.content().isEmpty()) {
+      logger.warn("Skipping compaction: summary response has no content");
+      return false;
+    }
+    return true;
+  }
+
+  private static boolean isUsableSummary(Content content) {
+    if (!hasSummaryText(content)) {
+      logger.warn("Skipping compaction: summary has no text");
+      return false;
+    }
+    return true;
+  }
+
+  private static boolean hasSummaryText(Content content) {
+    // An unusable summary must not hide the history it was meant to replace.
+    return content.parts().orElse(ImmutableList.of()).stream()
+        .anyMatch(part ->
+            !part.thought().orElse(false)
+                && part.text().filter(text -> !text.isBlank()).isPresent());
   }
 
   private String formatEventsForPrompt(List<Event> events) {
