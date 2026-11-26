@@ -723,6 +723,77 @@ public final class TaskDelegationTest {
   }
 
   @Test
+  public void delegationThatACallbackAnswersWithAHandoff_handsOffWithoutAnotherModelCall() {
+    TestLlm workerModel = TestLlm.create(finishTask("finish_w", "Booked."));
+    TestLlm childModel = TestLlm.create(createTextLlmResponse("from child"));
+    TestLlm model = TestLlm.create(delegate("t1", "worker", "Book."));
+    LlmAgent coordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .model(model)
+            .mode(AgentMode.CHAT)
+            .subAgents(
+                task("worker", workerModel),
+                LlmAgent.builder().name("child").model(childModel).mode(AgentMode.CHAT).build())
+            .beforeToolCallback((invocationContext, tool, args, toolContext) -> {
+              toolContext.eventActions().setTransferToAgent("child");
+              return Maybe.just(ImmutableMap.of("handled", true));
+            })
+            .build();
+
+    new WorkflowSession(workflow(new Edge(START, coordinator))).advance(go());
+
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(workerModel.getRequests()).isEmpty();
+    assertThat(childModel.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void taskThatFinishesAndHandsOffInOneStep_runsTheSubAgentOnce() {
+    Content finishAndTransfer =
+        Content.builder()
+            .role("model")
+            .parts(
+                Part.builder()
+                    .functionCall(
+                        FunctionCall.builder()
+                            .id("f1")
+                            .name("finish_task")
+                            .args(ImmutableMap.of("result", "Booked.")))
+                    .build(),
+                Part.builder()
+                    .functionCall(
+                        FunctionCall.builder()
+                            .id("x1")
+                            .name("transfer_to_agent")
+                            .args(ImmutableMap.of("agent_name", "child")))
+                    .build())
+            .build();
+    TestLlm model = TestLlm.create(createLlmResponse(finishAndTransfer));
+    TestLlm childModel = TestLlm.create(createTextLlmResponse("from child"));
+    LlmAgent coordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .model(model)
+            .mode(AgentMode.TASK)
+            .subAgents(
+                LlmAgent.builder().name("child").model(childModel).mode(AgentMode.CHAT).build())
+            .build();
+
+    ImmutableList<Event> events =
+        new WorkflowSession(workflow(new Edge(START, coordinator))).turn(go());
+
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(childModel.getRequests()).hasSize(1);
+    assertThat(
+            events.stream()
+                .filter(event -> event.author().equals("child"))
+                .map(WorkflowResumeTesting::pathOf)
+                .distinct())
+        .containsExactly("wf@1/coordinator@1/child@1");
+  }
+
+  @Test
   public void delegation_runsTheAgentsOwnSubAgentNotOneOfTheSameNameElsewhere() {
     TestLlm elsewhereModel = TestLlm.create(finishTask("finish_x", "Wrong."));
     TestLlm ownModel = TestLlm.create(finishTask("finish_w", "Booked."));

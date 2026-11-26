@@ -19,6 +19,7 @@ package com.google.adk.workflow;
 import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
@@ -95,12 +96,13 @@ final class ResumeScan {
 
   /**
    * Decides whether {@code node} runs again or replays its result from {@code recovered}. In order:
-   * a node with unanswered interrupts waits on them, unless it reruns on resume and has answers; a
-   * node that failed, in {@code recovered} or {@code failedThisTurn}, reruns; a recorded output,
-   * route or transfer replays, though a reply to one of its tasks does not replay a transfer; a
-   * node {@code canceledMidRun} in this turn reruns; an answered node that does not rerun on resume
-   * completes with its answers. Otherwise a node that reruns on resume reruns unless it finished
-   * since its last answer or reply, and a {@code dynamic} node reruns while a graph node does not.
+   * a node with unanswered interrupts waits on them, unless it reruns on resume and has answers,
+   * when it replays a handoff whose target alone still waits and reruns otherwise; a node that
+   * failed, in {@code recovered} or {@code failedThisTurn}, reruns; a recorded output, route or
+   * transfer replays, though a reply to one of its tasks does not replay a transfer; a node {@code
+   * canceledMidRun} in this turn reruns; an answered node that does not rerun on resume completes
+   * with its answers. Otherwise a node that reruns on resume reruns unless it finished since its
+   * last answer or reply, and a {@code dynamic} node reruns while a graph node does not.
    */
   static Interception intercept(
       Node node,
@@ -116,12 +118,22 @@ final class ResumeScan {
       // A workflow replays its own children, so it always runs.
       return Interception.run(resolved);
     }
-    String transfer = recovered.transferToAgent;
+    // A single-turn agent ran its target itself, so it runs again to resume into that target.
+    String transfer =
+        node instanceof BaseAgent agent && TransferTarget.runsTargetInline(agent)
+            ? null
+            : recovered.transferToAgent;
     String branch = recovered.branch;
     ImmutableSet<String> unresolved = recovered.unresolved();
 
     if (!unresolved.isEmpty()) {
       if (node.rerunOnResume() && !resolved.isEmpty()) {
+        // As in Kotlin, a handoff whose target alone still waits replays, so the target resumes.
+        if (transfer != null
+            && TransferTarget.handsOff(node)
+            && Collections.disjoint(unresolved, recovered.directInterruptIds)) {
+          return Interception.replay(/* output= */ null, /* route= */ null, branch, transfer);
+        }
         // Agents must wait on open calls; other nodes may proceed without them, as in Kotlin.
         return Interception.run(
             resolved, node instanceof LlmAgent ? unresolved : ImmutableSet.of());
@@ -133,8 +145,9 @@ final class ResumeScan {
       return Interception.run(resolved);
     }
     Object output = recovered.output;
-    // A reply reruns the node instead of replaying its handoff.
-    boolean replaysTransfer = transfer != null && !recovered.repliedTo;
+    // A reply reruns a node that handed off inline; a handoff the workflow follows replays.
+    boolean replaysTransfer =
+        transfer != null && (!recovered.repliedTo || TransferTarget.handsOff(node));
     if (output != null || recovered.route != null || replaysTransfer) {
       return Interception.replay(
           recovered.outputFromContent && output instanceof Content content
@@ -314,6 +327,10 @@ final class ResumeScan {
     boolean repliedTo;
 
     final Set<String> interruptIds = new LinkedHashSet<>();
+
+    /** The interrupts that the node raised itself, not a descendant. */
+    final Set<String> directInterruptIds = new HashSet<>();
+
     final Map<String, @Nullable Object> resolvedResponses = new LinkedHashMap<>();
 
     /** Whether the node's last direct event, since its last answer or reply, shows it finished. */
@@ -455,7 +472,7 @@ final class ResumeScan {
       // The finish check below reads the failure and the interrupts that these record.
       int at = key.lastIndexOf('@');
       recordOutcome(event, isDirect, ownerPath, at < 0 ? key : key.substring(0, at), node);
-      boolean raisedAny = recordRaisedInterrupts(event, node);
+      boolean raisedAny = recordRaisedInterrupts(event, isDirect, node);
       if (isDirect && raisedAny && event.actions().transferToAgent().isEmpty()) {
         // A later interrupt means the run continued, so the earlier transfer is not its result.
         node.transferToAgent = null;
@@ -618,7 +635,7 @@ final class ResumeScan {
      * Records the interrupts {@code event} raises for {@code node} (long-running calls and requests
      * for input, together with their response schemas) and returns whether it raised any.
      */
-    private boolean recordRaisedInterrupts(Event event, RecoveredNode node) {
+    private boolean recordRaisedInterrupts(Event event, boolean isDirect, RecoveredNode node) {
       Set<String> raised =
           new LinkedHashSet<>(event.longRunningToolIds().orElse(ImmutableSet.of()));
       for (FunctionCall call : event.functionCalls()) {
@@ -639,6 +656,9 @@ final class ResumeScan {
         // An interrupt raised again waits for a new answer, as in Python.
         node.resolvedResponses.remove(id);
         node.interruptIds.add(id);
+        if (isDirect) {
+          node.directInterruptIds.add(id);
+        }
         interruptOwner.put(id, node);
       }
       return !raised.isEmpty();

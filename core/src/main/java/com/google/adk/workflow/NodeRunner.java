@@ -278,50 +278,50 @@ public final class NodeRunner {
 
   /**
    * Returns the run of {@code node} under {@code runId} shared by the caller's calls with that run
-   * ID, starting it if needed. A run that fails or waits for an output it did not produce is not
-   * shared, so a later call runs the child again. The run is canceled only once every call waiting
-   * on it is canceled.
+   * ID, starting it if needed, with the handoffs it requests. A run that fails or waits for an
+   * output it did not produce is not shared, so a later call runs the child again. The run is
+   * canceled only once every call waiting on it is canceled.
    */
   private static Single<Context> sharedChildRun(
       Context parent, Node node, @Nullable Object nodeInput, String runId, RunNodeConfig config) {
-    return Single.defer(
-        () -> {
-          ConcurrentMap<String, SharedChildRun> childRuns = parent.requireNodeState().childRuns();
-          String childKey = segment(node.name(), runId);
-          SharedChildRun created = new SharedChildRun();
-          SharedChildRun existing = childRuns.putIfAbsent(childKey, created);
-          SharedChildRun run = existing != null ? existing : created;
-          if (!run.join()) {
-            // The run was canceled as this call joined it, so this call starts a new run.
-            childRuns.remove(childKey, run);
-            return sharedChildRun(parent, node, nodeInput, runId, config);
-          }
-          Single<Context> call =
-              run.result.doOnDispose(
-                  () -> {
-                    if (run.leave()) {
-                      childRuns.remove(childKey, run);
-                    }
-                  });
-          if (existing != null) {
-            return call;
-          }
-          // Start after the call subscribes, so a cancel reaches a child blocked as it starts.
-          return Single.create(
-              emitter -> {
-                emitter.setDisposable(call.subscribe(emitter::onSuccess, emitter::onError));
-                run.start(
-                    // Defer so a throw from scan or intercept fails the run instead of leaking it.
-                    Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
-                        .doOnSuccess(
-                            child -> {
-                              if (!keepsItsRun(child)) {
-                                childRuns.remove(childKey, run);
-                              }
-                            })
-                        .doOnError(error -> childRuns.remove(childKey, run)));
-              });
-        });
+    return Single.defer(() -> {
+      ConcurrentMap<String, SharedChildRun> childRuns = parent.requireNodeState().childRuns();
+      String childKey = segment(node.name(), runId);
+      SharedChildRun created = new SharedChildRun();
+      SharedChildRun existing = childRuns.putIfAbsent(childKey, created);
+      SharedChildRun run = existing != null ? existing : created;
+      if (!run.join()) {
+        // The run was canceled as this call joined it, so this call starts a new run.
+        childRuns.remove(childKey, run);
+        return sharedChildRun(parent, node, nodeInput, runId, config);
+      }
+      Single<Context> call =
+          run.result.doOnDispose(() -> {
+            if (run.leave()) {
+              childRuns.remove(childKey, run);
+            }
+          });
+      if (existing != null) {
+        return call;
+      }
+      // Start after the call subscribes, so a cancel reaches a child blocked as it starts.
+      return Single.create(emitter -> {
+        emitter.setDisposable(call.subscribe(emitter::onSuccess, emitter::onError));
+        run.start(
+            // Defer so a throw from scan or intercept fails the run instead of leaking it.
+            Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
+                .flatMap(first ->
+                    followHandoffs(node, first, config)
+                        .doOnSuccess(last -> {
+                          // A handoff keeps the run unless its last target failed.
+                          if (!keepsItsRun(first)
+                              || last.requireNodeState().failure().isPresent()) {
+                            childRuns.remove(childKey, run);
+                          }
+                        }))
+                .doOnError(error -> childRuns.remove(childKey, run)));
+      });
+    });
   }
 
   /**
@@ -342,10 +342,17 @@ public final class NodeRunner {
             parentState.childCanceledMidRun(childKey),
             parentState.childFailedThisTurn(childKey));
     if (!interception.shouldRun()) {
-      // The caller reads only the replayed result, not the branch, so the parent's context will do.
+      // A handoff target resumes under the replayed node, so the node keeps its branch.
+      InvocationContext scheduled =
+          scheduledContext(
+              parent.invocationContext(),
+              config.overrideBranch().orElse(null),
+              config.useSubBranch(),
+              node.name(),
+              runId);
       return Single.just(
           ResumeScan.replayContext(
-              parent, parent.invocationContext(), node, runId, config.useAsOutput(), interception));
+              parent, scheduled, node, runId, config.useAsOutput(), interception));
     }
     return builder()
         .node(node)
@@ -365,6 +372,27 @@ public final class NodeRunner {
         .checkInput(false)
         .build()
         .run(nodeInput);
+  }
+
+  /**
+   * Follows the handoffs that {@code first}, a run of {@code node} started with {@code config},
+   * requests, and returns the context of the run that ends the loop. Each target runs, or replays,
+   * as a child of the node that handed off to it, on the branch settings of {@code config}.
+   */
+  static Single<Context> followHandoffs(Node node, Context first, RunNodeConfig config) {
+    return TransferTarget.followHandoffs(
+        node,
+        first,
+        target -> {
+          String name = target.agent().name();
+          // An agent name may contain '.', which no node path or branch can hold.
+          NodeNames.validate(name);
+          String runId = target.parent().requireNodeState().nextChildRunId(name);
+          // The target runs under the node that handed off, not as the caller's output or branch.
+          RunNodeConfig hop = config.toBuilder().useAsOutput(false).overrideBranch(null).build();
+          return runOrReplayChild(
+              target.parent(), target.agent(), /* nodeInput= */ null, runId, hop);
+        });
   }
 
   /**
@@ -422,7 +450,12 @@ public final class NodeRunner {
     boolean emittedForCaller =
         childState.outputEmitted() && childState.outputParent() == parentState;
     if (delegatesOutput && output.isPresent() && !emittedForCaller) {
-      parentState.adoptReplayedOutput(output.get());
+      // A child that sent an output and then handed off leaves the target's output to replace it.
+      if (parentState.delegatedOutput().isPresent()) {
+        parentState.replaceDelegatedOutput(output.get());
+      } else {
+        parentState.adoptReplayedOutput(output.get());
+      }
     }
     return Maybe.fromOptional(output);
   }

@@ -48,6 +48,7 @@ import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.codeexecutors.BaseCodeExecutor;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
 import com.google.adk.flows.llmflows.AutoFlow;
 import com.google.adk.flows.llmflows.BaseLlmFlow;
 import com.google.adk.flows.llmflows.Functions;
@@ -753,14 +754,23 @@ public class LlmAgent extends BaseAgent {
 
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    if (!invocationContext.isResumable()) {
-      return llmFlow
-          .run(invocationContext)
-          .doOnNext(event -> maybeSaveOutputToState(event, invocationContext));
+    // A single-turn node that reruns with answers resumes into the target it ran inline, if any.
+    boolean resumesSingleTurnNode =
+        runsSingleTurn(invocationContext)
+            && invocationContext
+                .nodeContext()
+                .filter(nodeContext -> !nodeContext.resumeInputs().isEmpty())
+                .isPresent();
+    Flowable<Event> flow =
+        llmFlow
+            .run(invocationContext)
+            .doOnNext(event -> maybeSaveOutputToState(event, invocationContext));
+    if (!invocationContext.isResumable() && !resumesSingleTurnNode) {
+      return flow;
     }
     return Flowable.defer(() -> {
       // Resumed after a transfer: continue the sub-agent instead of re-invoking the model.
-      if (invocationContext.agentStates().containsKey(name())) {
+      if (resumesSingleTurnNode || invocationContext.agentStates().containsKey(name())) {
         Optional<BaseAgent> resumeTarget = findSubAgentToResume(invocationContext);
         if (resumeTarget.isPresent()) {
           AtomicBoolean resumePaused = new AtomicBoolean(false);
@@ -774,25 +784,24 @@ public class LlmAgent extends BaseAgent {
               })
               .concatWith(
                   Flowable.defer(() -> {
-                    if (resumePaused.get()) {
+                    if (resumePaused.get() || !invocationContext.isResumable()) {
                       return Flowable.<Event>empty();
                     }
                     return endOfAgentAndRecord(invocationContext);
                   }));
         }
       }
+      if (!invocationContext.isResumable()) {
+        return flow;
+      }
       // Normal path: emit an end-of-agent checkpoint so a later run can skip this agent.
-      Flowable<Event> events =
-          llmFlow
-              .run(invocationContext)
-              .doOnNext(event -> maybeSaveOutputToState(event, invocationContext));
       AtomicBoolean paused = new AtomicBoolean(false);
-      return events
-          .doOnNext(event -> {
-            if (invocationContext.shouldPauseInvocation(event)) {
-              paused.set(true);
-            }
-          })
+      return flow.doOnNext(
+              event -> {
+                if (invocationContext.shouldPauseInvocation(event)) {
+                  paused.set(true);
+                }
+              })
           .concatWith(
               Flowable.defer(() -> {
                 // Only the checkpoint is withheld, as in Python; the flow still runs. A
@@ -900,11 +909,13 @@ public class LlmAgent extends BaseAgent {
 
   /**
    * Runs this agent as a workflow node. A {@link AgentMode#SINGLE_TURN} agent sees no history
-   * unless {@link Builder#includeContents} was set, gets the node input as its user turn, and gives
-   * its first final model turn as the node output. A {@link AgentMode#TASK} agent works on its task
-   * until a {@code finish_task} call succeeds. A {@link AgentMode#CHAT} agent runs the tasks it
-   * delegates, and its node stays open, as {@link #waitForOutput} says. Any other agent runs as
-   * {@link BaseAgent#runNode} runs it.
+   * unless {@link Builder#includeContents} was set, gets the node input as its user turn, runs a
+   * transfer target inside its node, and gives the first final model turn, its own or the target's,
+   * as the node output. A {@link AgentMode#TASK} agent works on its task until a {@code
+   * finish_task} call succeeds. A {@link AgentMode#CHAT} agent runs the tasks it delegates, and its
+   * node stays open, as {@link #waitForOutput} says. The flow of a chat or task agent stops at a
+   * handoff to a sub-agent, which the workflow runs as a node. Any other agent runs as {@link
+   * BaseAgent#runNode} runs it.
    */
   @Experimental
   @Override
@@ -912,7 +923,7 @@ public class LlmAgent extends BaseAgent {
     if (hasMode(AgentMode.TASK)) {
       return runTask(context, nodeInput);
     }
-    // Only a chat agent that can delegate runs delegation rounds; others run as before.
+    // A chat agent that can delegate runs delegation rounds; one that can't runs one flow.
     if (defaultMode() == AgentMode.CHAT
         && toolsUnion.stream().anyMatch(TaskAgentTool.class::isInstance)) {
       return runWithDelegations(
@@ -920,13 +931,19 @@ public class LlmAgent extends BaseAgent {
           context.invocationContext().toBuilder().agentMode(this, AgentMode.CHAT).build(),
           /* finishTool= */ null);
     }
+    if (defaultMode() == AgentMode.CHAT) {
+      // Its flow stops at a handoff, and the workflow runs the target as its own node.
+      return runAsNode(
+          context, context.invocationContext().toBuilder().agentMode(this, AgentMode.CHAT).build());
+    }
     if (!hasMode(AgentMode.SINGLE_TURN)) {
       return super.runNode(context, nodeInput);
     }
     InvocationContext invocationContext = context.invocationContext();
-    Flowable<Event> run =
-        runAsNode(
-            context, invocationContext.toBuilder().agentMode(this, AgentMode.SINGLE_TURN).build());
+    InvocationContext singleTurnContext =
+        invocationContext.toBuilder().agentMode(this, AgentMode.SINGLE_TURN).build();
+    // A target runs inside this node, as in Python. Any agent's first final reply is the output.
+    Flowable<Event> run = runAsNode(context, singleTurnContext);
     // Eager disposal removes the input before the run ends, so a successor never sees it.
     return Flowable.using(
         () -> injectNodeInput(context, nodeInput),
@@ -973,7 +990,8 @@ public class LlmAgent extends BaseAgent {
    * Runs this agent as a chat or task node, running the tasks it delegates. Each round runs the
    * agent until the model delegates tasks or ends; the delegated tasks then run as child nodes,
    * each in the scope of its call, and their answers start the next round. With a {@code
-   * finishTool}, the run ends once a {@code finish_task} call succeeds.
+   * finishTool}, the run ends once a {@code finish_task} call succeeds; the flow stops at a handoff
+   * too, so the workflow runs the target as a node.
    */
   private Flowable<Event> runWithDelegations(
       Context context, InvocationContext agentContext, @Nullable FinishTaskTool finishTool) {
@@ -1081,6 +1099,7 @@ public class LlmAgent extends BaseAgent {
     ImmutableList<FunctionCall> rejectedCalls = ImmutableList.of();
     final Set<String> pendingLongRunningCalls = new HashSet<>();
     boolean ended;
+    boolean handedOff;
   }
 
   private Flowable<Event> delegationRounds(DelegationRun run) {
@@ -1096,6 +1115,9 @@ public class LlmAgent extends BaseAgent {
               .takeUntil((Event event) -> round.ended);
       return roundEvents.concatWith(
           Flowable.defer(() -> {
+            if (round.handedOff) {
+              return Flowable.empty();
+            }
             if (round.delegations.isEmpty()) {
               return Flowable.empty();
             }
@@ -1124,7 +1146,7 @@ public class LlmAgent extends BaseAgent {
     Map<String, BaseTool> tools = run.tools();
     FinishTaskTool finishTool = run.finishTool();
     AtomicReference<Map<String, Object>> finishArgs = run.finishArgs();
-    // A transfer target's events stream through here, but its calls are not this agent's.
+    // A sub-agent's events, such as a single-turn tool's, pass through; its calls are not ours.
     if (!isOwnStep(event, run.branch())) {
       return event;
     }
@@ -1174,6 +1196,10 @@ public class LlmAgent extends BaseAgent {
         return event.toBuilder().output(nodeOutput).build();
       }
     }
+    if (handsOff(event)) {
+      round.handedOff = true;
+      return event;
+    }
     round.delegations = delegations;
     if (!round.delegations.isEmpty()) {
       // A call no tool runs, such as a transfer, must not run with the step's tools, so the step
@@ -1187,6 +1213,7 @@ public class LlmAgent extends BaseAgent {
             call -> call.id().ifPresent(round.pendingLongRunningCalls::remove));
       }
     }
+
     return event;
   }
 
@@ -1406,6 +1433,13 @@ public class LlmAgent extends BaseAgent {
     return Optional.empty();
   }
 
+  /** Returns whether {@code event} is this agent's own complete handoff to another agent. */
+  private boolean handsOff(Event event) {
+    return name().equals(event.author())
+        && !event.partial().orElse(false)
+        && event.actions().transferToAgent().isPresent();
+  }
+
   /**
    * Returns {@code true} for a {@link AgentMode#CHAT} or {@link AgentMode#TASK} agent, whose node
    * stays open across turns until it produces an output. An agent without a mode is a chat agent
@@ -1419,22 +1453,26 @@ public class LlmAgent extends BaseAgent {
   }
 
   /**
-   * Returns {@code event} carrying the node output when it is this agent's final model turn with
-   * text, or else empty. Without an output schema, the event's message is the output.
+   * Returns {@code event} carrying the node output when it is a final model turn with text, this
+   * agent's or a transfer target's, or else empty. Without an output schema, the event's message is
+   * the output.
    *
-   * @throws IllegalArgumentException if the text does not match the output schema
+   * @throws IllegalArgumentException if the text, the target's included, does not match the schema
    */
   private Optional<Event> markOutputIfFinalTurn(Event event) {
     Optional<Content> content =
         event.content().filter(c -> c.role().filter(Role.MODEL::equals).isPresent());
-    if (!name().equals(event.author())
+    // As in Python, any non-user final reply in a single-turn node, as a target's, is output.
+    if (Objects.equals(event.author(), Role.USER)
         || !event.finalResponse()
         || !event.functionCalls().isEmpty()
+        || event.actions().transferToAgent().isPresent()
         || content.isEmpty()) {
       return Optional.empty();
     }
     String text = visibleText(content.get());
     Optional<Schema> schema = outputSchema();
+    // As in Python, a target's reply follows this agent's output schema too.
     Object output =
         schema.isPresent()
             ? SchemaUtils.parseModelOutput(text, schema.get())
@@ -1443,6 +1481,12 @@ public class LlmAgent extends BaseAgent {
       return Optional.empty();
     }
     Event.Builder marked = event.toBuilder().output(output);
+    if (!name().equals(event.author()) && outputKey().isPresent()) {
+      // As in Python, a target's reply is saved under this agent's output key too.
+      EventActions actions = event.actions().toBuilder().build();
+      actions.stateDelta().put(outputKey().get(), output);
+      marked.actions(actions);
+    }
     if (schema.isEmpty()) {
       // The output field gives the successor the trimmed text; the stored event drops it.
       marked.nodeInfo(

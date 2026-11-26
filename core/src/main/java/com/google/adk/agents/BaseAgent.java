@@ -279,8 +279,10 @@ public abstract class BaseAgent extends BaseNode {
     // An agent's context runs that agent, not the node that its parent context ran.
     builder.agent(this).node(null);
     if (!keepBranch) {
-      // Only the node's own agent runs child nodes, so a sub-agent's tools cannot reach the node.
-      builder.nodeContext(null);
+      // Only the node's agent, or the target it runs inline in single-turn mode, runs children.
+      if (!runsInlineInASingleTurnNode(parentContext)) {
+        builder.nodeContext(null);
+      }
       // Check for branch to be truthy (not None, not empty string),
       parentContext
           .branch()
@@ -288,6 +290,19 @@ public abstract class BaseAgent extends BaseNode {
           .ifPresent(branch -> builder.branch(branch + "." + name()));
     }
     return builder.build();
+  }
+
+  /**
+   * Returns whether {@code parentContext} runs inside a single-turn workflow node, which runs every
+   * transfer target, however many hops away, inside its node.
+   */
+  private static boolean runsInlineInASingleTurnNode(InvocationContext parentContext) {
+    return parentContext
+        .nodeContext()
+        .map(nodeContext -> nodeContext.requireNodeState().node())
+        .filter(
+            node -> node instanceof LlmAgent llmAgent && llmAgent.hasMode(AgentMode.SINGLE_TURN))
+        .isPresent();
   }
 
   /**

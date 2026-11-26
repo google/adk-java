@@ -628,7 +628,7 @@ public final class LlmAgentAsNodeTest {
   }
 
   @Test
-  public void runAsync_singleTurnNodeThatTransfers_givesNoOutputAndSavesNoReply() {
+  public void runAsync_singleTurnNodeThatTransfers_givesTheTargetsReplyAndSavesItToOutputKey() {
     LlmAgent helper = LlmAgent.builder().name("helper").model(modelAnswering("help")).build();
     TestLlm routerModel =
         TestLlm.create(
@@ -645,8 +645,9 @@ public final class LlmAgentAsNodeTest {
 
     NodeRun nodeRun = runWithSuccessor(router);
 
-    assertThat(nodeRun.output()).isNull();
-    assertThat(stateDeltaValues(nodeRun.events(), "route")).isEmpty();
+    // As in Python, the target runs inside the node and its reply is the node's output.
+    assertThat(nodeRun.output()).isEqualTo("help");
+    assertThat(stateDeltaValues(nodeRun.events(), "route")).containsExactly("help");
   }
 
   @Test

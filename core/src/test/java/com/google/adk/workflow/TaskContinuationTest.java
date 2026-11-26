@@ -253,8 +253,9 @@ public final class TaskContinuationTest {
   }
 
   @Test
-  public void delegatedTaskThatHandedOff_doesNotTakeLaterMessages() {
-    TestLlm otherModel = TestLlm.create(createTextLlmResponse("Other here."));
+  public void delegatedTaskThatHandedOff_passesLaterMessagesToItsTarget() {
+    TestLlm otherModel =
+        TestLlm.create(createTextLlmResponse("Other here."), createTextLlmResponse("Other again."));
     LlmAgent worker =
         LlmAgent.builder()
             .name("worker")
@@ -283,9 +284,10 @@ public final class TaskContinuationTest {
 
     session.advance(userText("Thanks"));
 
-    // The delegation was answered, so the reply starts a new turn for the coordinator.
-    assertThat(session.invocationIds()).hasSize(2);
-    assertThat(model.getLastRequest().contents()).contains(userText("Thanks"));
+    // The handoff target runs as a node and gives no output, so the delegation stays open and the
+    // reply goes to that target in the task's invocation.
+    assertThat(session.invocationIds()).hasSize(1);
+    assertThat(otherModel.getLastRequest().contents()).contains(userText("Thanks"));
   }
 
   @Test
@@ -471,15 +473,12 @@ public final class TaskContinuationTest {
   @Test
   public void transferTargetsLookalikeFinishTask_leavesTheTaskNodeWaitingForTheReply() {
     BaseTool lookalike = lookalikeFinishTask();
-    LlmAgent other =
-        LlmAgent.builder()
-            .name("other")
-            .model(
-                TestLlm.create(
-                    createFunctionCallLlmResponse("f1", "finish_task", ImmutableMap.of()),
-                    createTextLlmResponse("Which day?")))
-            .tools(lookalike)
-            .build();
+    TestLlm otherModel =
+        TestLlm.create(
+            createFunctionCallLlmResponse("f1", "finish_task", ImmutableMap.of()),
+            createTextLlmResponse("Which day?"),
+            createTextLlmResponse("Tuesday it is."));
+    LlmAgent other = LlmAgent.builder().name("other").model(otherModel).tools(lookalike).build();
     TestLlm taskModel =
         TestLlm.create(
             createFunctionCallLlmResponse(
@@ -497,10 +496,10 @@ public final class TaskContinuationTest {
 
     session.advance(userText("Tuesday"));
 
-    // The lookalike did not end the task, so the reply reruns it in its invocation.
+    // The lookalike did not end the task, so the reply continues it in its invocation, where
+    // the agent it handed off to answers.
     assertThat(session.invocationIds()).hasSize(1);
-    assertThat(taskModel.getRequests()).hasSize(2);
-    assertThat(taskModel.getLastRequest().contents()).contains(userText("Tuesday"));
+    assertThat(otherModel.getLastRequest().contents()).contains(userText("Tuesday"));
   }
 
   @Test

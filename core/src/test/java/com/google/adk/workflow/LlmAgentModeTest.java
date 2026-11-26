@@ -763,13 +763,16 @@ public final class LlmAgentModeTest {
   }
 
   @Test
-  public void singleTurnToolOfATransferTarget_answersWithAnError() {
+  public void singleTurnToolOfATransferTarget_runsInTheTargetsNode() {
     TestLlm specialistModel =
         TestLlm.create(
             createFunctionCallLlmResponse("call_1", "helper", ImmutableMap.of("request", "hi")),
             createTextLlmResponse("done"));
     LlmAgent specialist =
-        chat("specialist", specialistModel, singleTurn("helper", TestLlm.create("ok")));
+        chat(
+            "specialist",
+            specialistModel,
+            singleTurn("helper", TestLlm.create(createTextLlmResponse("ok"))));
     TestLlm model =
         TestLlm.create(
             createFunctionCallLlmResponse(
@@ -778,10 +781,8 @@ public final class LlmAgentModeTest {
     new WorkflowSession(workflow(new Edge(START, chat("coordinator", model, specialist))))
         .advance(go());
 
-    assertThat(onlyResult(specialistModel))
-        .isEqualTo(
-            "Error running sub-agent: single-turn agent 'helper' can only run as a tool of the"
-                + " agent that a workflow node runs.");
+    // The workflow runs a transfer target as its own node, so its single-turn tool can run.
+    assertThat(onlyResult(specialistModel)).isEqualTo("ok");
   }
 
   @Test

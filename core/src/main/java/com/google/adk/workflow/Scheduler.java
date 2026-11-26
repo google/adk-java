@@ -35,6 +35,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.processors.FlowableProcessor;
@@ -73,8 +74,8 @@ final class Scheduler {
   private final Set<String> replayed = new HashSet<>();
   // Task nodes that replayed as waiting in this turn, which Python reruns rather than replays.
   private final Set<String> replayedWaits = new HashSet<>();
-  // The nodes whose latest output was replayed, so no event in this turn carried it in outputFor.
-  private final Set<String> replayedOutputs = new HashSet<>();
+  // The nodes whose latest output no event in this turn carried for the workflow.
+  private final Set<String> outputsNotCarried = new HashSet<>();
 
   Scheduler(Workflow workflow, Graph graph, Context context) {
     this.workflow = workflow;
@@ -246,17 +247,8 @@ final class Scheduler {
               /* dynamic= */ false,
               workflowState.childCanceledMidRun(childKey),
               workflowState.childFailedThisTurn(childKey));
+      Single<Context> nodeRun;
       if (recoveredNode != null && !interception.shouldRun()) {
-        // Only a replay that completes an answered transfer marks a new step, as a run does.
-        boolean completesTransfer =
-            interception.transferToAgent() != null
-                && !recoveredNode.interruptIds.isEmpty()
-                && recoveredNode.unresolved().isEmpty();
-        if (completesTransfer) {
-          emitCheckpoint();
-        } else {
-          replayed.add(nodeName);
-        }
         InvocationContext scheduled =
             NodeRunner.scheduledContext(
                 context.invocationContext(),
@@ -266,41 +258,66 @@ final class Scheduler {
                 runId);
         Context replayContext =
             ResumeScan.replayContext(context, scheduled, node, runId, useAsOutput, interception);
-        // A replay counts as running until its completion is handled, as a run does.
-        running.put(nodeName, Disposable.empty());
-        completions.add(new Completion(nodeName, replayContext));
-        wakeUps.onNext(true);
-        return;
+        // Only a replay that completes an answered transfer marks a new step, as a run does.
+        boolean completesTransfer =
+            interception.transferToAgent() != null
+                && !recoveredNode.interruptIds.isEmpty()
+                && recoveredNode.unresolved().isEmpty();
+        if (interception.transferToAgent() == null || !TransferTarget.handsOff(node)) {
+          if (completesTransfer) {
+            emitCheckpoint();
+          } else {
+            replayed.add(nodeName);
+          }
+          // A replay counts as running until its completion is handled, as a run does.
+          running.put(nodeName, Disposable.empty());
+          completions.add(new Completion(nodeName, replayContext));
+          wakeUps.onNext(true);
+          return;
+        }
+        // As in Kotlin, a recorded handoff goes on: its target resumes, reruns or replays.
+        nodeRun = Single.just(replayContext);
+      } else {
+        nodeRun =
+            NodeRunner.builder()
+                .node(node)
+                .parent(context)
+                .runId(runId)
+                .useAsOutput(useAsOutput)
+                .useSubBranch(trigger.useSubBranch())
+                .overrideBranch(trigger.branch())
+                .resumeInputs(interception.resumeInputs())
+                .openInterrupts(interception.interrupts())
+                .build()
+                .run(trigger.input())
+                .compose(Tracing.withContext(traceContext));
       }
       Completable checkpointed = checkpoint();
       // Processing the checkpoint can end the run, as when the caller stops after that event.
       if (childRuns.isDisposed()) {
         return;
       }
+      RunNodeConfig handoffConfig =
+          RunNodeConfig.builder()
+              .useSubBranch(trigger.useSubBranch())
+              .overrideBranch(trigger.branch())
+              .build();
       // The node starts once its checkpoint is processed, as each of its own events is.
       Disposable run =
           checkpointed
               // Off the loop thread, so a node that blocks its thread cannot hold up the others.
               .andThen(NodeRunner.completeOn(context.invocationContext().scheduler()))
-              .andThen(
-                  NodeRunner.builder()
-                      .node(node)
-                      .parent(context)
-                      .runId(runId)
-                      .useAsOutput(useAsOutput)
-                      .useSubBranch(trigger.useSubBranch())
-                      .overrideBranch(trigger.branch())
-                      .resumeInputs(interception.resumeInputs())
-                      .openInterrupts(interception.interrupts())
-                      .build()
-                      .run(trigger.input())
+              .andThen(nodeRun)
+              // A resumed handoff runs its target here too, so the trace context covers it.
+              .flatMap(first ->
+                  NodeRunner.followHandoffs(node, first, handoffConfig)
                       .compose(Tracing.withContext(traceContext)))
               .subscribe(
                   childContext -> {
                     completions.add(new Completion(nodeName, childContext));
                     wakeUps.onNext(true);
                   },
-                  // A node's exception fails only that node, so this is an Error.
+                  // An Error, or a handoff that cannot be followed, fails the workflow.
                   wakeUps::onError,
                   // Added before it subscribes, so a cancel reaches a node blocked as it starts.
                   childRuns);
@@ -338,10 +355,11 @@ final class Scheduler {
     Optional<Object> output = childState.output();
     if (output.isPresent()) {
       nodeOutputs.put(nodeName, output.get());
-      if (wasReplayed) {
-        replayedOutputs.add(nodeName);
+      // A replay or a handoff target emits no output for the workflow.
+      if (wasReplayed || !childState.outputFor().contains(workflowState.nodePath())) {
+        outputsNotCarried.add(nodeName);
       } else {
-        replayedOutputs.remove(nodeName);
+        outputsNotCarried.remove(nodeName);
       }
     }
     if (wasReplayed) {
@@ -489,8 +507,8 @@ final class Scheduler {
     if (terminalOutputs.size() == 1) {
       String terminalNode = terminalOutputs.get(0);
       workflowState.produceOutput(nodeOutputs.get(terminalNode));
-      // Unmarked so NodeRunner sends a replayed terminal node's output for the delegating node.
-      if (!replayedOutputs.contains(terminalNode) || !workflowState.isDelegatedToANode()) {
+      // Unmarked so NodeRunner sends an output that no node event carried for the delegating node.
+      if (!outputsNotCarried.contains(terminalNode) || !workflowState.isDelegatedToANode()) {
         workflowState.markOutputEmitted();
       }
     }

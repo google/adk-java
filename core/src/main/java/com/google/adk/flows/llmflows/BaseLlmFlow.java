@@ -19,6 +19,7 @@ package com.google.adk.flows.llmflows;
 import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.google.adk.agents.ActiveStreamingTool;
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.Callbacks.AfterModelCallback;
@@ -602,6 +603,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
               if (eventList.isEmpty()
                   || Iterables.getLast(eventList).finalResponse()
                   || Iterables.getLast(eventList).actions().endOfAgent()
+                  // The workflow runs the target, so the node's flow stops at its handoff.
+                  || eventList.stream().anyMatch(event -> handsOffToANode(invocationContext, event))
                   || (nodeRun
                       && invocationContext.stepsTaken(invocationContext.agent()) >= maxSteps)) {
                 logger.debug(
@@ -1236,6 +1239,27 @@ public abstract class BaseLlmFlow implements BaseFlow {
   }
 
   /**
+   * Returns whether {@code event} is a complete handoff, by the chat or task workflow node that
+   * {@code context} runs, to a sub-agent that the workflow runs as a node.
+   */
+  private static boolean handsOffToANode(InvocationContext context, Event event) {
+    if (event.partial().orElse(false)
+        || context
+            .agentMode(context.agent())
+            .filter(mode -> mode == AgentMode.CHAT || mode == AgentMode.TASK)
+            .isEmpty()) {
+      return false;
+    }
+    return event
+        .actions()
+        .transferToAgent()
+        .filter(target ->
+            context.agent().subAgents().stream()
+                .anyMatch(sub -> sub.name().equals(target) && !LlmAgent.runsAsTool(sub)))
+        .isPresent();
+  }
+
+  /**
    * Emits {@code event}, followed by the transferred-to agent's run when it carries a transfer.
    * Shared so a replayed transfer continues into its target the way a fresh one does.
    */
@@ -1244,6 +1268,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
     Flowable<Event> self = Flowable.just(event);
     // A reply's chunks share its actions, so its complete event carries the same transfer.
     if (event.partial().orElse(false) || event.actions().transferToAgent().isEmpty()) {
+      return self;
+    }
+    // The workflow runs a chat or task node's handoff to its own sub-agent as a node.
+    if (handsOffToANode(context, event)) {
       return self;
     }
     String agentToTransfer = event.actions().transferToAgent().get();
