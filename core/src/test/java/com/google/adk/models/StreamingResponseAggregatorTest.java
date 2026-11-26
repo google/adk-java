@@ -755,6 +755,158 @@ public final class StreamingResponseAggregatorTest {
   }
 
   @Test
+  public void aggregate_textAroundStreamedCall_keepsTheCallBetweenTheTexts() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(Part.fromText("Checking the weather.")),
+        chunk(streamedCallStart("get_weather", "$.city", "Paris")),
+        chunk(Part.fromText(" One moment.")),
+        chunk(streamedCallEnd()));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0).text()).hasValue("Checking the weather.");
+    assertThat(parts.get(1).functionCall().get().name()).hasValue("get_weather");
+    assertThat(parts.get(2).text()).hasValue(" One moment.");
+  }
+
+  @Test
+  public void aggregate_textWhileACallIsOpenThenANewName_keepsTheTextAfterTheOpenCall() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("get_weather", "$.city", "Paris")),
+        chunk(Part.fromText("hello")),
+        chunk(streamedCallStart("get_time", "$.zone", "CET")),
+        chunk(streamedCallEnd()));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0).functionCall().get().name()).hasValue("get_weather");
+    assertThat(parts.get(1).text()).hasValue("hello");
+    assertThat(parts.get(2).functionCall().get().name()).hasValue("get_time");
+  }
+
+  @Test
+  public void
+      aggregate_textWhileACallIsOpenThenACompleteCallWithoutName_keepsTheTextAfterTheCall() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("get_weather", "$.city", "Paris")),
+        chunk(Part.fromText("hello")),
+        chunk(functionCallPart(FunctionCall.builder().args(ImmutableMap.of("x", "1")).build())));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).functionCall().get().name()).hasValue("get_weather");
+    assertThat(parts.get(1).text()).hasValue("hello");
+  }
+
+  @Test
+  public void aggregate_textWhileACallIsOpenThenACompleteCall_keepsTheTextBetweenTheCalls() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("get_weather", "$.city", "Paris")),
+        chunk(Part.fromText("hello")),
+        chunk(Part.fromFunctionCall("get_time", ImmutableMap.of("zone", "CET"))));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0).functionCall().get().name()).hasValue("get_weather");
+    assertThat(parts.get(1).text()).hasValue("hello");
+    assertThat(parts.get(2).functionCall().get().name()).hasValue("get_time");
+  }
+
+  @Test
+  public void aggregate_thoughtAndStreamedCallInOneChunk_keepsTheThoughtFirst() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(thought("Thinking..."), streamedCallStart("my_tool", "$.query", "hello ")),
+        chunk(thought(" Still thinking.")),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(
+                        PartialArg.builder().jsonPath("$.query").stringValue("world").build())
+                    .willContinue(false)
+                    .build())));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0).text()).hasValue("Thinking...");
+    assertThat(parts.get(0).thought()).hasValue(true);
+    assertThat(parts.get(1).functionCall().get().args())
+        .hasValue(ImmutableMap.of("query", "hello world"));
+    assertThat(parts.get(2).text()).hasValue(" Still thinking.");
+  }
+
+  @Test
+  public void aggregate_streamEndsWithCallOpen_keepsTheCallBeforeLaterText() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(streamedCallStart("get_weather", "$.city", "Paris")),
+        chunk(Part.fromText("Done.")));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).functionCall().get().name()).hasValue("get_weather");
+    assertThat(parts.get(1).text()).hasValue("Done.");
+  }
+
+  @Test
+  public void aggregate_dataPartWhileACallIsOpen_keepsTheDataPartAfterTheCall() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    Part image =
+        Part.builder()
+            .inlineData(Blob.builder().mimeType("image/png").data(new byte[] {7}).build())
+            .build();
+    process(
+        aggregator,
+        chunk(streamedCallStart("get_weather", "$.city", "Paris")),
+        chunk(image),
+        chunk(streamedCallEnd()));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).functionCall().get().name()).hasValue("get_weather");
+    assertThat(parts.get(1)).isEqualTo(image);
+  }
+
+  @Test
+  public void aggregate_namelessStreamedCallBetweenTexts_keepsTheTextsApart() {
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    process(
+        aggregator,
+        chunk(Part.fromText("Before.")),
+        chunk(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.x").stringValue("1").build())
+                    .willContinue(true)
+                    .build())),
+        chunk(Part.fromText(" After.")),
+        chunk(streamedCallEnd()));
+
+    List<Part> parts = aggregatedParts(aggregator);
+
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).text()).hasValue("Before.");
+    assertThat(parts.get(1).text()).hasValue(" After.");
+  }
+
+  @Test
   public void aggregate_noChunks_returnsEmpty() {
     assertThat(new StreamingResponseAggregator().aggregate()).isEmpty();
   }

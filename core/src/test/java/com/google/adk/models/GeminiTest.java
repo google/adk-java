@@ -767,6 +767,34 @@ public final class GeminiTest {
   }
 
   @Test
+  public void runner_sseTurnWithTextAroundStreamedCall_sendsThePartsInModelOrder() {
+    ToolTurn turn =
+        runToolTurn(
+            toResponseWithText("Checking the weather."),
+            toResponse(
+                functionCallPart(
+                    FunctionCall.builder()
+                        .name("getWeather")
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.city").stringValue("Paris").build())
+                        .willContinue(true)
+                        .build())),
+            toResponseWithText(" One moment."),
+            toResponse(functionCallPart(FunctionCall.builder().willContinue(false).build())));
+
+    Content modelTurn =
+        turn.laterRequests().get(0).contents().stream()
+            .filter(content -> content.role().orElse("").equals("model"))
+            .findFirst()
+            .get();
+    List<Part> parts = modelTurn.parts().get();
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0).text()).hasValue("Checking the weather.");
+    assertThat(parts.get(1).functionCall().get().name()).hasValue("getWeather");
+    assertThat(parts.get(2).text()).hasValue(" One moment.");
+  }
+
+  @Test
   public void runner_sseTurnWithEndMarkerWithoutRole_runsTheToolOnce() {
     GenerateContentResponse call =
         toResponse(
@@ -936,10 +964,7 @@ public final class GeminiTest {
     assertThat(second.args().get()).containsExactly("b", "2");
   }
 
-  // The last partialArgs chunk keeps willContinue=true; completion arrives on a separate empty
-  // willContinue=false marker, then trailing text follows. The marker must flush the call so it
-  // precedes the text. Without handling the marker, close() flushes the call after the text,
-  // reversing their order (a single call alone would be masked by that end-of-stream flush).
+  // Gemini can end a streamed call with an empty willContinue=false part after its last args.
   @Test
   public void processRawResponses_streamedCallEndedByEmptyMarker_flushesCallBeforeTrailingText() {
     GenerateContentResponse name =
@@ -1924,10 +1949,10 @@ public final class GeminiTest {
 
     ImmutableList<Part> parts = ImmutableList.copyOf(finalResponse.content().get().parts().get());
     assertThat(parts).hasSize(2);
-    assertThat(parts.get(0).text()).hasValue("Working on it.");
-    assertThat(parts.get(0).thoughtSignature()).hasValue("text-sig".getBytes(UTF_8));
-    assertThat(parts.get(1).functionCall().get().name()).hasValue("search");
-    assertThat(parts.get(1).thoughtSignature()).hasValue("fc-sig".getBytes(UTF_8));
+    assertThat(parts.get(0).functionCall().get().name()).hasValue("search");
+    assertThat(parts.get(0).thoughtSignature()).hasValue("fc-sig".getBytes(UTF_8));
+    assertThat(parts.get(1).text()).hasValue("Working on it.");
+    assertThat(parts.get(1).thoughtSignature()).hasValue("text-sig".getBytes(UTF_8));
   }
 
   // A signature-only part with no text run open must not be dropped, and the streamed call that
@@ -2776,24 +2801,32 @@ public final class GeminiTest {
   // Helper methods to create responses for testing
   /** Runs one SSE turn of an agent whose Gemini model streams {@code chunks}. */
   private ImmutableList<Event> runSseTurn(GenerateContentResponse... chunks) {
-    return runTurn(ImmutableList.copyOf(chunks), ImmutableList.of());
+    return runTurn(ImmutableList.copyOf(chunks), ImmutableList.of()).events();
   }
+
+  /**
+   * The events of one turn run by {@link #runTurn} and the requests its model got after the first.
+   */
+  private record Turn(ImmutableList<Event> events, ImmutableList<LlmRequest> laterRequests) {}
 
   /**
    * Runs one SSE turn of an agent with {@code tools}: its Gemini model streams {@code firstTurn},
    * then answers "done" to every later request.
    */
-  private ImmutableList<Event> runTurn(
+  private Turn runTurn(
       ImmutableList<GenerateContentResponse> firstTurn, ImmutableList<FunctionTool> tools) {
+    List<LlmRequest> laterRequests = new CopyOnWriteArrayList<>();
     AtomicInteger llmCalls = new AtomicInteger();
     BaseLlm streamingGemini =
         new BaseLlm("gemini-2.5-flash") {
           @Override
           public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-            return llmCalls.getAndIncrement() == 0
-                ? Gemini.processRawResponses(Flowable.fromIterable(firstTurn))
-                : Gemini.processRawResponses(
-                    Flowable.just(toResponseWithText("done", FinishReason.Known.STOP)));
+            if (llmCalls.getAndIncrement() == 0) {
+              return Gemini.processRawResponses(Flowable.fromIterable(firstTurn));
+            }
+            laterRequests.add(llmRequest);
+            return Gemini.processRawResponses(
+                Flowable.just(toResponseWithText("done", FinishReason.Known.STOP)));
           }
 
           @Override
@@ -2806,17 +2839,19 @@ public final class GeminiTest {
             LlmAgent.builder().name("agent").model(streamingGemini).tools(tools).build(),
             "test-app");
     Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
-    return ImmutableList.copyOf(
-        runner
-            .runAsync(
-                "user",
-                session.id(),
-                Content.fromParts(Part.fromText("hello")),
-                RunConfig.builder()
-                    .streamingMode(RunConfig.StreamingMode.SSE)
-                    .maxLlmCalls(3)
-                    .build())
-            .blockingIterable());
+    ImmutableList<Event> events =
+        ImmutableList.copyOf(
+            runner
+                .runAsync(
+                    "user",
+                    session.id(),
+                    Content.fromParts(Part.fromText("hello")),
+                    RunConfig.builder()
+                        .streamingMode(RunConfig.StreamingMode.SSE)
+                        .maxLlmCalls(3)
+                        .build())
+                .blockingIterable());
+    return new Turn(events, ImmutableList.copyOf(laterRequests));
   }
 
   /** The tools of one runner test turn; records each call. */
@@ -2835,7 +2870,10 @@ public final class GeminiTest {
   }
 
   /** The events and tool calls of one turn run by {@link #runToolTurn}. */
-  private record ToolTurn(ImmutableList<Event> events, ImmutableList<String> toolCalls) {
+  private record ToolTurn(
+      ImmutableList<Event> events,
+      ImmutableList<String> toolCalls,
+      ImmutableList<LlmRequest> laterRequests) {
     /** Returns the only function call of the turn's non-partial events. */
     FunctionCall finalCall() {
       return events.stream()
@@ -2851,12 +2889,12 @@ public final class GeminiTest {
    */
   private ToolTurn runToolTurn(GenerateContentResponse... firstTurn) {
     RecordingTools tools = new RecordingTools();
-    ImmutableList<Event> events =
+    Turn turn =
         runTurn(
             ImmutableList.copyOf(firstTurn),
             ImmutableList.of(
                 FunctionTool.create(tools, "getWeather"), FunctionTool.create(tools, "getTime")));
-    return new ToolTurn(events, ImmutableList.copyOf(tools.calls));
+    return new ToolTurn(turn.events(), ImmutableList.copyOf(tools.calls), turn.laterRequests());
   }
 
   private GenerateContentResponse toResponseWithText(String text) {

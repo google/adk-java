@@ -88,6 +88,8 @@ final class StreamingResponseAggregator {
   private Map<String, Object> currentFcArgs = new LinkedHashMap<>();
   private @Nullable String currentFcId = null;
   private byte @Nullable [] currentThoughtSignature = null;
+  // Where the call started in accumulatedSequence, so parts that arrive later stay after it.
+  private int currentFcIndex = -1;
 
   /**
    * Accumulates {@code response} and returns it as a partial response in which every function call
@@ -269,6 +271,9 @@ final class StreamingResponseAggregator {
       flushFunctionCallToSequence();
     }
     if (currentFcId == null) {
+      // Text before the call is complete; parts that arrive while the call is open go after it.
+      flushTextBufferToSequence();
+      currentFcIndex = accumulatedSequence.size();
       currentFcId = modelId != null ? modelId : FunctionCallIds.generateClientFunctionCallId();
     }
     if (name != null) {
@@ -459,12 +464,13 @@ final class StreamingResponseAggregator {
       if (currentThoughtSignature != null) {
         partBuilder.thoughtSignature(currentThoughtSignature);
       }
-      accumulatedSequence.add(partBuilder.build());
+      accumulatedSequence.add(currentFcIndex, partBuilder.build());
     }
     currentFcName = null;
     currentFcArgs = new LinkedHashMap<>();
     currentFcId = null;
     currentThoughtSignature = null;
+    currentFcIndex = -1;
   }
 
   /** Flushes any accumulated text or thought content in the buffer as a new {@link Part}. */
