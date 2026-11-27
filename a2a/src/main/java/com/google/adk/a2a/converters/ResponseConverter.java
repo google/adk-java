@@ -15,6 +15,7 @@
  */
 package com.google.adk.a2a.converters;
 
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -61,6 +62,8 @@ import org.slf4j.LoggerFactory;
 public final class ResponseConverter {
   private static final ObjectMapper objectMapper = new ObjectMapper();
   private static final Logger logger = LoggerFactory.getLogger(ResponseConverter.class);
+  private static final A2APartConverter DEFAULT_CONVERTER =
+      PartConverter.defaultConverter(FileUriPolicy.defaultPolicy());
   private static final JavaType CUSTOM_METADATA_LIST_TYPE =
       objectMapper.getTypeFactory().constructCollectionType(List.class, CustomMetadata.class);
   // Custom metadata keys that hold a task or context ID.
@@ -85,13 +88,22 @@ public final class ResponseConverter {
    */
   public static Optional<Event> clientEventToEvent(
       ClientEvent event, InvocationContext invocationContext) {
+    return clientEventToEvent(event, invocationContext, DEFAULT_CONVERTER);
+  }
+
+  /**
+   * Like {@link #clientEventToEvent(ClientEvent, InvocationContext)}, converting each peer part
+   * with {@code converter}. A part the converter rejects with an exception is skipped.
+   */
+  public static Optional<Event> clientEventToEvent(
+      ClientEvent event, InvocationContext invocationContext, A2APartConverter converter) {
     if (event instanceof MessageEvent messageEvent) {
-      return Optional.of(messageToEvent(messageEvent.getMessage(), invocationContext))
+      return Optional.of(messageToEvent(messageEvent.getMessage(), invocationContext, converter))
           .filter(converted -> hasParts(converted) || converted.errorCode().isPresent());
     } else if (event instanceof TaskEvent taskEvent) {
-      return Optional.of(taskToEvent(taskEvent.getTask(), invocationContext));
+      return Optional.of(taskToEvent(taskEvent.getTask(), invocationContext, converter));
     } else if (event instanceof TaskUpdateEvent updateEvent) {
-      return handleTaskUpdate(updateEvent, invocationContext);
+      return handleTaskUpdate(updateEvent, invocationContext, converter);
     }
     logger.warn("Unsupported ClientEvent type: {}", event.getClass());
     throw new IllegalArgumentException("Unsupported ClientEvent type: " + event.getClass());
@@ -118,7 +130,7 @@ public final class ResponseConverter {
    * @throws IllegalArgumentException if the task update type is not supported.
    */
   private static Optional<Event> handleTaskUpdate(
-      TaskUpdateEvent event, InvocationContext context) {
+      TaskUpdateEvent event, InvocationContext context, A2APartConverter converter) {
     var updateEvent = event.getUpdateEvent();
 
     if (updateEvent instanceof TaskArtifactUpdateEvent artifactEvent) {
@@ -129,7 +141,7 @@ public final class ResponseConverter {
         return Optional.empty();
       }
 
-      Event eventPart = artifactToEvent(artifactEvent.getArtifact(), context);
+      Event eventPart = artifactToEvent(artifactEvent.getArtifact(), context, converter);
       if (!hasParts(eventPart)) {
         return Optional.empty();
       }
@@ -152,13 +164,13 @@ public final class ResponseConverter {
 
       Optional<Event> messageEvent =
           Optional.ofNullable(status.message())
-              .map(
-                  value -> {
-                    if (taskState == TaskState.FAILED) {
-                      return messageToFailedEvent(value, context);
-                    }
-                    return messageToEvent(value, context, PENDING_STATES.contains(taskState));
-                  })
+              .map(value -> {
+                if (taskState == TaskState.FAILED) {
+                  return messageToFailedEvent(value, context);
+                }
+                return messageToEvent(
+                    value, context, PENDING_STATES.contains(taskState), converter);
+              })
               .filter(converted -> taskState == TaskState.FAILED || hasParts(converted));
 
       if (statusEvent.isFinal()
@@ -186,8 +198,14 @@ public final class ResponseConverter {
 
   /** Converts an artifact to an ADK event. */
   public static Event artifactToEvent(Artifact artifact, InvocationContext invocationContext) {
+    return artifactToEvent(artifact, invocationContext, DEFAULT_CONVERTER);
+  }
+
+  /** Converts an artifact to an ADK event, converting each part with {@code converter}. */
+  public static Event artifactToEvent(
+      Artifact artifact, InvocationContext invocationContext, A2APartConverter converter) {
     Event.Builder eventBuilder = remoteAgentEventBuilder(invocationContext);
-    ConvertedParts converted = convertParts(artifact.parts());
+    ConvertedParts converted = convertParts(artifact.parts(), converter);
     eventBuilder
         .content(fromModelParts(converted.parts()))
         .longRunningToolIds(converted.longRunningToolIds());
@@ -206,9 +224,15 @@ public final class ResponseConverter {
 
   /** Converts an A2A message back to ADK events. */
   public static Event messageToEvent(Message message, InvocationContext invocationContext) {
+    return messageToEvent(message, invocationContext, DEFAULT_CONVERTER);
+  }
+
+  /** Converts an A2A message back to ADK events, converting each part with {@code converter}. */
+  public static Event messageToEvent(
+      Message message, InvocationContext invocationContext, A2APartConverter converter) {
     return updateEventMetadata(
         remoteAgentEventBuilder(invocationContext)
-            .content(fromModelParts(convertParts(message.getParts()).parts()))
+            .content(fromModelParts(convertParts(message.getParts(), converter).parts()))
             .build(),
         message.getMetadata(),
         message.getTaskId(),
@@ -221,9 +245,20 @@ public final class ResponseConverter {
    */
   public static Event messageToEvent(
       Message message, InvocationContext invocationContext, boolean isPending) {
+    return messageToEvent(message, invocationContext, isPending, DEFAULT_CONVERTER);
+  }
 
+  /**
+   * Like {@link #messageToEvent(Message, InvocationContext, boolean)}, converting each part with
+   * {@code converter}.
+   */
+  public static Event messageToEvent(
+      Message message,
+      InvocationContext invocationContext,
+      boolean isPending,
+      A2APartConverter converter) {
     ImmutableList<Part> genaiParts =
-        convertParts(message.getParts()).parts().stream()
+        convertParts(message.getParts(), converter).parts().stream()
             .map(part -> part.toBuilder().thought(isPending).build())
             .collect(toImmutableList());
 
@@ -236,11 +271,20 @@ public final class ResponseConverter {
    * If none of these are present, an empty event is returned.
    */
   public static Event taskToEvent(Task task, InvocationContext invocationContext) {
+    return taskToEvent(task, invocationContext, DEFAULT_CONVERTER);
+  }
+
+  /**
+   * Like {@link #taskToEvent(Task, InvocationContext)}, converting each part with {@code
+   * converter}.
+   */
+  public static Event taskToEvent(
+      Task task, InvocationContext invocationContext, A2APartConverter converter) {
     ImmutableList.Builder<Part> genaiParts = ImmutableList.builder();
     ImmutableSet.Builder<String> longRunningToolIds = ImmutableSet.builder();
 
     for (Artifact artifact : task.getArtifacts()) {
-      ConvertedParts converted = convertParts(artifact.parts());
+      ConvertedParts converted = convertParts(artifact.parts(), converter);
       longRunningToolIds.addAll(converted.longRunningToolIds());
       genaiParts.addAll(converted.parts());
     }
@@ -248,7 +292,8 @@ public final class ResponseConverter {
     Event.Builder eventBuilder = remoteAgentEventBuilder(invocationContext);
 
     if (task.getStatus().message() != null) {
-      ConvertedParts convertedMessage = convertParts(task.getStatus().message().getParts());
+      ConvertedParts convertedMessage =
+          convertParts(task.getStatus().message().getParts(), converter);
       ImmutableList<Part> msgParts = convertedMessage.parts();
       longRunningToolIds.addAll(convertedMessage.longRunningToolIds());
       if (task.getStatus().state() == TaskState.FAILED
@@ -289,13 +334,17 @@ public final class ResponseConverter {
    * Converts peer-supplied parts, skipping any part that cannot be converted so that one malformed
    * part does not fail the whole event.
    */
-  private static ConvertedParts convertParts(List<io.a2a.spec.Part<?>> a2aParts) {
+  private static ConvertedParts convertParts(
+      List<io.a2a.spec.Part<?>> a2aParts, A2APartConverter converter) {
+    // Checked here, outside the per-part catch, so a null converter fails instead of dropping
+    // parts.
+    checkNotNull(converter, "converter");
     ImmutableList.Builder<Part> parts = ImmutableList.builder();
     ImmutableSet.Builder<String> longRunningToolIds = ImmutableSet.builder();
     for (io.a2a.spec.Part<?> a2aPart : a2aParts) {
-      Part part;
+      ImmutableList<Part> converted;
       try {
-        part = PartConverter.toGenaiPart(a2aPart);
+        converted = converter.convert(a2aPart);
       } catch (RuntimeException e) {
         // The exception message can quote the peer's bytes, so log only the types.
         logger.warn(
@@ -304,10 +353,12 @@ public final class ResponseConverter {
             e.getClass().getSimpleName());
         continue;
       }
-      parts.add(part);
+      parts.addAll(converted);
       // A2A peers may omit metadata entirely, which deserializes to null.
       if (a2aPart instanceof DataPart dataPart && isLongRunning(dataPart.getMetadata())) {
-        part.functionCall().flatMap(FunctionCall::id).ifPresent(longRunningToolIds::add);
+        for (Part part : converted) {
+          part.functionCall().flatMap(FunctionCall::id).ifPresent(longRunningToolIds::add);
+        }
       }
     }
     return new ConvertedParts(parts.build(), longRunningToolIds.build());

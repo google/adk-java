@@ -15,6 +15,11 @@
  */
 package com.google.adk.a2a.executor;
 
+import static com.google.common.base.Preconditions.checkState;
+
+import com.google.adk.a2a.converters.A2APartConverter;
+import com.google.adk.a2a.converters.FileUriPolicy;
+import com.google.adk.a2a.converters.PartConverter;
 import com.google.adk.a2a.executor.Callbacks.AfterEventCallback;
 import com.google.adk.a2a.executor.Callbacks.AfterExecuteCallback;
 import com.google.adk.a2a.executor.Callbacks.BeforeExecuteCallback;
@@ -52,6 +57,28 @@ public abstract class AgentExecutorConfig {
 
   public abstract @Nullable AfterEventCallback afterEventCallback();
 
+  /**
+   * Which file URIs from callers may reach the model; unset means {@link
+   * FileUriPolicy#defaultPolicy()}, which admits none. Exclusive with {@link #a2aPartConverter()}.
+   */
+  public abstract @Nullable FileUriPolicy fileUriPolicy();
+
+  /**
+   * Converts each part of a caller's message, in place of {@link
+   * PartConverter#defaultConverter(FileUriPolicy)}. Exclusive with {@link #fileUriPolicy()}; a
+   * custom converter that wants a file URI policy delegates to {@code defaultConverter(policy)}.
+   */
+  public abstract @Nullable A2APartConverter a2aPartConverter();
+
+  /** The converter {@link AgentExecutor} applies to each part of a caller's message. */
+  A2APartConverter effectivePartConverter() {
+    if (a2aPartConverter() != null) {
+      return a2aPartConverter();
+    }
+    return PartConverter.defaultConverter(
+        fileUriPolicy() != null ? fileUriPolicy() : FileUriPolicy.defaultPolicy());
+  }
+
   public abstract Builder toBuilder();
 
   public static Builder builder() {
@@ -78,10 +105,26 @@ public abstract class AgentExecutorConfig {
     @CanIgnoreReturnValue
     public abstract Builder afterEventCallback(AfterEventCallback afterEventCallback);
 
+    @CanIgnoreReturnValue
+    public abstract Builder fileUriPolicy(FileUriPolicy fileUriPolicy);
+
+    @CanIgnoreReturnValue
+    public abstract Builder a2aPartConverter(A2APartConverter a2aPartConverter);
+
     abstract AgentExecutorConfig autoBuild();
 
+    /**
+     * Builds the config.
+     *
+     * @throws IllegalStateException if both a file URI policy and a part converter are set
+     */
     public AgentExecutorConfig build() {
-      return autoBuild();
+      AgentExecutorConfig config = autoBuild();
+      checkState(
+          config.fileUriPolicy() == null || config.a2aPartConverter() == null,
+          "Set fileUriPolicy or a2aPartConverter, not both; a custom converter can delegate to"
+              + " PartConverter.defaultConverter(policy)");
+      return config;
     }
   }
 }
