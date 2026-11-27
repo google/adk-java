@@ -15,11 +15,13 @@
  */
 package com.google.adk.models;
 
+import static com.google.adk.models.LocalModelServer.CHAT_COMPLETION_JSON;
+import static com.google.adk.models.LocalModelServer.GENERATE_CONTENT_JSON;
+import static com.google.adk.models.LocalModelServer.headersSentToLocalServer;
 import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
-import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assume.assumeNotNull;
 import static org.junit.Assume.assumeTrue;
@@ -41,7 +43,6 @@ import com.google.adk.tools.SetModelResponseTool;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.net.InetAddresses;
 import com.google.genai.Client;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
@@ -49,15 +50,10 @@ import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.sun.net.httpserver.Headers;
-import com.sun.net.httpserver.HttpServer;
 import io.reactivex.rxjava3.core.Flowable;
-import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -416,7 +412,7 @@ public class ApigeeLlmTest {
     assertThat(llm.getHttpOptions().headers().get())
         .containsExactly(
             "user-agent",
-            "custom-agent " + TrackingHeaders.VALUE,
+            "custom-agent " + TrackingHeaders.value(/* includeRuntimeTag= */ false),
             "x-goog-api-client",
             "lib/1 google-adk/0.0.1 gl-java/" + JAVA_VERSION.value());
   }
@@ -502,8 +498,9 @@ public class ApigeeLlmTest {
         headersSentToProxy(
             "apigee/openai/gpt-4o", /* customHeaders= */ ImmutableMap.of(), CHAT_COMPLETION_JSON);
 
-    for (String name : TrackingHeaders.HEADERS.keySet()) {
-      assertThat(headers.get(name)).containsExactly(TrackingHeaders.VALUE);
+    for (String name : TrackingHeaders.HEADER_NAMES) {
+      assertThat(headers.get(name))
+          .containsExactly(TrackingHeaders.value(/* includeRuntimeTag= */ false));
     }
   }
 
@@ -528,8 +525,10 @@ public class ApigeeLlmTest {
             ImmutableMap.of("User-Agent", "custom-agent"),
             CHAT_COMPLETION_JSON);
 
-    assertThat(headers.get("user-agent")).containsExactly("custom-agent " + TrackingHeaders.VALUE);
-    assertThat(headers.get("x-goog-api-client")).containsExactly(TrackingHeaders.VALUE);
+    assertThat(headers.get("user-agent"))
+        .containsExactly("custom-agent " + TrackingHeaders.value(/* includeRuntimeTag= */ false));
+    assertThat(headers.get("x-goog-api-client"))
+        .containsExactly(TrackingHeaders.value(/* includeRuntimeTag= */ false));
   }
 
   /**
@@ -589,44 +588,14 @@ public class ApigeeLlmTest {
    */
   private static Headers headersSentToProxy(
       String modelName, Map<String, String> customHeaders, String responseJson) throws Exception {
-    AtomicReference<Headers> requestHeaders = new AtomicReference<>();
-    HttpServer server =
-        HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-    server.createContext(
-        "/",
-        exchange -> {
-          requestHeaders.set(exchange.getRequestHeaders());
-          byte[] body = responseJson.getBytes(UTF_8);
-          exchange.getResponseHeaders().set("Content-Type", "application/json");
-          exchange.sendResponseHeaders(200, body.length);
-          try (OutputStream out = exchange.getResponseBody()) {
-            out.write(body);
-          }
-        });
-    server.start();
-    try {
-      ApigeeLlm.Builder builder =
-          ApigeeLlm.builder()
-              .modelName(modelName)
-              .proxyUrl(
-                  "http://"
-                      + InetAddresses.toUriString(server.getAddress().getAddress())
-                      + ":"
-                      + server.getAddress().getPort());
-      builder.customHeaders(customHeaders);
-      LlmRequest request =
-          LlmRequest.builder()
-              .contents(
-                  ImmutableList.of(
-                      Content.builder().role("user").parts(Part.fromText("hello")).build()))
-              .build();
-
-      builder.build().generateContent(request, /* stream= */ false).blockingSubscribe();
-
-      return requestHeaders.get();
-    } finally {
-      server.stop(0);
-    }
+    return headersSentToLocalServer(
+        url ->
+            ApigeeLlm.builder()
+                .modelName(modelName)
+                .proxyUrl(url)
+                .customHeaders(customHeaders)
+                .build(),
+        responseJson);
   }
 
   /**
@@ -634,7 +603,7 @@ public class ApigeeLlmTest {
    * includes the Java version tag and ADK's tag, and repeats no tag name.
    */
   private static void assertGenAiTrackingHeaders(Headers headers) {
-    for (String name : TrackingHeaders.HEADERS.keySet()) {
+    for (String name : TrackingHeaders.HEADER_NAMES) {
       ImmutableList<String> tags =
           ImmutableList.copyOf(Splitter.on(' ').split(getOnlyElement(headers.get(name))));
       assertThat(tags.get(0)).startsWith("google-genai-sdk/");
@@ -643,12 +612,4 @@ public class ApigeeLlmTest {
           .containsNoDuplicates();
     }
   }
-
-  private static final String GENERATE_CONTENT_JSON =
-      "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]},"
-          + "\"finishReason\":\"STOP\"}]}";
-
-  private static final String CHAT_COMPLETION_JSON =
-      "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"hi\"},"
-          + "\"finish_reason\":\"stop\"}]}";
 }

@@ -21,6 +21,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.stream.Collectors.joining;
 
 import com.anthropic.client.AnthropicClient;
+import com.anthropic.core.ClientOptions;
 import com.anthropic.core.JsonValue;
 import com.anthropic.core.Properties;
 import com.anthropic.core.http.Headers;
@@ -281,30 +282,33 @@ public class Claude extends BaseLlm {
 
   /**
    * Returns a copy of {@code client} that shares its connections and sends ADK's tracking headers,
-   * extending any the client already sets. A null client, or a test double that returns no copy, is
-   * returned unchanged.
+   * extending any the client already sets, with the runtime tag only toward a Google API. A null
+   * client, or a test double that returns no copy, is returned unchanged.
    */
   private static @Nullable AnthropicClient withTrackingHeaders(@Nullable AnthropicClient client) {
     if (client == null) {
       return null;
     }
     AnthropicClient tracked =
-        client.withOptions(
-            options -> {
-              Headers configured = options.build().headers();
-              Map<String, String> current = new HashMap<>();
-              // Start from the SDK's default User-Agent, which it adds only when none is set.
-              current.put(
-                  "user-agent",
-                  client.getClass().getSimpleName() + "/Java " + Properties.getPackageVersion());
-              for (String name : TrackingHeaders.HEADERS.keySet()) {
-                List<String> values = configured.values(name);
-                if (!values.isEmpty()) {
-                  current.put(name, String.join(" ", values));
-                }
-              }
-              TrackingHeaders.mergeInto(current).forEach(options::replaceHeaders);
-            });
+        client.withOptions(options -> {
+          ClientOptions built = options.build();
+          Headers configured = built.headers();
+          Map<String, String> current = new HashMap<>();
+          // Start from the SDK's default User-Agent, which it adds only when none is set.
+          current.put(
+              "user-agent",
+              client.getClass().getSimpleName() + "/Java " + Properties.getPackageVersion());
+          for (String name : TrackingHeaders.HEADER_NAMES) {
+            List<String> values = configured.values(name);
+            if (!values.isEmpty()) {
+              current.put(name, String.join(" ", values));
+            }
+          }
+          TrackingHeaders.mergeInto(
+                  current,
+                  /* includeRuntimeTag= */ TrackingHeaders.isGoogleApisUrl(built.baseUrl()))
+              .forEach(options::replaceHeaders);
+        });
     return tracked != null ? tracked : client;
   }
 

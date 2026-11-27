@@ -92,7 +92,10 @@ public class Gemini extends BaseLlm {
   // Every client ADK builds starts here, so each sends ADK's tracking tag.
   private static Client.Builder adkClientBuilder(@Nullable ExecutorService executorService) {
     return Client.builder()
-        .httpOptions(HttpOptions.builder().headers(TrackingHeaders.GENAI_SDK_HEADERS).build())
+        .httpOptions(
+            HttpOptions.builder()
+                .headers(TrackingHeaders.genAiSdkHeaders(/* includeRuntimeTag= */ true))
+                .build())
         .clientOptions(
             ClientOptions.builder().customHttpClient(prepareHttpClient(executorService)).build());
   }
@@ -343,7 +346,8 @@ public class Gemini extends BaseLlm {
             httpOptions.toBuilder()
                 .headers(
                     TrackingHeaders.mergeIntoGenAiSdkHeaders(
-                        httpOptions.headers().orElse(ImmutableMap.of())))
+                        httpOptions.headers().orElse(ImmutableMap.of()),
+                        /* includeRuntimeTag= */ true))
                 .build())
         .build();
   }
