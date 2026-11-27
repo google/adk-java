@@ -21,12 +21,13 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.tools.ToolContext;
-import com.google.common.collect.ImmutableMap;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import io.reactivex.rxjava3.core.Single;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
@@ -88,22 +89,21 @@ public final class McpTool extends AbstractMcpTool<McpSyncClient> {
 
   @Override
   public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
-    return Single.<Optional<CallToolResult>>fromCallable(
-            () ->
-                Optional.ofNullable(
-                    mcpSession.callTool(
-                        new CallToolRequest(
-                            this.name(), ImmutableMap.copyOf(args), /* meta= */ null))))
-        .retryWhen(
-            errors ->
-                errors
-                    .delay(100, MILLISECONDS)
-                    .take(3)
-                    .doOnNext(
-                        error -> {
-                          logger.error("Retrying callTool due to: {}", error.getMessage(), error);
-                          reinitializeSession();
-                        }))
+    return Single.<Optional<CallToolResult>>fromCallable(() ->
+            Optional.ofNullable(
+                mcpSession.callTool(
+                    new CallToolRequest(
+                        this.name(),
+                        Collections.unmodifiableMap(new LinkedHashMap<>(args)),
+                        /* meta= */ null))))
+        .retryWhen(errors ->
+            errors
+                .delay(100, MILLISECONDS)
+                .take(3)
+                .doOnNext(error -> {
+                  logger.error("Retrying callTool due to: {}", error.getMessage(), error);
+                  reinitializeSession();
+                }))
         // Mapped after the retry, so a failing mapper does not call the tool again.
         .map(callResult -> mapCallResult(callResult.orElse(null)));
   }

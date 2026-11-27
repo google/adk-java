@@ -36,6 +36,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -44,12 +45,14 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Part;
 import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.ImageContent;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -65,6 +68,17 @@ public final class AbstractMcpToolTest {
 
   private static final McpSchema.Tool MY_TOOL =
       McpSchema.Tool.builder("my_tool", ImmutableMap.of("type", "object")).build();
+
+  private static final McpSchema.Tool NULLABLE_TOOL =
+      McpSchema.Tool.builder(
+              "set_value",
+              ImmutableMap.of(
+                  "type",
+                  "object",
+                  "properties",
+                  ImmutableMap.of(
+                      "value", ImmutableMap.of("type", ImmutableList.of("string", "null")))))
+          .build();
 
   private static final CallToolResult TEXT_AND_IMAGE_RESULT =
       CallToolResult.builder(
@@ -125,8 +139,8 @@ public final class AbstractMcpToolTest {
             CallToolResult.builder(ImmutableList.of(TextContent.builder("ok").build())).build());
     McpSchema.Tool schemaTool =
         McpSchema.Tool.builder("my_tool", ImmutableMap.of("type", "object")).build();
-    McpTool tool =
-        new McpTool(schemaTool, sessionMock, mock(McpSessionManager.class), objectMapper);
+    McpSessionManager managerMock = mock(McpSessionManager.class);
+    McpTool tool = new McpTool(schemaTool, sessionMock, managerMock, objectMapper);
 
     Map<String, Object> result =
         tool.runAsync(ImmutableMap.of("query", "shoes"), mock(ToolContext.class)).blockingGet();
@@ -137,6 +151,7 @@ public final class AbstractMcpToolTest {
     assertThat(request.getValue().name()).isEqualTo("my_tool");
     assertThat(request.getValue().arguments()).containsExactly("query", "shoes");
     assertThat(request.getValue().meta()).isNull();
+    verifyNoInteractions(managerMock);
   }
 
   @Test
@@ -149,8 +164,8 @@ public final class AbstractMcpToolTest {
                     .build()));
     McpSchema.Tool schemaTool =
         McpSchema.Tool.builder("my_tool", ImmutableMap.of("type", "object")).build();
-    McpAsyncTool tool =
-        new McpAsyncTool(schemaTool, sessionMock, mock(McpSessionManager.class), objectMapper);
+    McpSessionManager managerMock = mock(McpSessionManager.class);
+    McpAsyncTool tool = new McpAsyncTool(schemaTool, sessionMock, managerMock, objectMapper);
 
     Map<String, Object> result =
         tool.runAsync(ImmutableMap.of("query", "shoes"), mock(ToolContext.class)).blockingGet();
@@ -161,6 +176,7 @@ public final class AbstractMcpToolTest {
     assertThat(request.getValue().name()).isEqualTo("my_tool");
     assertThat(request.getValue().arguments()).containsExactly("query", "shoes");
     assertThat(request.getValue().meta()).isNull();
+    verifyNoInteractions(managerMock);
   }
 
   @Test
@@ -492,6 +508,188 @@ public final class AbstractMcpToolTest {
 
     assertThat(result).containsEntry("tool", "my_tool");
     assertThat(mappedResults).hasSize(1);
+  }
+
+  @Test
+  public void mcpToolRunAsync_preservesExplicitNull() throws Exception {
+    explicitNullReachesTheMcpClient(false);
+  }
+
+  @Test
+  public void mcpAsyncToolRunAsync_preservesExplicitNull() throws Exception {
+    explicitNullReachesTheMcpClient(true);
+  }
+
+  @Test
+  public void mcpToolRunAsync_preservesOmittedArgument() {
+    omittedArgumentRemainsOmitted(false);
+  }
+
+  @Test
+  public void mcpAsyncToolRunAsync_preservesOmittedArgument() {
+    omittedArgumentRemainsOmitted(true);
+  }
+
+  @Test
+  public void mcpToolRunAsync_keepsUnmodifiableArgumentSnapshot() {
+    requestArgumentsRemainAnUnmodifiableSnapshot(false);
+  }
+
+  @Test
+  public void mcpAsyncToolRunAsync_keepsUnmodifiableArgumentSnapshot() {
+    requestArgumentsRemainAnUnmodifiableSnapshot(true);
+  }
+
+  @Test
+  public void mcpToolRunAsync_preservesNestedNull() {
+    nestedNullIsAlreadyPreserved(false);
+  }
+
+  @Test
+  public void mcpAsyncToolRunAsync_preservesNestedNull() {
+    nestedNullIsAlreadyPreserved(true);
+  }
+
+  @Test
+  public void mcpToolRunAsync_functionDispatchPreservesExplicitNull() {
+    functionDispatchPreservesExplicitNull(false);
+  }
+
+  @Test
+  public void mcpAsyncToolRunAsync_functionDispatchPreservesExplicitNull() {
+    functionDispatchPreservesExplicitNull(true);
+  }
+
+  private void explicitNullReachesTheMcpClient(boolean async) throws Exception {
+    NullableArgumentsFixture fixture = new NullableArgumentsFixture(async);
+    Map<String, Object> arguments = nullableArguments();
+
+    CallToolRequest request = fixture.invoke(arguments);
+
+    assertThat(request.arguments()).containsExactly("value", null);
+    assertThat(McpJsonDefaults.getMapper().writeValueAsString(request)).contains("\"value\":null");
+    assertThat(arguments).containsExactly("value", null);
+    verifyNoInteractions(fixture.manager);
+  }
+
+  private void omittedArgumentRemainsOmitted(boolean async) {
+    NullableArgumentsFixture fixture = new NullableArgumentsFixture(async);
+    CallToolRequest request = fixture.invoke(ImmutableMap.of());
+
+    assertThat(request.arguments()).isEmpty();
+    verifyNoInteractions(fixture.manager);
+  }
+
+  private void requestArgumentsRemainAnUnmodifiableSnapshot(boolean async) {
+    NullableArgumentsFixture fixture = new NullableArgumentsFixture(async);
+    Map<String, Object> arguments = nullableArguments();
+    CallToolRequest request = fixture.invoke(arguments);
+
+    arguments.put("value", "changed");
+    arguments.put("extra", "added");
+
+    assertThat(request.arguments()).containsExactly("value", null);
+    assertThrows(
+        UnsupportedOperationException.class, () -> request.arguments().put("value", "changed"));
+    verifyNoInteractions(fixture.manager);
+  }
+
+  private void nestedNullIsAlreadyPreserved(boolean async) {
+    NullableArgumentsFixture fixture = new NullableArgumentsFixture(async);
+    CallToolRequest request = fixture.invoke(ImmutableMap.of("nested", nullableArguments()));
+
+    assertThat((Map<?, ?>) request.arguments().get("nested")).containsExactly("value", null);
+    verifyNoInteractions(fixture.manager);
+  }
+
+  private void functionDispatchPreservesExplicitNull(boolean async) {
+    NullableArgumentsFixture fixture = new NullableArgumentsFixture(async);
+    InvocationContext context =
+        createInvocationContext(
+            createTestAgentBuilder(createTestLlm(LlmResponse.builder().build())).build());
+    Event call =
+        createEvent("call").toBuilder()
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder()
+                                        .id("call-1")
+                                        .name("set_value")
+                                        .args(nullableArguments())
+                                        .build())
+                                .build()))
+                    .build())
+            .build();
+
+    Event response =
+        Functions.handleFunctionCalls(
+                context, call, ImmutableMap.of(fixture.tool.name(), fixture.tool))
+            .timeout(5, SECONDS)
+            .blockingGet();
+
+    assertThat(response.functionResponses()).hasSize(1);
+    assertThat(response.functionResponses().get(0).id()).hasValue("call-1");
+    assertThat(fixture.capturedRequest().arguments()).containsExactly("value", null);
+    verifyNoInteractions(fixture.manager);
+  }
+
+  private static final class NullableArgumentsFixture {
+    private final boolean async;
+    private final McpSyncClient syncClient = mock(McpSyncClient.class);
+    private final McpAsyncClient asyncClient = mock(McpAsyncClient.class);
+    private final McpSessionManager manager = mock(McpSessionManager.class);
+    private final BaseTool tool;
+
+    NullableArgumentsFixture(boolean async) {
+      this.async = async;
+      CallToolResult result =
+          CallToolResult.builder(ImmutableList.of(TextContent.builder("ok").build())).build();
+      // Keep retries deterministic if the adapter fails before reaching the SDK.
+      if (async) {
+        when(asyncClient.callTool(any())).thenReturn(Mono.just(result));
+        when(manager.createAsyncSession()).thenReturn(asyncClient);
+        when(asyncClient.initialize())
+            .thenReturn(
+                Mono.just(
+                    McpSchema.InitializeResult.builder(
+                            "2025-06-18",
+                            McpSchema.ServerCapabilities.builder().build(),
+                            McpSchema.Implementation.builder("server", "1.0").build())
+                        .build()));
+        tool = new McpAsyncTool(NULLABLE_TOOL, asyncClient, manager);
+      } else {
+        when(syncClient.callTool(any())).thenReturn(result);
+        when(manager.createSession()).thenReturn(syncClient);
+        tool = new McpTool(NULLABLE_TOOL, syncClient, manager);
+      }
+    }
+
+    private CallToolRequest invoke(Map<String, Object> arguments) {
+      Map<String, Object> result =
+          tool.runAsync(arguments, mock(ToolContext.class)).timeout(5, SECONDS).blockingGet();
+      assertThat(result).containsKey("text_output");
+      return capturedRequest();
+    }
+
+    private CallToolRequest capturedRequest() {
+      ArgumentCaptor<CallToolRequest> request = ArgumentCaptor.forClass(CallToolRequest.class);
+      if (async) {
+        verify(asyncClient).callTool(request.capture());
+      } else {
+        verify(syncClient).callTool(request.capture());
+      }
+      return request.getValue();
+    }
+  }
+
+  private static Map<String, Object> nullableArguments() {
+    Map<String, Object> arguments = new LinkedHashMap<>();
+    arguments.put("value", null);
+    return arguments;
   }
 
   private static CallToolResultMapper recordingMapper(List<CallToolResult> mappedResults) {
