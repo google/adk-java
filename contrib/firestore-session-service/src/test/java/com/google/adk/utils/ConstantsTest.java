@@ -26,7 +26,8 @@ public class ConstantsTest {
   /** Test to verify that the root collection name is as expected. */
   @Test
   void testRootCollectionName() {
-    String rootCollectionName = FirestoreProperties.getInstance().getFirebaseRootCollectionName();
+    String rootCollectionName =
+        FirestoreProperties.getInstance().getFirestoreRootCollectionName();
     assertThat(rootCollectionName).isEqualTo("default-adk-session");
   }
 }

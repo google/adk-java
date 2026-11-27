@@ -96,7 +96,7 @@ public class FirestorePropertiesTest {
   void shouldLoadDefaultPropertiesWhenEnvIsNotSet() {
     FirestoreProperties props = FirestoreProperties.getInstance();
 
-    assertEquals("default-adk-session", props.getFirebaseRootCollectionName());
+    assertEquals("default-adk-session", props.getFirestoreRootCollectionName());
     assertEquals("default_value", props.getProperty("another.default.property"));
     assertEquals("common_default", props.getProperty("common.property"));
     assertNull(props.getProperty("non.existent.property"));
@@ -112,7 +112,7 @@ public class FirestorePropertiesTest {
     setEnv(ENV_VAR_NAME, "");
     FirestoreProperties props = FirestoreProperties.getInstance();
 
-    assertEquals("default-adk-session", props.getFirebaseRootCollectionName());
+    assertEquals("default-adk-session", props.getFirestoreRootCollectionName());
     assertEquals("default_value", props.getProperty("another.default.property"));
   }
 
@@ -126,7 +126,7 @@ public class FirestorePropertiesTest {
     setEnv(ENV_VAR_NAME, "dev");
     FirestoreProperties props = FirestoreProperties.getInstance();
 
-    assertEquals("dev-adk-session-override", props.getFirebaseRootCollectionName());
+    assertEquals("dev-adk-session-override", props.getFirestoreRootCollectionName());
     assertEquals("dev_value", props.getProperty("dev.specific.property"));
     assertEquals("common_dev", props.getProperty("common.property")); // Check overridden property
     // In JUnit 5, the message is the second argument.
@@ -147,7 +147,7 @@ public class FirestorePropertiesTest {
     setEnv(ENV_VAR_NAME, "nonexistent");
     FirestoreProperties props = FirestoreProperties.getInstance();
 
-    assertEquals("default-adk-session", props.getFirebaseRootCollectionName());
+    assertEquals("default-adk-session", props.getFirestoreRootCollectionName());
     assertEquals("default_value", props.getProperty("another.default.property"));
   }
 
@@ -159,12 +159,12 @@ public class FirestorePropertiesTest {
   @Test
   void shouldReturnHardcodedDefaultIfPropertyFileHasNoEntry() throws Exception {
     // This test requires 'src/test/resources/adk-firestore-empty.properties'
-    // which contains some properties but NOT 'firebase.root.collection.name'
+    // which contains some properties but NOT 'firestore.root.collection.name'
     setEnv(ENV_VAR_NAME, "empty");
     FirestoreProperties props = FirestoreProperties.getInstance();
 
     // Should fall back to the hardcoded default value
-    assertEquals("adk-session", props.getFirebaseRootCollectionName());
+    assertEquals("adk-session", props.getFirestoreRootCollectionName());
     // Verify that it did load the correct file
     assertEquals("other_value", props.getProperty("other.key"));
   }
@@ -172,6 +172,9 @@ public class FirestorePropertiesTest {
   @Test
   void getInstanceShouldReturnAnInstance() {
     assertNotNull(FirestoreProperties.getInstance());
+    assertEquals(
+        FirestoreProperties.getInstance().getFirestoreRootCollectionName(),
+        FirestoreProperties.getInstance().getFirebaseRootCollectionName());
   }
 
   /**
