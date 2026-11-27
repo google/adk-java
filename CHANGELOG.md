@@ -1,5 +1,98 @@
 # Changelog
 
+## [1.16.0](https://github.com/google/adk-java/compare/v1.15.0...v1.16.0) (2026-11-27)
+
+
+### Features
+
+* **dev:** refresh the bundled Development UI to adk-web 1.0.7 ([cb0c9b0](https://github.com/google/adk-java/commit/cb0c9b08f33de9a6cd2bb0dae6c082ba9c5e6a2c))
+* **dev:** serve the development endpoints under /dev/apps ([6b1fba6](https://github.com/google/adk-java/commit/6b1fba60fb54a8bd121013e3f887cb5d68f97472))
+* fill in schema defaults for omitted properties ([d9e5f86](https://github.com/google/adk-java/commit/d9e5f86016d87e766877305ca2c744321ae526b6))
+* **live:** end a SequentialAgent step when the model calls task_completed ([2fb4841](https://github.com/google/adk-java/commit/2fb484187b23c20061670db5fc40200dc9902909))
+* **live:** run before- and after-model callbacks in live runs ([53e15db](https://github.com/google/adk-java/commit/53e15db903a0a10e9475ba1eb2cbca4037e4c029))
+* **tokt:** build the live request an ADK Java model connects with ([cdaa3e8](https://github.com/google/adk-java/commit/cdaa3e8fd8fa53df9b22b5fdb28944c4a43a16b4))
+* **tokt:** close and cancel a Java model's live connection without hanging or leaking ([548d0a1](https://github.com/google/adk-java/commit/548d0a13bb4fd103da2a766dfb801355fc6bfcd2))
+* **tokt:** map RunConfig toolExecutionMode across the Kotlin engine interop ([c7d7685](https://github.com/google/adk-java/commit/c7d7685950c7edc1e959ae4aeaf01b759b83df03))
+* **tokt:** open a Kotlin LiveConnection on an ADK Java model ([deb8001](https://github.com/google/adk-java/commit/deb80010de6cccd85cd67250243bd487af5da51c))
+* **workflow:** add isolation scopes for workflow nodes ([524312e](https://github.com/google/adk-java/commit/524312ebf3fe38f2b879dd6174e57eab099acbce))
+* **workflow:** add the CHAT agent mode ([d2eb12f](https://github.com/google/adk-java/commit/d2eb12f8aa1fcbb4eb1a3ce227ab8ba7e9ee19de))
+* **workflow:** add the TASK agent mode ([43d5bfa](https://github.com/google/adk-java/commit/43d5bfab67b50991893f7e47a9743f85c0b296f1))
+* **workflow:** call SINGLE_TURN sub-agents as tools ([55673d2](https://github.com/google/adk-java/commit/55673d290315a9e8c7aa26f93c37f9763a327c6d))
+* **workflow:** check a FunctionNode body's emitted state against the state schema ([e0d6c2a](https://github.com/google/adk-java/commit/e0d6c2ae78e1de11b005920b51d38f5bc38caec1))
+* **workflow:** check a workflow's output against its output schema ([a04a400](https://github.com/google/adk-java/commit/a04a400765e160f9d0eb2a89dac63ad800d5ae62))
+* **workflow:** check emitted event and tool node state deltas against stateSchema ([006e5d5](https://github.com/google/adk-java/commit/006e5d5fbd223635b434aa29b8578afbce3c2f7a))
+* **workflow:** check FunctionNode builder schemas and dynamic child input ([e97c0b4](https://github.com/google/adk-java/commit/e97c0b41e3b159b30bf9fe46b97403492ccbd8df))
+* **workflow:** check node Context.state() writes against the state schema ([13cc923](https://github.com/google/adk-java/commit/13cc92340d9bd47fb64ac552cded68f8d9c6fb20))
+* **workflow:** check node input and output against their schemas at run time ([bb8d31a](https://github.com/google/adk-java/commit/bb8d31a7f2b8ca2eaf16d5b42c88ccd37434bb4d))
+* **workflow:** continue a waiting task with the user's reply ([75d8990](https://github.com/google/adk-java/commit/75d8990e2578e294620805765ec3843b64a2b7b9))
+* **workflow:** delegate tasks to TASK sub-agents ([f4c3d02](https://github.com/google/adk-java/commit/f4c3d026e95ece5b5ff05e52684152af636cd0a4))
+* **workflow:** follow parent and peer handoffs as workflow nodes ([f81468c](https://github.com/google/adk-java/commit/f81468ceb0e60af7d1f3762fb568a993cefd3ad3))
+* **workflow:** keep each agent's history to its isolation scope ([8eb4d8f](https://github.com/google/adk-java/commit/8eb4d8f75fefd6d97cc6e38bd1ab37a34b156083))
+* **workflow:** read a user message on typed FunctionNode ports ([7873fab](https://github.com/google/adk-java/commit/7873fabf11202657d072559973f55e4753090505))
+* **workflow:** read numbers, booleans, chars and enums strictly in FunctionNode ports ([3cabda8](https://github.com/google/adk-java/commit/3cabda8909206451a8066bf482ed01d7bd1ea78b))
+* **workflow:** read OptionalInt, OptionalLong and OptionalDouble fields like their primitives ([677e87a](https://github.com/google/adk-java/commit/677e87a62fbb4278908e4e7510d0beebb4a92c8a))
+* **workflow:** reject agent names that can't be node names when they run as nodes ([b51541a](https://github.com/google/adk-java/commit/b51541a001fd97c084c12a971a7f9d05e272dfd3))
+* **workflow:** reject unknown keys in genai and event FunctionNode ports ([4b6a0e0](https://github.com/google/adk-java/commit/4b6a0e08bae9c6d0b4be32655fe2db38d585867e))
+* **workflow:** resume paused peer and parent handoff targets ([6f6204d](https://github.com/google/adk-java/commit/6f6204d7dfb24c1ebdecceac6b6f4ea847efabe1))
+* **workflow:** run a sub-agent handoff as its own workflow node ([9f0bdf7](https://github.com/google/adk-java/commit/9f0bdf7545ede2db8d2e27eee881f7b5407d29bf))
+* **workflow:** start no other node while a task node waits ([71b7b75](https://github.com/google/adk-java/commit/71b7b758750f3415a339b932d6d77243b0082bb0))
+
+
+### Bug Fixes
+
+* **a2a:** keep a message reply that reports only an error code ([c34785c](https://github.com/google/adk-java/commit/c34785ce7f6502247c0d15dc3302a13696a0e6ca))
+* **dev:** end a failed /run_sse stream with an error event ([3aee8ad](https://github.com/google/adk-java/commit/3aee8ad14868172d319f8f8b8547b323122cc29f))
+* **dev:** find tool-response traces by event id ([c817b1f](https://github.com/google/adk-java/commit/c817b1f76c9c029d9c097e25212b3b3e3fcb7ec7))
+* **flows:** keep one event id across the chunks of a streamed reply ([0a1b0ac](https://github.com/google/adk-java/commit/0a1b0ac39cae4840979dc122db62a7547ae00a66))
+* **flows:** pass ReadonlyContext when resolving tools on confirmation resume ([523e6d3](https://github.com/google/adk-java/commit/523e6d3cf9f466ba886580112acf0a5cfa592131))
+* **live:** aggregate input and output transcriptions per utterance ([baff0dd](https://github.com/google/adk-java/commit/baff0dd2028a951d9e99d4d964886f0cd8f34ce8))
+* **live:** carry grounding metadata onto live responses ([5a0da74](https://github.com/google/adk-java/commit/5a0da74984822199434fc384e1c8932380d33a6b))
+* **live:** close the connection when the model stream ends ([a854669](https://github.com/google/adk-java/commit/a854669e85e6630309d1944920d2af2c48896a1e))
+* **live:** keep the live call up when a tool sets endOfAgent ([67bd999](https://github.com/google/adk-java/commit/67bd999e5bcb0948ceffee20d74bf9769df2739c))
+* **live:** keep unsent requests queued and copy them only to running tools ([c736e2b](https://github.com/google/adk-java/commit/c736e2bde1aa1656f8862021599426a1abf69ae9))
+* **live:** pass built-in tools and safety settings to live connections ([ebbbdc5](https://github.com/google/adk-java/commit/ebbbdc542bb65b75aaac38060246139a20bf62b7))
+* **live:** save user content sent during a live run to the session ([8e612c6](https://github.com/google/adk-java/commit/8e612c67f08bb302f911d94127d14ae5b41db54c))
+* **live:** send each tool result once after an agent transfer ([2292891](https://github.com/google/adk-java/commit/229289117c9cf2789497e237201db05510ab13c8))
+* **live:** use dedicated audio and video fields for Gemini 3.x Live models ([f1cc889](https://github.com/google/adk-java/commit/f1cc889194448b21241e4b0bbcf39591ebb14019))
+* **models:** build one final streamed response from the whole stream ([d9095f5](https://github.com/google/adk-java/commit/d9095f54d9c123370c34f310033709536ba338a1))
+* **models:** fix how streamed function call chunks are assembled ([d30bca4](https://github.com/google/adk-java/commit/d30bca47253f28e2dc864a221494bcea6f3e1d47))
+* **models:** keep a streamed function call where it started ([5f3f599](https://github.com/google/adk-java/commit/5f3f5996e54520c93ea5b94816222066982c0e3a))
+* **models:** run a repeated streamed function call once ([6ffa1f0](https://github.com/google/adk-java/commit/6ffa1f09fb3a31eeeb6dd3bcf0be369f8abbaef5))
+* preserve explicit null arguments in MCP tools ([562e43d](https://github.com/google/adk-java/commit/562e43dcdb1060af0ac428d6fb518ed29afb8e97))
+* **runner:** route beforeRun early-exit events through onEvent callbacks and persist them ([aa183f8](https://github.com/google/adk-java/commit/aa183f8b80f4bf19c7e3cc66061d5cede6674251))
+* **runner:** run plugin beforeRun, onEvent and afterRun callbacks in runLive ([78500b7](https://github.com/google/adk-java/commit/78500b7e546c7fa37f25138c30b4322f7cb96025))
+* **sessions:** let callers ignore State.compute and merge results ([77b32c3](https://github.com/google/adk-java/commit/77b32c3c92c0ad2a7c30c3e973bebb1fc876e2cf))
+* **summarizer:** skip compaction when the summary is unusable ([6c3381f](https://github.com/google/adk-java/commit/6c3381fc5000609deda747f59af32d99087db4de))
+* **workflow:** align quoted enum handling across resume answers, parallel nodes and anyOf schemas ([99ca4f2](https://github.com/google/adk-java/commit/99ca4f2da314ad4d92e5091831d7ac569de8450c))
+* **workflow:** end an agent node's turn when a FunctionTool requests confirmation ([2e5859d](https://github.com/google/adk-java/commit/2e5859d735e73853f093745b65766c108b6fbee6))
+* **workflow:** fail an agent node when a confirmed tool fails ([b7dc204](https://github.com/google/adk-java/commit/b7dc20409fae459faf48e98eabf8f349e7597a6b))
+* **workflow:** keep a node's message output a message after a resume ([8dbdaac](https://github.com/google/adk-java/commit/8dbdaac7f5be0c23f9f0fed04bce93bd1de8df43))
+* **workflow:** keep an agent node waiting on unanswered long-running calls ([a03b3bf](https://github.com/google/adk-java/commit/a03b3bf41387d9272dee64c2ce0001dc7530f12e))
+* **workflow:** keep an agent passed to rootNode as the app's root node ([38dadb1](https://github.com/google/adk-java/commit/38dadb1439558f817daf9daff3b1676aa3f808b2))
+* **workflow:** let a type take its own output, including keys it writes but never reads ([e075cdf](https://github.com/google/adk-java/commit/e075cdf7b4343ebfbd229647d12e5c39315d3ee5))
+* **workflow:** make node state's map views read-only and clear() throw ([b2572c1](https://github.com/google/adk-java/commit/b2572c1b3955ae6950b712e865abc082403aa084))
+* **workflow:** preserve a message output on events that also carry content ([ba9826c](https://github.com/google/adk-java/commit/ba9826cf3da39c51a9b283a610fecd76909d16f1))
+* **workflow:** read numbers in a message's JSON as ADK Kotlin does ([86296cb](https://github.com/google/adk-java/commit/86296cb02d10fd5be6d5256592018345e047ee50))
+* **workflow:** read RequestInput answers as their response schema reads them ([1a5e831](https://github.com/google/adk-java/commit/1a5e8314f443b7f011ed8c2610f22f78a8cdc85f))
+* **workflow:** rerun the model when a failed LlmAgent node retries ([d910c57](https://github.com/google/adk-java/commit/d910c571d0cf063acb608274b086fcaf27d7a256))
+* **workflow:** resume agent nodes that pause after a sub-agent handoff ([f94b028](https://github.com/google/adk-java/commit/f94b028a74093091bd574da342fe3d1e491da3df))
+* **workflow:** unify node schema checks and fix messages in maps ([0fd7201](https://github.com/google/adk-java/commit/0fd7201392d53de1f3f1b1fba894416c81f7bb13))
+
+
+### Reverts
+
+* Revert MCP SDK version update from 2.1.0 back to 2.0.0 ([dde4b23](https://github.com/google/adk-java/commit/dde4b23de69b3ffb16393217b195bb0b056c4bb8))
+
+
+### Documentation
+
+* **examples:** accept user messages as String in first workflow nodes ([1bb1a7f](https://github.com/google/adk-java/commit/1bb1a7f8a26e128f12ff87a7266a179ba60dbd40))
+* **examples:** add samples that call single-turn sub-agents as tools ([e8d177e](https://github.com/google/adk-java/commit/e8d177e9df13d7151166aeb2f52d92096379ae1b))
+* **examples:** add samples that run task agents ([6a98dc6](https://github.com/google/adk-java/commit/6a98dc67b14b4547b686c3213ba8ba96b87c9409))
+* **examples:** ask for human input from function nodes ([7b545e1](https://github.com/google/adk-java/commit/7b545e1634e07be2fc0f11877942a508b20f1c75))
+* **examples:** send messages from function nodes with emit ([80075e5](https://github.com/google/adk-java/commit/80075e50f0993af2f5791702972bfc8aee2245b2))
+* **examples:** use function nodes for state, route and gate steps ([26ed2c3](https://github.com/google/adk-java/commit/26ed2c30c31df8170224833cf80f937d3271c59f))
+
 ## [1.15.0](https://github.com/google/adk-java/compare/v1.14.0...v1.15.0) (2026-11-18)
 
 
