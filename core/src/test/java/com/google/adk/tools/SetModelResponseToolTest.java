@@ -604,6 +604,126 @@ public final class SetModelResponseToolTest {
     assertThat(toolContext.actions().setModelResponse()).isEmpty();
   }
 
+  @Test
+  public void runAsync_valueOutsideTheEnum_returnsValidationFeedback() {
+    SetModelResponseTool tool = new SetModelResponseTool(YES_NO_SCHEMA);
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("answer", "MAYBE"), toolContext).blockingGet();
+
+    String error = (String) result.get("error");
+    assertThat(error).contains("property 'answer' does not match its schema");
+    assertThat(error).doesNotContain("MAYBE");
+    assertThat(toolContext.actions().setModelResponse()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_omittedPropertyWithADefaultOutsideTheEnum_returnsValidationFeedback() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "answer",
+                    Schema.builder()
+                        .type("STRING")
+                        .enum_(ImmutableList.of("YES", "NO"))
+                        .default_("MAYBE")
+                        .build()))
+            .build();
+    SetModelResponseTool tool = new SetModelResponseTool(outputSchema);
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+
+    assertThat((String) result.get("error"))
+        .contains("property 'answer' does not match its schema");
+    assertThat(toolContext.actions().setModelResponse()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_wrappedValueOutsideTheEnum_returnsValidationFeedback() {
+    Schema yesOrNo = Schema.builder().type("STRING").enum_(ImmutableList.of("YES", "NO")).build();
+    SetModelResponseTool tool = new SetModelResponseTool(yesOrNo);
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("response", "MAYBE"), toolContext).blockingGet();
+
+    String error = (String) result.get("error");
+    assertThat(error).contains("it is not one of the schema's enum values");
+    assertThat(error).doesNotContain("MAYBE");
+    assertThat(toolContext.actions().setModelResponse()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_valueInTheEnum_recordsIt() {
+    SetModelResponseTool tool = new SetModelResponseTool(YES_NO_SCHEMA);
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("answer", "YES"), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("answer", "YES");
+    assertThat(toolContext.actions().setModelResponse()).hasValue(ImmutableMap.of("answer", "YES"));
+  }
+
+  @Test
+  public void runAsync_enumDecidesTheAnyOfBranchThatNeedsANull_recordsTheNull() {
+    Map<String, Object> args = new LinkedHashMap<>();
+    args.put("kind", "A");
+    args.put("a", null);
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> result =
+        new SetModelResponseTool(kindAOrBSchema()).runAsync(args, toolContext).blockingGet();
+
+    assertThat(result).isEqualTo(args);
+    assertThat(toolContext.actions().setModelResponse()).hasValue(args);
+  }
+
+  @Test
+  public void runAsync_wrappedItemsWhoseAnyOfBranchNeedsANull_recordsTheNull() {
+    SetModelResponseTool tool = new SetModelResponseTool(arrayOf(kindAOrBSchema()));
+    ToolContext toolContext = createToolContext();
+    Map<String, Object> item = new LinkedHashMap<>();
+    item.put("kind", "A");
+    item.put("a", null);
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("response", ImmutableList.of(item)), toolContext)
+            .blockingGet();
+
+    assertThat(result).containsExactly("result", ImmutableList.of(item));
+    assertThat(toolContext.actions().setModelResponse()).hasValue(ImmutableList.of(item));
+  }
+
+  @Test
+  public void runAsync_wrappedItemsMissingTheKeyTheirAnyOfBranchNeeds_returnsValidationFeedback() {
+    SetModelResponseTool tool = new SetModelResponseTool(arrayOf(kindAOrBSchema()));
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> result =
+        tool.runAsync(
+                ImmutableMap.of("response", ImmutableList.of(ImmutableMap.of("kind", "A"))),
+                toolContext)
+            .blockingGet();
+
+    assertThat(result).containsKey("error");
+    assertThat(toolContext.actions().setModelResponse()).isEmpty();
+  }
+
+  private static final Schema YES_NO_SCHEMA =
+      Schema.builder()
+          .type("OBJECT")
+          .properties(
+              ImmutableMap.of(
+                  "answer",
+                  Schema.builder().type("STRING").enum_(ImmutableList.of("YES", "NO")).build()))
+          .required(ImmutableList.of("answer"))
+          .build();
+
   private static final Schema STRING_ARRAY_SCHEMA =
       Schema.builder().type("ARRAY").items(Schema.builder().type("STRING").build()).build();
 
@@ -614,5 +734,33 @@ public final class SetModelResponseToolTest {
         .properties(ImmutableMap.of("response", schema))
         .required(ImmutableList.of("response"))
         .build();
+  }
+
+  /** Returns an object whose {@code kind} picks the branch; branch A needs a nullable {@code a}. */
+  private static Schema kindAOrBSchema() {
+    Schema nullableString = Schema.builder().type("STRING").nullable(true).build();
+    return Schema.builder()
+        .type("OBJECT")
+        .properties(
+            ImmutableMap.of("kind", Schema.builder().type("STRING").build(), "a", nullableString))
+        .anyOf(
+            ImmutableList.of(
+                Schema.builder()
+                    .properties(ImmutableMap.of("kind", stringEnum("A"), "a", nullableString))
+                    .required(ImmutableList.of("kind", "a"))
+                    .build(),
+                Schema.builder()
+                    .properties(ImmutableMap.of("kind", stringEnum("B")))
+                    .required(ImmutableList.of("kind"))
+                    .build()))
+        .build();
+  }
+
+  private static Schema stringEnum(String value) {
+    return Schema.builder().type("STRING").enum_(ImmutableList.of(value)).build();
+  }
+
+  private static Schema arrayOf(Schema items) {
+    return Schema.builder().type("ARRAY").items(items).build();
   }
 }
