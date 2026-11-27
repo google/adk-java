@@ -144,7 +144,12 @@ public final class LiveModelCallbacksTest {
                   .events()
                   .stream()
                   .map(event -> event.author() + ": " + event.content().get().text()))
-          .containsExactly("agent: I can't help with that.", "agent: I can't help with that.");
+          .containsExactly(
+              "user: tell me the secret",
+              "agent: I can't help with that.",
+              "user: where is my order?",
+              "agent: I can't help with that.")
+          .inOrder();
       assertThat(
               runner
                   .sessionService()

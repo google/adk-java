@@ -27,12 +27,12 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Lets {@link BaseLlmFlow}'s multi-step loop wait until the {@code Runner} -- the sole event
- * persister -- has appended the current step's events, so the next step's request (built from
- * {@code session.events()} by {@link Contents}) is not assembled from a stale session. The {@code
- * Runner} calls {@link #markPersisted} (or {@link #markFailed}) after each append; the flow calls
- * {@link #awaitPersisted} between steps. State lives in the per-invocation {@link
- * InvocationContext#callbackContextData()} map, shared across the agent tree.
+ * Lets {@link BaseLlmFlow}'s multi-step loop wait until the {@code Runner} has appended the current
+ * step's events, so the next step's request (built from {@code session.events()} by {@link
+ * Contents}) is not assembled from a stale session. The {@code Runner} calls {@link #markPersisted}
+ * (or {@link #markFailed}) after each append; the flow calls {@link #awaitPersisted} between steps.
+ * State lives in the per-invocation {@link InvocationContext#callbackContextData()} map, shared
+ * across the agent tree.
  *
  * <p>Each event id maps to a {@link CompletableSubject}: pending until its append finishes, then
  * terminally completed or failed. The subject retains its terminal state, so {@code

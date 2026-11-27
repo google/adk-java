@@ -956,8 +956,7 @@ public class Runner {
             ? Single.just(event)
             : this.sessionService
                 .appendEvent(sessionToPersist, event)
-                // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
-                // sole appendEvent caller (see PersistBarrier).
+                // Release (or fail) BaseLlmFlow's wait for this step (see PersistBarrier).
                 .doOnSuccess(unusedEvent -> PersistBarrier.markPersisted(context, event.id()))
                 .doOnError(error -> PersistBarrier.markFailed(context, event.id(), error));
     return persistStep.flatMap(registeredEvent -> {

@@ -36,6 +36,7 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.StreamingMode;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.events.Event;
+import com.google.adk.models.LlmResponse;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
@@ -55,6 +56,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.processors.PublishProcessor;
+import io.reactivex.rxjava3.processors.UnicastProcessor;
 import io.reactivex.rxjava3.schedulers.TestScheduler;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
@@ -222,6 +224,54 @@ public final class AgentTransferTest {
     // The sub-agent's call closes when its model stream ends.
     assertThat(testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose).count())
         .isEqualTo(2);
+  }
+
+  @Test
+  public void runLive_transferToAgent_nextAgentHistoryIncludesUserContent() throws Exception {
+    UnicastProcessor<LlmResponse> rootResponses = UnicastProcessor.create();
+    TestLlm testLlm =
+        createTestLlm(
+            rootResponses,
+            Flowable.just(createLlmResponse(Content.fromParts(Part.fromText("response1")))));
+    LlmAgent subAgent1 =
+        createTestAgentBuilder(testLlm).name("sub_agent_1").executor(Runnable::run).build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .executor(Runnable::run)
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(rootAgent);
+    Runner runner = getRunnerAndCreateSession(rootAgent, invocationContext.session());
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runner
+            .runLive(invocationContext.session(), liveRequestQueue, RunConfig.builder().build())
+            .test();
+    liveRequestQueue.content(Content.fromParts(Part.fromText("hi")));
+    rootResponses.onNext(
+        createLlmResponse(Content.fromParts(createTransferCallPart("sub_agent_1"))));
+    rootResponses.onComplete();
+    testSubscriber.await();
+
+    testSubscriber.assertComplete();
+    Content userContent = Content.builder().role("user").parts(Part.fromText("hi")).build();
+    assertThat(testLlm.getRequests().get(1).contents()).contains(userContent);
+    Session session =
+        runner
+            .sessionService()
+            .getSession(
+                invocationContext.session().appName(),
+                invocationContext.session().userId(),
+                invocationContext.session().id(),
+                Optional.empty())
+            .blockingGet();
+    assertThat(
+            session.immutableEvents().stream()
+                .filter(event -> event.author().equals("user"))
+                .map(event -> event.content().get()))
+        .containsExactly(userContent);
   }
 
   @Test

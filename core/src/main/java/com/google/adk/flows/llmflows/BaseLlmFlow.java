@@ -897,6 +897,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
               @Override
               public void onError(Throwable e) {
+                logger.error("The live send loop failed; closing the connection.", e);
                 connection.close(e);
                 closingAnswerSent.onComplete();
               }
@@ -1048,9 +1049,11 @@ public abstract class BaseLlmFlow implements BaseFlow {
   }
 
   /**
-   * Sends content from the live request queue. Content with only function responses is sent as is.
-   * Other content is not sent if a before-model callback blocks it; {@code blockedInputTurns}
-   * receives its replacement turn instead.
+   * Sends content from the live request queue, saving any complete user turn to the session first
+   * so a later connection's history includes it. Content with only function responses is sent as is
+   * and not saved here; the flow saves the ones it generates as the agent's events. Other content
+   * is not sent if a before-model callback blocks it; {@code blockedInputTurns} receives its
+   * replacement turn instead.
    */
   private Completable sendLiveContent(
       InvocationContext context,
@@ -1060,6 +1063,11 @@ public abstract class BaseLlmFlow implements BaseFlow {
       boolean partial,
       FlowableProcessor<Event> blockedInputTurns) {
     List<Part> parts = content.parts().orElse(ImmutableList.of());
+    // Reject before saving or sending, as in ADK Python.
+    if (parts.stream().anyMatch(part -> part.functionCall().isPresent())) {
+      return Completable.error(
+          new IllegalArgumentException("User message cannot contain function calls."));
+    }
     if (!parts.isEmpty() && parts.stream().allMatch(part -> part.functionResponse().isPresent())) {
       return connection.sendContent(content, partial);
     }
@@ -1069,19 +1077,36 @@ public abstract class BaseLlmFlow implements BaseFlow {
             ? content
             : content.toBuilder().role(Role.USER).build();
     // Deferred so the before-model callbacks run when the send loop subscribes, in send order.
-    return Completable.defer(() -> {
-      Event screeningEvent = newLiveEvent(context);
-      return screenLiveInput(context, llmRequest, userContent, screeningEvent)
-          .doOnSuccess(blockedInputTurns::onNext)
-          .isEmpty()
-          .flatMapCompletable(passed ->
-              passed
-                  ? callbackWrites(context, screeningEvent)
-                      .doOnSuccess(blockedInputTurns::onNext)
-                      .ignoreElement()
-                      .andThen(connection.sendContent(userContent, partial))
-                  : Completable.complete());
-    });
+    Completable screenThenSend =
+        Completable.defer(() -> {
+          Event screeningEvent = newLiveEvent(context);
+          return screenLiveInput(context, llmRequest, userContent, screeningEvent)
+              .doOnSuccess(blockedInputTurns::onNext)
+              .isEmpty()
+              .flatMapCompletable(passed ->
+                  passed
+                      ? callbackWrites(context, screeningEvent)
+                          .doOnSuccess(blockedInputTurns::onNext)
+                          .ignoreElement()
+                          .andThen(connection.sendContent(userContent, partial))
+                      : Completable.complete());
+        });
+    if (partial || answersTools) {
+      return screenThenSend;
+    }
+    Event userEvent =
+        Event.builder()
+            .id(context.newUuid())
+            .timestamp(context.now().toEpochMilli())
+            .invocationId(context.invocationId())
+            .author(Role.USER)
+            .content(userContent)
+            .build();
+    return context
+        .sessionService()
+        .appendEvent(context.session(), userEvent)
+        .ignoreElement()
+        .andThen(screenThenSend);
   }
 
   /**

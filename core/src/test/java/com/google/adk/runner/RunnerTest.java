@@ -97,6 +97,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.truth.Correspondence;
+import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
@@ -2741,10 +2742,149 @@ public final class RunnerTest {
             .listEvents("test", "user", asyncSession.id())
             .blockingGet()
             .events();
-    // The history should contain only the agent response event (user messages in liveQueue are not
-    // persisted).
-    assertThat(history).hasSize(1);
-    assertThat(history.get(0).author()).isEqualTo("test agent");
+    assertThat(history.stream().filter(event -> event.author().equals("test agent")).count())
+        .isEqualTo(1);
+  }
+
+  @Test
+  public void runLive_userContentWithFunctionCall_failsRunWithoutSavingOrSending()
+      throws Exception {
+    TestLlm liveLlm = createTestLlm(Flowable::never);
+    Runner liveRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(
+                        createTestAgentBuilder(closingWithErrorEndsResponses(liveLlm)).build())
+                    .build())
+            .build();
+    Session liveSession = liveRunner.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        liveRunner.runLive(liveSession, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(
+        Content.builder()
+            .role("user")
+            .parts(Part.fromText("hi"), Part.fromFunctionCall("echo_tool", ImmutableMap.of()))
+            .build());
+
+    assertThat(testSubscriber.await(5, SECONDS)).isTrue();
+    testSubscriber.assertError(error ->
+        error instanceof IllegalArgumentException
+            && error.getMessage().equals("User message cannot contain function calls."));
+    assertThat(
+            liveRunner
+                .sessionService()
+                .listEvents("test", "user", liveSession.id())
+                .blockingGet()
+                .events())
+        .isEmpty();
+    assertThat(liveLlm.getLiveRequestHistory().stream().anyMatch(r -> r.content().isPresent()))
+        .isFalse();
+  }
+
+  /**
+   * Wraps {@code llm} so that closing a connection with an error ends its responses with that
+   * error, matching {@code GeminiLlmConnection}.
+   */
+  private static BaseLlm closingWithErrorEndsResponses(TestLlm llm) {
+    return new BaseLlm("test-model") {
+      @Override
+      public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+        return llm.generateContent(llmRequest, stream);
+      }
+
+      @Override
+      public BaseLlmConnection connect(LlmRequest llmRequest) {
+        BaseLlmConnection connection = llm.connect(llmRequest);
+        CompletableSubject closedWithError = CompletableSubject.create();
+        return new BaseLlmConnection() {
+          @Override
+          public Completable sendHistory(List<Content> history) {
+            return connection.sendHistory(history);
+          }
+
+          @Override
+          public Completable sendContent(Content content) {
+            return connection.sendContent(content);
+          }
+
+          @Override
+          public Completable sendContent(Content content, boolean partial) {
+            return connection.sendContent(content, partial);
+          }
+
+          @Override
+          public Completable sendRealtime(Blob blob) {
+            return connection.sendRealtime(blob);
+          }
+
+          @Override
+          public Flowable<LlmResponse> receive() {
+            return connection.receive().mergeWith(closedWithError);
+          }
+
+          @Override
+          public void close() {
+            connection.close();
+          }
+
+          @Override
+          public void close(Throwable throwable) {
+            connection.close(throwable);
+            closedWithError.onError(throwable);
+          }
+        };
+      }
+    };
+  }
+
+  @Test
+  public void runLive_userContent_savedToSessionBeforeSendUnlessPartial() throws Exception {
+    TestLlm liveLlm = createTestLlm(Flowable::never);
+    BaseSessionService delayingSessionService =
+        new AppendDelayingSessionService(new InMemorySessionService(), 50);
+    Runner liveRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(createTestAgentBuilder(liveLlm).executor(Runnable::run).build())
+                    .build())
+            .sessionService(delayingSessionService)
+            .build();
+    Session liveSession = delayingSessionService.createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        liveRunner.runLive(liveSession, liveRequestQueue, RunConfig.builder().build()).test();
+
+    try {
+      liveRequestQueue.content(createContent("partial"), /* partial= */ true);
+      liveRequestQueue.content(createContent("whole"));
+      assertThat(
+              liveLlm.waitForLiveRequests(
+                  request -> request.content().isPresent(), 2, Duration.ofSeconds(5)))
+          .isTrue();
+
+      // Read as soon as the model got the content: the session must already hold it.
+      ImmutableList<Event> history =
+          delayingSessionService
+              .listEvents("test", "user", liveSession.id())
+              .blockingGet()
+              .events();
+      Content partial = Content.builder().role("user").parts(Part.fromText("partial")).build();
+      Content whole = Content.builder().role("user").parts(Part.fromText("whole")).build();
+      assertThat(liveLlm.getLiveRequestHistory().get(0).content()).hasValue(partial);
+      assertThat(liveLlm.getLiveRequestHistory().get(1).content()).hasValue(whole);
+      assertThat(history.stream().map(event -> event.author())).containsExactly("user");
+      assertThat(history.get(0).content()).hasValue(whole);
+      testSubscriber.assertNoErrors();
+    } finally {
+      liveRequestQueue.close();
+      testSubscriber.cancel();
+    }
   }
 
   @Test
@@ -4118,8 +4258,12 @@ public final class RunnerTest {
     // The partial event is still streamed to the caller.
     assertThat(testSubscriber.values().stream().anyMatch(event -> event.partial().orElse(false)))
         .isTrue();
-    // As in runAsync, only the final event is handed to the session service.
-    assertThat(sessionService.appendedEvents.stream().map(e -> e.content().get().text()).toList())
+    // As in runAsync, only the final model event is handed to the session service.
+    assertThat(
+            sessionService.appendedEvents.stream()
+                .filter(e -> !e.author().equals("user"))
+                .map(e -> e.content().get().text())
+                .toList())
         .containsExactly("final");
   }
 
