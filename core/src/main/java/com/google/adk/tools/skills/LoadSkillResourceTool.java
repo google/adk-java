@@ -213,12 +213,17 @@ final class LoadSkillResourceTool extends BaseTool {
   private ImmutableMap<String, Object> createResult(
       String skillName, String resourcePath, ByteSource contentSource) throws IOException {
     byte[] bytes = contentSource.read();
-    // Special handling of shell script as the guessContentTypeFromName would return
-    // application/x-shar
-    String contentType =
-        resourcePath.endsWith(".sh") || resourcePath.endsWith(".bash")
-            ? "application/x-sh"
-            : guessContentTypeFromName(resourcePath);
+    String contentType;
+    if (resourcePath.endsWith(".sh") || resourcePath.endsWith(".bash")) {
+      // guessContentTypeFromName would return application/x-shar
+      contentType = "application/x-sh";
+    } else if (resourcePath.endsWith(".yml") || resourcePath.endsWith(".yaml")) {
+      // The JVM does not map these extensions, so the name-based guess is null
+      // and we would otherwise fall back to application/octet-stream.
+      contentType = "application/yaml";
+    } else {
+      contentType = guessContentTypeFromName(resourcePath);
+    }
     if (contentType == null) {
       contentType = guessContentTypeFromStream(new ByteArrayInputStream(bytes));
     }
