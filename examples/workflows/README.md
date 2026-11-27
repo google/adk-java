@@ -1,12 +1,13 @@
 # Workflow Samples
 
-These samples build workflow graphs with the ADK workflow API, and the `*Demo`
-samples show a parent agent that calls a single-turn sub-agent as a tool. Each
+These samples build workflow graphs with the ADK workflow API; the `*Demo`
+samples show parent agents calling single-turn or task sub-agents as tools. Each
 sample sets its workflow as an app's root node and runs it with `Runner`. Most
 of them port an adk-python sample.
 
 | Sample | What it shows | Calls Gemini |
 | --- | --- | --- |
+| `AgentInWorkflow` | A task agent chats with a patient until it has their name and phone number. A node routes back to it when no records match, or an agent looks up their orders with a tool requiring user approval. | Yes |
 | `ClassifierNodeWorkflow` | A classifier node routes a support ticket to the team that handles it, and a second classifier node decides whether a technical ticket is urgent. | Yes |
 | `DynamicFanOutFanInWorkflow` | A node runs a headline agent on each of the user's topics concurrently with `runNode` and tabulates the headlines. | Yes |
 | `DynamicNodesWorkflow` | A node runs a headline agent and a grader agent with `runNode` in a loop until the grader accepts the headline. | Yes |
@@ -32,13 +33,14 @@ of them port an adk-python sample.
 | `SingleTurnSubAgentDemo` | A sales assistant calls a single-turn sub-agent as a tool; the sub-agent checks prices with its own tool and returns a structured recommendation. | Yes |
 | `StateWorkflow` | Nodes write session state through the context and through an event, then read it back. | No |
 | `SupportTriageWorkflow` | An agent classifies a support request, a routing map sends it to a specialist agent that uses a function tool, and a summarizer agent writes the reply. | Yes |
+| `TaskSubAgentDemo` | A coordinator delegates to two task sub-agents that chat with the user until they finish with the order and payment details. The coordinator then places the order with a tool. | Yes |
 | `UseAsOutputWorkflow` | A node runs a summarizer agent with `runNode` and `useAsOutput`, so the summary becomes the node's output for the next node. | Yes |
 
 ## Project Layout
 
 ```
 ├── *Workflow.java  // One sample per file: its graph, nodes, agents and main
-├── *Demo.java      // One sample per file: its parent agent, sub-agent and main
+├── *Demo.java      // One sample per file: its parent agent, sub-agents and main
 ├── pom.xml         // Maven configuration and default exec main class
 └── README.md       // This file
 ```
