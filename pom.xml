@@ -32,6 +32,7 @@
     <module>contrib/spring-ai</module>
     <module>contrib/planners</module>
     <module>contrib/firestore-session-service</module>
+    <module>contrib/database-session-service</module>
     <module>examples</module>
     <module>tutorials/city-time-weather</module>
     <module>tutorials/live-audio-single-agent</module>
@@ -62,6 +63,7 @@
     <mockito.version>5.23.0</mockito.version>
     <java-websocket.version>1.6.0</java-websocket.version>
     <jackson.version>2.20.2</jackson.version>
+    <flyway.version>12.4.0</flyway.version>
     <okhttp.version>5.3.2</okhttp.version>
     <docker-java.version>3.7.0</docker-java.version>
     <graphviz.version>0.18.1</graphviz.version>
@@ -94,6 +96,21 @@
 
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-core</artifactId>
+        <version>${flyway.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-database-postgresql</artifactId>
+        <version>${flyway.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-mysql</artifactId>
+        <version>${flyway.version}</version>
+      </dependency>
       <!-- BOMs for dependency management -->
       <dependency>
         <groupId>com.fasterxml.jackson</groupId>

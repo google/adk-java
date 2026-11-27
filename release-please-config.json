@@ -7,6 +7,7 @@
   "extra-files": [
     "core/src/main/java/com/google/adk/Version.java",
     "README.md",
-    "contrib/firestore-session-service/README.md"
+    "contrib/firestore-session-service/README.md",
+    "contrib/database-session-service/README.md"
   ]
 }
