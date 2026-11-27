@@ -253,7 +253,7 @@ public final class TaskContinuationTest {
   }
 
   @Test
-  public void delegatedTaskThatHandedOff_passesLaterMessagesToItsTarget() {
+  public void delegatedTaskThatHandedOff_doesNotTakeLaterMessages() {
     TestLlm otherModel =
         TestLlm.create(createTextLlmResponse("Other here."), createTextLlmResponse("Other again."));
     LlmAgent worker =
@@ -284,10 +284,10 @@ public final class TaskContinuationTest {
 
     session.advance(userText("Thanks"));
 
-    // The handoff target runs as a node and gives no output, so the delegation stays open and the
-    // reply goes to that target in the task's invocation.
-    assertThat(session.invocationIds()).hasSize(1);
-    assertThat(otherModel.getLastRequest().contents()).contains(userText("Thanks"));
+    // The target answered, so the delegation was answered and the reply starts a new turn.
+    assertThat(session.invocationIds()).hasSize(2);
+    assertThat(model.getLastRequest().contents()).contains(userText("Thanks"));
+    assertThat(otherModel.getRequests()).hasSize(1);
   }
 
   @Test

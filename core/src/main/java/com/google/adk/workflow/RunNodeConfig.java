@@ -58,8 +58,10 @@ public abstract class RunNodeConfig {
   public abstract Optional<String> overrideIsolationScope();
 
   /**
-   * Returns whether a {@link Workflow} or wait-for-output child that finishes without an output
-   * ends its caller's run, as an interrupt does, instead of completing the call empty.
+   * Returns whether a child that waits ends its caller's run, as an interrupt does, instead of
+   * completing the call empty. The child waits when it is a {@link Workflow} or wait-for-output
+   * node that finishes without an output or a handoff, or when an agent it hands off to stops on a
+   * child that waits.
    */
   public abstract boolean raiseOnWait();
 

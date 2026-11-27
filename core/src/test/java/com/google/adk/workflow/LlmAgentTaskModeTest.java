@@ -18,6 +18,7 @@ package com.google.adk.workflow;
 
 import static com.google.adk.testing.ResumabilityTestUtils.pendingFunctionTool;
 import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
+import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.WorkflowTestNodes.dispatcher;
@@ -39,11 +40,8 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmResponse;
-import com.google.adk.runner.Runner;
-import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.workflow.WorkflowResumeTesting.FailedTurn;
@@ -362,10 +360,8 @@ public final class LlmAgentTaskModeTest {
   public void taskAgentOutsideATaskNode_isNotOfferedFinishTaskAndKeepsItsOutputKey() {
     TestLlm model = TestLlm.create(createTextLlmResponse("Booked."));
     LlmAgent task = task(model).outputKey("result").build();
-    Runner runner = Runner.builder().app(App.builder().name("app").rootAgent(task).build()).build();
-    Session session = runner.sessionService().createSession("app", "user").blockingGet();
-
-    List<Event> events = runner.runAsync("user", session.id(), go()).toList().blockingGet();
+    // Run directly, so the agent runs outside any workflow node.
+    List<Event> events = task.runAsync(createInvocationContext(task)).toList().blockingGet();
 
     assertThat(model.getLastRequest().tools()).doesNotContainKey("finish_task");
     assertThat(stateValues(events, "result")).containsExactly("Booked.");

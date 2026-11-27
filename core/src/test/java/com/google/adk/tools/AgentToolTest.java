@@ -26,6 +26,7 @@ import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
@@ -73,6 +74,21 @@ public final class AgentToolTest {
   @Before
   public void setUp() {
     sessionService = new InMemorySessionService();
+  }
+
+  @Test
+  public void create_withATaskAgent_throws() {
+    LlmAgent task =
+        LlmAgent.builder()
+            .name("booker")
+            .model(createTestLlm(LlmResponse.builder().build()))
+            .mode(AgentMode.TASK)
+            .build();
+
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> AgentTool.create(task));
+
+    assertThat(e).hasMessageThat().contains("can't run the task agent 'booker'");
   }
 
   @Test

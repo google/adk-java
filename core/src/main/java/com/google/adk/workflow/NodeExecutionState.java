@@ -29,9 +29,11 @@ import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.sessions.State;
 import com.google.adk.sessions.StateSchemaException;
+import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.primitives.Ints;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Completable;
@@ -94,6 +96,8 @@ public final class NodeExecutionState {
   private @Nullable ImmutableList<Route> selectedRoutes;
   private boolean routesEmitted;
   private boolean replay;
+  // Set when the run ends because a child waits for input, such as a task that asked the user.
+  private volatile boolean waitsOnChild;
   private @Nullable Exception failure;
   private @Nullable String failureNodePath;
   private @Nullable ImmutableMap<String, ResumeScan.RecoveredNode> recoveredChildren;
@@ -111,7 +115,7 @@ public final class NodeExecutionState {
     this.outputParent = builder.useAsOutput ? parentState : null;
     this.nodePath =
         NodeRunner.appendSegment(
-            parentState == null ? null : parentState.nodePath,
+            parentState == null ? builder.basePath : parentState.nodePath,
             node.name(),
             runId,
             /* separator= */ '/');
@@ -146,13 +150,16 @@ public final class NodeExecutionState {
         turnRecords == null ? ConcurrentHashMap.newKeySet() : turnRecords.unfinishedNodePaths;
     this.failedNodePaths =
         turnRecords == null ? ConcurrentHashMap.newKeySet() : turnRecords.failedNodePaths;
+    // A retried workflow restarts the count, as it restarts its node numbering, so its hops replay.
     boolean restartsTopLevelRuns =
         parentState == null && previousAttempt != null && node instanceof Workflow;
-    // Seeded with the root's own run, so a top-level hop named like the root gets the next ID.
-    this.topLevelRunCounts =
-        turnRecords == null || restartsTopLevelRuns
-            ? new ConcurrentHashMap<>(ImmutableMap.of(node.name(), 1))
-            : turnRecords.topLevelRunCounts;
+    if (turnRecords != null && !restartsTopLevelRuns) {
+      this.topLevelRunCounts = turnRecords.topLevelRunCounts;
+    } else {
+      // A root takes the runs on its own path, so a top-level hop to one of them gets a new ID.
+      this.topLevelRunCounts = new ConcurrentHashMap<>();
+      takeRunsOnPath(topLevelRunCounts, nodePath);
+    }
     this.resumeInputs = Collections.unmodifiableMap(new LinkedHashMap<>(builder.resumeInputs));
     // A retried workflow restarts its node numbering, so its finished nodes replay.
     boolean continuesChildRuns = previousAttempt != null && !(node instanceof Workflow);
@@ -454,12 +461,48 @@ public final class NodeExecutionState {
     return String.valueOf(childRunCounts.merge(name, 1, Integer::sum));
   }
 
+  /** Records that this run ended because a child waits for input. */
+  void markWaitsOnChild() {
+    waitsOnChild = true;
+  }
+
+  /** Returns whether this run ended because a child waits for input. */
+  boolean waitsOnChild() {
+    return waitsOnChild;
+  }
+
+  /** Returns the run counts of the nodes that run at the top of the invocation. */
+  ConcurrentMap<String, Integer> topLevelRunCounts() {
+    return topLevelRunCounts;
+  }
+
   /**
-   * Returns the next run ID for a node named {@code name} that runs at the top of the invocation,
-   * beside this run's root.
+   * Returns the next run ID that {@code runCounts}, the run counts at the top of an invocation,
+   * gives a node named {@code name} under its ancestor agents' {@code parentPath}, which is null
+   * when it has none.
    */
-  String nextTopLevelRunId(String name) {
-    return String.valueOf(topLevelRunCounts.merge(name, 1, Integer::sum));
+  static String nextTopLevelRunId(
+      ConcurrentMap<String, Integer> runCounts, @Nullable String parentPath, String name) {
+    String key = parentPath == null ? name : parentPath + "/" + name;
+    return String.valueOf(runCounts.merge(key, 1, Integer::sum));
+  }
+
+  /** Records each run on {@code path}, such as {@code a@1/b@2}, as taken in {@code runCounts}. */
+  static void takeRunsOnPath(ConcurrentMap<String, Integer> runCounts, String path) {
+    String prefix = null;
+    for (String segment : Splitter.on('/').split(path)) {
+      int at = segment.lastIndexOf('@');
+      if (at < 0) {
+        return;
+      }
+      String name = segment.substring(0, at);
+      // A run ID that isn't a count, such as a caller's own, takes no count.
+      Integer run = Ints.tryParse(segment.substring(at + 1));
+      if (run != null) {
+        runCounts.merge(prefix == null ? name : prefix + "/" + name, run, Math::max);
+      }
+      prefix = prefix == null ? segment : prefix + "/" + segment;
+    }
   }
 
   /**
@@ -761,6 +804,7 @@ public final class NodeExecutionState {
     private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
     private @Nullable NodeExecutionState previousAttempt;
     private @Nullable NodeExecutionState topLevelPeer;
+    private @Nullable String basePath;
 
     private Builder() {}
 
@@ -834,6 +878,16 @@ public final class NodeExecutionState {
     @CanIgnoreReturnValue
     Builder topLevelPeer(@Nullable NodeExecutionState topLevelPeer) {
       this.topLevelPeer = topLevelPeer;
+      return this;
+    }
+
+    /**
+     * Sets the node path that a run without a parent extends, such as the path of the ancestor
+     * agents of an agent that runs at the top of the invocation, or null to start a new path.
+     */
+    @CanIgnoreReturnValue
+    Builder basePath(@Nullable String basePath) {
+      this.basePath = basePath;
       return this;
     }
 

@@ -21,6 +21,7 @@ import static java.util.stream.Collectors.joining;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Context;
+import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.common.base.Strings;
 import com.google.errorprone.annotations.FormatMethod;
@@ -80,13 +81,14 @@ record TransferTarget(BaseAgent agent, @Nullable Context parent) {
   /**
    * Returns whether {@code node} is an agent whose transfers the workflow follows by running each
    * target as a node: one in an agent tree with modes, other than a single-turn agent, which runs
-   * its target itself as in Python ADK. Outside such a tree an agent runs its target itself too, so
-   * existing apps keep their behavior, unlike Python ADK, which treats such agents as chat agents.
+   * its target itself as in Python ADK. A tree whose root is the app's root node in {@code context}
+   * counts too. Outside such a tree an agent runs its target itself, so existing apps keep their
+   * behavior, unlike Python ADK, which treats such agents as chat agents.
    */
-  static boolean handsOff(Node node) {
+  static boolean handsOff(Node node, @Nullable InvocationContext context) {
     return node instanceof BaseAgent agent
         && !runsTargetInline(agent)
-        && setsMode(agent.rootAgent());
+        && LlmAgent.runsTreeAsNodes(agent, context);
   }
 
   /**
@@ -97,11 +99,6 @@ record TransferTarget(BaseAgent agent, @Nullable Context parent) {
         && llmAgent.mode().filter(SINGLE_TURN::equals).isPresent();
   }
 
-  private static boolean setsMode(BaseAgent agent) {
-    return (agent instanceof LlmAgent llmAgent && llmAgent.mode().isPresent())
-        || agent.subAgents().stream().anyMatch(TransferTarget::setsMode);
-  }
-
   /** Returns where {@code run}, a run of {@code node}, hands off to, or empty if it does not. */
   private static Optional<TransferTarget> handoffOf(Node node, Context run) {
     NodeExecutionState state = run.requireNodeState();
@@ -109,7 +106,7 @@ record TransferTarget(BaseAgent agent, @Nullable Context parent) {
     if (targetName.isEmpty()
         || state.failure().isPresent()
         || !state.interruptIds().isEmpty()
-        || !handsOff(node)) {
+        || !handsOff(node, run.invocationContext())) {
       return Optional.empty();
     }
     return Optional.of(resolve(targetName.get(), (BaseAgent) node, run));
