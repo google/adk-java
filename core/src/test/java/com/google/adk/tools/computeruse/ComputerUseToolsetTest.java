@@ -16,18 +16,32 @@
 
 package com.google.adk.tools.computeruse;
 
+import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
+import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.createTextLlmResponse;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.testing.TestLlm;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Content;
 import com.google.genai.types.Environment;
+import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.FunctionResponseBlob;
 import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.Part;
 import com.google.genai.types.Tool;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
@@ -42,6 +56,8 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link ComputerUseToolset}. */
 @RunWith(JUnit4.class)
 public final class ComputerUseToolsetTest {
+
+  private static final byte[] SCREENSHOT = {(byte) 0x89, 'P', 'N', 'G'};
 
   private LlmAgent agent;
   private InMemorySessionService sessionService;
@@ -73,12 +89,23 @@ public final class ComputerUseToolsetTest {
     List<BaseTool> tools = toolset.getTools(null).toList().blockingGet();
 
     assertThat(mockComputer.initializeCallCount).isEqualTo(1);
-    assertThat(tools).isNotEmpty();
 
     // Verify method filtering
-    assertThat(tools.stream().anyMatch(t -> t.name().equals("clickAt"))).isTrue();
-    assertThat(tools.stream().noneMatch(t -> t.name().equals("screenSize"))).isTrue();
-    assertThat(tools.stream().noneMatch(t -> t.name().equals("environment"))).isTrue();
+    assertThat(tools.stream().map(BaseTool::name))
+        .containsExactly(
+            "open_web_browser",
+            "click_at",
+            "hover_at",
+            "type_text_at",
+            "scroll_document",
+            "scroll_at",
+            "wait_5_seconds",
+            "go_back",
+            "go_forward",
+            "search",
+            "navigate",
+            "key_combination",
+            "drag_and_drop");
   }
 
   @Test
@@ -121,14 +148,119 @@ public final class ComputerUseToolsetTest {
     assertThat(computerUseTool.get().computerUse().get().environment().get().knownEnum())
         .isEqualTo(Environment.Known.ENVIRONMENT_BROWSER);
 
-    // Verify computer actions were added as function declarations
-    Optional<Tool> functionTool =
-        tools.stream().filter(t -> t.functionDeclarations().isPresent()).findFirst();
-    assertThat(functionTool).isPresent();
-    assertThat(
-            functionTool.get().functionDeclarations().get().stream()
-                .anyMatch(fd -> fd.name().orElse("").equals("clickAt")))
-        .isTrue();
+    // The model gets its predefined actions from computerUse, not from function declarations.
+    assertThat(tools.stream().noneMatch(t -> t.functionDeclarations().isPresent())).isTrue();
+    assertThat(request.tools()).containsKey("click_at");
+  }
+
+  @Test
+  public void runAsync_firstTurn_sendsComputerUseWithoutDuplicateTools() {
+    TestLlm testLlm = createTestLlm(createTextLlmResponse("done"));
+    LlmAgent agent = LlmAgent.builder().name("agent").model(testLlm).tools(toolset).build();
+
+    List<Event> events = runAgent(agent);
+
+    assertThat(events).isNotEmpty();
+    LlmRequest request = testLlm.getLastRequest();
+    List<Tool> tools = request.config().get().tools().get();
+    assertThat(tools).hasSize(1);
+    assertThat(tools.get(0).computerUse()).isPresent();
+    assertThat(request.tools().keySet()).containsAtLeast("click_at", "navigate", "search");
+  }
+
+  @Test
+  public void runAsync_modelCallsAction_runsComputerAndReturnsScreenshotAsImage() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "call-1", "click_at", ImmutableMap.of("x", 500, "y", 500)),
+            createTextLlmResponse("done"));
+    LlmAgent agent = LlmAgent.builder().name("agent").model(testLlm).tools(toolset).build();
+
+    List<Event> unused = runAgent(agent);
+
+    assertThat(mockComputer.lastClick).isEqualTo(new int[] {960, 540});
+    FunctionResponse response = lastFunctionResponse(testLlm);
+    assertThat(response.name()).hasValue("click_at");
+    assertThat(response.response().get()).doesNotContainKey("image");
+    assertThat(response.response().get()).containsEntry("url", "https://example.com");
+    FunctionResponseBlob image = response.parts().get().get(0).inlineData().get();
+    assertThat(image.mimeType()).hasValue("image/png");
+    assertThat(image.data().get()).isEqualTo(SCREENSHOT);
+  }
+
+  @Test
+  public void runAsync_modelCallsWait5Seconds_waitsFiveSeconds() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse("call-1", "wait_5_seconds", ImmutableMap.of()),
+            createTextLlmResponse("done"));
+    LlmAgent agent = LlmAgent.builder().name("agent").model(testLlm).tools(toolset).build();
+
+    List<Event> unused = runAgent(agent);
+
+    assertThat(mockComputer.lastWait).isEqualTo(Duration.ofSeconds(5));
+  }
+
+  @Test
+  public void runAsync_imageWithInvalidBase64_keepsImageInResponse() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse("call-1", "click_at", ImmutableMap.of("x", 1, "y", 1)),
+            createTextLlmResponse("done"));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(testLlm)
+            .tools(toolset)
+            .afterToolCallbackSync((invocationContext, tool, input, toolContext, response) ->
+                Optional.of(
+                    ImmutableMap.of(
+                        "image", ImmutableMap.of("mimetype", "image/png", "data", "%%%"))))
+            .build();
+
+    List<Event> unused = runAgent(agent);
+
+    FunctionResponse response = lastFunctionResponse(testLlm);
+    assertThat(response.response().get()).containsKey("image");
+    assertThat(response.parts()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_otherToolReturnsImage_keepsImageInResponse() {
+    ImmutableMap<String, Object> image =
+        ImmutableMap.of("mimetype", "image/png", "data", "iVBORw0K");
+    FunctionTool imageTool = FunctionTool.create(ImageTool.class, "screenshot");
+    ImageTool.result = ImmutableMap.of("image", image);
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse("call-1", "screenshot", ImmutableMap.of()),
+            createTextLlmResponse("done"));
+    LlmAgent agent = LlmAgent.builder().name("agent").model(testLlm).tools(imageTool).build();
+
+    List<Event> unused = runAgent(agent);
+
+    FunctionResponse response = lastFunctionResponse(testLlm);
+    assertThat(response.response().get()).containsEntry("image", image);
+    assertThat(response.parts()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_standaloneComputerUseTool_isDeclaredAsFunction() throws Exception {
+    ComputerUseTool tool =
+        new ComputerUseTool(
+            mockComputer,
+            BaseComputer.class.getMethod("navigate", String.class),
+            new int[] {1920, 1080},
+            new int[] {1000, 1000});
+    TestLlm testLlm = createTestLlm(createTextLlmResponse("done"));
+    LlmAgent agent = LlmAgent.builder().name("agent").model(testLlm).tools(tool).build();
+
+    List<Event> unused = runAgent(agent);
+
+    LlmRequest request = testLlm.getLastRequest();
+    assertThat(request.tools()).containsKey("navigate");
+    assertThat(request.config().get().tools().get().get(0).functionDeclarations().get()).hasSize(1);
   }
 
   @Test
@@ -142,8 +274,35 @@ public final class ComputerUseToolsetTest {
         () -> toolset.processLlmRequest(builder, toolContext).blockingAwait());
   }
 
+  private static List<Event> runAgent(LlmAgent agent) {
+    InMemoryRunner runner = new InMemoryRunner(agent);
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+    return runner
+        .runAsync(session.userId(), session.id(), Content.fromParts(Part.fromText("click")))
+        .toList()
+        .blockingGet();
+  }
+
+  private static FunctionResponse lastFunctionResponse(TestLlm testLlm) {
+    return testLlm.getLastRequest().contents().stream()
+        .flatMap(c -> c.parts().orElse(ImmutableList.of()).stream())
+        .flatMap(p -> p.functionResponse().stream())
+        .collect(onlyElement());
+  }
+
+  /** A function tool whose result carries an image map, like a computer use tool. */
+  public static final class ImageTool {
+    static ImmutableMap<String, Object> result;
+
+    public static ImmutableMap<String, Object> screenshot() {
+      return result;
+    }
+  }
+
   private static class MockComputer implements BaseComputer {
     int initializeCallCount = 0;
+    int[] lastClick;
+    Duration lastWait;
     Throwable nextError = null;
 
     @Override
@@ -178,7 +337,8 @@ public final class ComputerUseToolsetTest {
 
     @Override
     public Single<ComputerState> clickAt(int x, int y) {
-      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
+      lastClick = new int[] {x, y};
+      return Single.just(ComputerState.create(SCREENSHOT, "https://example.com"));
     }
 
     @Override
@@ -204,6 +364,7 @@ public final class ComputerUseToolsetTest {
 
     @Override
     public Single<ComputerState> wait(Duration duration) {
+      lastWait = duration;
       return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 

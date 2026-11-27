@@ -39,6 +39,7 @@ import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
+import com.google.adk.tools.computeruse.ComputerUseTool;
 import com.google.adk.workflow.NodeRunner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -47,6 +48,7 @@ import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.FunctionResponsePart;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.context.Context;
@@ -59,6 +61,7 @@ import io.reactivex.rxjava3.disposables.SerialDisposable;
 import io.reactivex.rxjava3.functions.Function;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -860,15 +863,17 @@ public final class Functions {
     // use an empty placeholder response if tool response is null.
     Map<String, Object> finalResponse = response != null ? response : new HashMap<>();
 
+    FunctionResponse.Builder functionResponse =
+        FunctionResponse.builder().id(toolContext.functionCallId().orElse("")).name(tool.name());
+    Optional<FunctionResponsePart> screenshot = decodeComputerUseImage(tool, finalResponse);
+    if (screenshot.isPresent()) {
+      Map<String, Object> withoutImage = new HashMap<>(finalResponse);
+      withoutImage.remove("image");
+      finalResponse = withoutImage;
+      functionResponse.parts(ImmutableList.of(screenshot.get()));
+    }
     Part partFunctionResponse =
-        Part.builder()
-            .functionResponse(
-                FunctionResponse.builder()
-                    .id(toolContext.functionCallId().orElse(""))
-                    .name(tool.name())
-                    .response(finalResponse)
-                    .build())
-            .build();
+        Part.builder().functionResponse(functionResponse.response(finalResponse).build()).build();
 
     return Event.builder()
         .id(invocationContext.newUuid())
@@ -879,6 +884,24 @@ public final class Functions {
         .content(Content.builder().role(Role.USER).parts(partFunctionResponse).build())
         .actions(toolContext.eventActions())
         .build();
+  }
+
+  /** Decodes a computer use screenshot so the model receives it as an image, not as text. */
+  private static Optional<FunctionResponsePart> decodeComputerUseImage(
+      BaseTool tool, Map<String, Object> response) {
+    if (!(tool instanceof ComputerUseTool)
+        || !(response.get("image") instanceof Map<?, ?> image)
+        || !(image.get("data") instanceof String data)
+        || !(image.get("mimetype") instanceof String mimeType)) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(
+          FunctionResponsePart.fromBytes(Base64.getDecoder().decode(data), mimeType));
+    } catch (IllegalArgumentException e) {
+      logger.warn("Failed to decode image from computer use tool {}", tool.name());
+      return Optional.empty();
+    }
   }
 
   /**
