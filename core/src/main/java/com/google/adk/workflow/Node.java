@@ -89,13 +89,14 @@ public interface Node {
 
   /**
    * Returns the schema of the state keys that the node and its children may write; a child inherits
-   * it unless it declares its own. The runtime converts writes through {@link Context#state()} in a
-   * node or in a tool node's tool, emitted events' state deltas and tool nodes' deltas to the
-   * declared type, throwing {@link StateSchemaException} on a mismatch or undeclared key; a {@link
-   * com.google.adk.tools.FunctionTool} lets it through, so it fails the node. Keys with a colon and
-   * a node's direct writes to its own {@link Context#eventActions()}'s state delta pass unchecked.
-   * A stored value reads back in the form a stored session gives: lists and maps unmodifiable, a
-   * record as a map, an enum by its name, a small whole number as an {@code Integer}.
+   * it unless it declares its own. The runtime converts emitted events' state deltas and tool
+   * nodes' deltas to the declared type, throwing {@link StateSchemaException} on a mismatch or
+   * undeclared key. Keys with a colon and a non-tool node's direct writes to {@link
+   * Context#state()} or {@link Context#eventActions()}'s state delta pass unchecked; a rejected
+   * tool write fails the node with none of the tool's state on an event, while the write stays in
+   * the live session. A stored value reads back in the form a stored session gives: lists and maps
+   * unmodifiable, a record as a map, an enum by its name, a small whole number as an {@code
+   * Integer}.
    */
   @Experimental
   default Optional<Schema> stateSchema() {
