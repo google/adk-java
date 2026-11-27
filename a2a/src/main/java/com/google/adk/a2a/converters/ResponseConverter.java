@@ -44,6 +44,7 @@ import io.a2a.spec.Task;
 import io.a2a.spec.TaskArtifactUpdateEvent;
 import io.a2a.spec.TaskState;
 import io.a2a.spec.TaskStatusUpdateEvent;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -70,6 +71,15 @@ public final class ResponseConverter {
           AdkMetadataKey.CONTEXT_ID.getType(),
           EventConverter.LEGACY_TASK_ID_KEY,
           EventConverter.LEGACY_CONTEXT_ID_KEY);
+  // Keys of event fields whose value is an object. Citation is counted, as in ADK Python, but not
+  // read into the event.
+  private static final ImmutableList<String> OBJECT_FIELD_KEYS =
+      ImmutableList.of(
+          A2AMetadataKey.GROUNDING_METADATA.getType(),
+          A2AMetadataKey.USAGE_METADATA.getType(),
+          A2AMetadataKey.CUSTOM_METADATA.getType(),
+          "adk_citation_metadata");
+
   private static final ImmutableSet<TaskState> PENDING_STATES =
       ImmutableSet.of(TaskState.WORKING, TaskState.SUBMITTED);
 
@@ -141,7 +151,7 @@ public final class ResponseConverter {
       return Optional.of(
           updateEventMetadata(
               eventPart,
-              artifactEvent.getMetadata(),
+              mergeMetadata(artifactEvent.getArtifact().metadata(), artifactEvent.getMetadata()),
               artifactEvent.getTaskId(),
               artifactEvent.getContextId()));
     }
@@ -150,15 +160,15 @@ public final class ResponseConverter {
       var status = statusEvent.getStatus();
       var taskState = event.getTask().getStatus().state();
 
+      Message statusMessage = status.message();
       Optional<Event> messageEvent =
-          Optional.ofNullable(status.message())
-              .map(
-                  value -> {
-                    if (taskState == TaskState.FAILED) {
-                      return messageToFailedEvent(value, context);
-                    }
-                    return messageToEvent(value, context, PENDING_STATES.contains(taskState));
-                  })
+          Optional.ofNullable(statusMessage)
+              .map(value -> {
+                if (taskState == TaskState.FAILED) {
+                  return messageToFailedEvent(value, context);
+                }
+                return messageToEvent(value, context, PENDING_STATES.contains(taskState));
+              })
               .filter(converted -> taskState == TaskState.FAILED || hasParts(converted));
 
       if (statusEvent.isFinal()
@@ -172,13 +182,13 @@ public final class ResponseConverter {
                 .map(builder -> builder.partial(false))
                 .map(Event.Builder::build);
       }
-      return messageEvent.map(
-          finalMessageEvent ->
-              updateEventMetadata(
-                  finalMessageEvent,
-                  statusEvent.getMetadata(),
-                  statusEvent.getTaskId(),
-                  statusEvent.getContextId()));
+      Map<String, Object> metadata =
+          mergeMetadata(
+              statusMessage == null ? null : statusMessage.getMetadata(),
+              statusEvent.getMetadata());
+      return messageEvent.map(finalMessageEvent ->
+          updateEventMetadata(
+              finalMessageEvent, metadata, statusEvent.getTaskId(), statusEvent.getContextId()));
     }
     throw new IllegalArgumentException(
         "Unsupported TaskUpdateEvent type: " + updateEvent.getClass());
@@ -231,9 +241,10 @@ public final class ResponseConverter {
   }
 
   /**
-   * Converts an A2A {@link Task} to an ADK {@link Event}. If the artifacts are present, the last
-   * artifact is used. If not, the status message is used. If not, the last history message is used.
-   * If none of these are present, an empty event is returned.
+   * Converts an A2A {@link Task} to an ADK {@link Event} with the parts of its artifacts and status
+   * message. Its metadata comes from the first artifact, then the status message, that has an event
+   * field, with keys missing there taken from the task's own metadata. A pending task with no parts
+   * gives an empty event.
    */
   public static Event taskToEvent(Task task, InvocationContext invocationContext) {
     ImmutableList.Builder<Part> genaiParts = ImmutableList.builder();
@@ -278,7 +289,57 @@ public final class ResponseConverter {
     }
     eventBuilder.turnComplete(isFinal);
     return updateEventMetadata(
-        eventBuilder.build(), task.getMetadata(), task.getId(), task.getContextId());
+        eventBuilder.build(),
+        mergeMetadata(innerMetadata(task), task.getMetadata()),
+        task.getId(),
+        task.getContextId());
+  }
+
+  /**
+   * Returns the metadata of the first of {@code task}'s artifacts, then its status message, that
+   * has an event field, or an empty map if none does.
+   */
+  private static Map<String, Object> innerMetadata(Task task) {
+    for (Artifact artifact : task.getArtifacts()) {
+      if (hasEventFields(artifact.metadata())) {
+        return artifact.metadata();
+      }
+    }
+    Message statusMessage = task.getStatus().message();
+    if (statusMessage != null && hasEventFields(statusMessage.getMetadata())) {
+      return statusMessage.getMetadata();
+    }
+    return ImmutableMap.of();
+  }
+
+  /**
+   * Returns whether {@code metadata} has an event field: a grounding, usage, custom or citation
+   * metadata object, or an error code that is not JSON null. A JSON string is read first. Unlike
+   * ADK Python, an object counts without being validated.
+   */
+  private static boolean hasEventFields(@Nullable Map<String, Object> metadata) {
+    if (metadata == null) {
+      return false;
+    }
+    for (String key : OBJECT_FIELD_KEYS) {
+      if (readMetadataValue(metadata.get(key)) instanceof Map) {
+        return true;
+      }
+    }
+    return readMetadataValue(metadata.get(A2AMetadataKey.ERROR_CODE.getType())) != null;
+  }
+
+  /** Returns {@code value}, with a JSON string read into its value first. */
+  private static @Nullable Object readMetadataValue(@Nullable Object value) {
+    if (!(value instanceof String text)) {
+      return value;
+    }
+    try {
+      return objectMapper.readValue(text, Object.class);
+    } catch (JsonProcessingException e) {
+      // Text that is not JSON is the value itself.
+      return text;
+    }
   }
 
   /** GenAI parts converted from A2A parts, and the ids of the long-running calls among them. */
@@ -311,6 +372,24 @@ public final class ResponseConverter {
       }
     }
     return new ConvertedParts(parts.build(), longRunningToolIds.build());
+  }
+
+  /**
+   * Returns a copy of {@code inner}, the metadata of an artifact or status message, with missing or
+   * null keys taken from {@code outer}, the task's or update's own metadata. {@code outer} is a
+   * fallback for peers that write it there.
+   */
+  private static Map<String, Object> mergeMetadata(
+      @Nullable Map<String, Object> inner, @Nullable Map<String, Object> outer) {
+    Map<String, Object> merged = outer == null ? new HashMap<>() : new HashMap<>(outer);
+    if (inner != null) {
+      inner.forEach((key, value) -> {
+        if (value != null) {
+          merged.put(key, value);
+        }
+      });
+    }
+    return merged;
   }
 
   /**
@@ -351,8 +430,13 @@ public final class ResponseConverter {
               .stringValue(contextId)
               .build());
     }
+    // ADK Python sends custom metadata as a map, which this list cannot hold; it is skipped
+    // quietly.
     List<CustomMetadata> parsedCustomMetadata =
-        parseMetadata(clientMetadata, A2AMetadataKey.CUSTOM_METADATA, CUSTOM_METADATA_LIST_TYPE);
+        clientMetadata.get(A2AMetadataKey.CUSTOM_METADATA.getType()) instanceof Map
+            ? null
+            : parseMetadata(
+                clientMetadata, A2AMetadataKey.CUSTOM_METADATA, CUSTOM_METADATA_LIST_TYPE);
     if (parsedCustomMetadata != null) {
       for (CustomMetadata m : parsedCustomMetadata) {
         // A peer can send a null entry, which is dropped like other malformed metadata.
