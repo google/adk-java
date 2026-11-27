@@ -1108,30 +1108,163 @@ public final class WorkflowResumeTest {
 
   @Test
   public void resume_childWorkflowEndingInAMessageNode_outputsTheMessage() {
-    // The workflow's schema is not checked at run time, so its output is the message itself.
+    Node terminal = new MessageOutputNode("chat", "{\"age\": 3}", /* schema= */ null);
+
+    Object output =
+        resumedChildWorkflowOutput(/* schema= */ null, terminal, /* twoPauses= */ false);
+
+    assertThat(output)
+        .isEqualTo(
+            ImmutableMap.of("inner", modelText("{\"age\": 3}"), "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_childWorkflowWithOutputSchemaEndingInAMessageNode_outputsCheckedValue() {
+    Node terminal = new MessageOutputNode("chat", "{\"age\": \"3\"}", /* schema= */ null);
+
+    Object output = resumedChildWorkflowOutput(AGE_SCHEMA, terminal, /* twoPauses= */ false);
+
+    assertThat(output)
+        .isEqualTo(
+            ImmutableMap.of("inner", ImmutableMap.of("age", 3), "ask", ImmutableMap.of("v", 1)));
+  }
+
+  @Test
+  public void resume_childWorkflowWithOutputSchemaEndingInDelegatedAgent_outputsTheLiveValue() {
+    // Arrange: the agent replies " hi \n", which it outputs as "hi".
+    Schema text = Schema.builder().type(Type.Known.STRING).build();
+    Workflow inner = workflowOver(text, delegatingTo(agentReplying(" hi \n")));
+    Workflow live = workflow(new Edge(START, inner), new Edge(inner, captureInput("reply")));
+
+    ImmutableList<Event> liveEvents = new WorkflowSession(live, /* resumable= */ false).turn(go());
+    Object resumed =
+        resumedChildWorkflowOutput(
+            text, delegatingTo(agentReplying(" hi \n")), /* twoPauses= */ true);
+
+    assertThat(replyInput(liveEvents)).isEqualTo("hi");
+    assertThat(resumed).isEqualTo(ImmutableMap.of("inner", "hi", "ask2", ImmutableMap.of("v", 2)));
+  }
+
+  @Test
+  public void resume_agentTerminalOfAWorkflowWithAnObjectSchema_failsAsTheLiveRunDoes() {
+    // Arrange: the agent's output is its text, which an object schema rejects.
+    String reply = "{\"age\": \"3\"}";
+    WorkflowSession resumed =
+        new WorkflowSession(agentTerminalRoot(reply, AGE_SCHEMA, longRunningAsk("ask", "ask_1")));
+    resumed.advance(go());
+
+    FailedTurn live =
+        new WorkflowSession(
+                agentTerminalRoot(reply, AGE_SCHEMA, emitter("ask", "x")), /* resumable= */ false)
+            .failingTurn(go());
+    FailedTurn afterResume = resumed.failingTurn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    assertThat(live.error()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(afterResume.error()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(afterResume.error()).hasMessageThat().isEqualTo(live.error().getMessage());
+  }
+
+  @Test
+  public void resume_agentTerminalOfAWorkflowWithAnEnumSchema_outputsTheLiveValue() {
+    Schema color = Schema.builder().type(Type.Known.STRING).enum_("red").build();
+
+    ImmutableList<Object> outputs = liveAndResumedReplyInputs("red\n", color);
+
+    assertThat(outputs).containsExactly("red", "red");
+  }
+
+  @Test
+  public void resume_agentTerminalOfAWorkflowWithAStringSchema_outputsTheLiveValue() {
+    Schema text = Schema.builder().type(Type.Known.STRING).build();
+
+    ImmutableList<Object> outputs = liveAndResumedReplyInputs(" hi \n", text);
+
+    assertThat(outputs).containsExactly("hi", "hi");
+  }
+
+  private static LlmAgent agentReplying(String reply) {
+    return LlmAgent.builder()
+        .name("agent")
+        .mode(AgentMode.SINGLE_TURN)
+        .model(TestLlm.create(TestUtils.createTextLlmResponse(reply)))
+        .build();
+  }
+
+  /** Returns a node named d2 that delegates its output to {@code child}. */
+  private static Node delegatingTo(Node child) {
+    return dispatcher(
+        "d2", (ctx, input) -> ctx.runNode(child, null, USE_AS_OUTPUT).ignoreElement().toFlowable());
+  }
+
+  private static Workflow workflowOver(Schema schema, Node terminal) {
+    return Workflow.builder()
+        .name("inner")
+        .outputSchema(schema)
+        .edges(new Edge(START, terminal))
+        .build();
+  }
+
+  /**
+   * Returns a workflow that runs inner, then reply. Inner, under {@code schema}, runs an agent
+   * replying {@code reply} beside {@code sibling}, whose successor outputs nothing, so the agent's
+   * output is inner's only terminal output.
+   */
+  private static Workflow agentTerminalRoot(String reply, Schema schema, Node sibling) {
+    Node sink = new TestNode("sink", (ctx, input) -> Flowable.empty());
     Workflow inner =
         Workflow.builder()
             .name("inner")
-            .outputSchema(AGE_SCHEMA)
+            .outputSchema(schema)
             .edges(
-                new Edge(START, new MessageOutputNode("chat", "{\"age\": 3}", /* schema= */ null)))
+                new Edge(START, agentReplying(reply)),
+                new Edge(START, sibling),
+                new Edge(sibling, sink))
             .build();
-    Node ask = longRunningAsk("ask", "ask_1");
-    JoinNode join = JoinNode.builder().name("j").build();
+    return workflow(new Edge(START, inner), new Edge(inner, captureInput("reply")));
+  }
+
+  /**
+   * Returns what reply received from {@link #agentTerminalRoot} live and after a resume, which
+   * checks the agent's replayed output.
+   */
+  private static ImmutableList<Object> liveAndResumedReplyInputs(String reply, Schema schema) {
     WorkflowSession session =
-        new WorkflowSession(
-            workflow(
-                new Edge(START, inner),
-                new Edge(START, ask),
-                new Edge(inner, join),
-                new Edge(ask, join)));
+        new WorkflowSession(agentTerminalRoot(reply, schema, longRunningAsk("ask", "ask_1")));
     session.advance(go());
+    ImmutableList<Event> live =
+        new WorkflowSession(
+                agentTerminalRoot(reply, schema, emitter("ask", "x")), /* resumable= */ false)
+            .turn(go());
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+    return ImmutableList.of(replyInput(live), replyInput(resumed));
+  }
 
-    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
-
-    assertThat(outputEventAt(events, "wf@1/j@1").output())
-        .hasValue(
-            ImmutableMap.of("inner", modelText("{\"age\": 3}"), "ask", ImmutableMap.of("v", 1)));
+  private static Object resumedChildWorkflowOutput(
+      @Nullable Schema schema, Node terminal, boolean twoPauses) {
+    Workflow.Builder inner = Workflow.builder().name("inner").edges(new Edge(START, terminal));
+    if (schema != null) {
+      inner.outputSchema(schema);
+    }
+    Workflow child = inner.build();
+    Node ask = longRunningAsk("ask", "ask_1");
+    Node lastAsk = twoPauses ? longRunningAsk("ask2", "ask_2") : ask;
+    JoinNode join = JoinNode.builder().name("j").build();
+    ImmutableList.Builder<Edge> edges =
+        ImmutableList.<Edge>builder()
+            .add(new Edge(START, child), new Edge(START, ask), new Edge(child, join));
+    if (twoPauses) {
+      edges.add(new Edge(ask, lastAsk));
+    }
+    edges.add(new Edge(lastAsk, join));
+    WorkflowSession session = new WorkflowSession(workflow(edges.build().toArray(Edge[]::new)));
+    session.advance(go());
+    if (twoPauses) {
+      session.advance(answer("ask_1", ImmutableMap.of("v", 1)));
+    }
+    String finalId = twoPauses ? "ask_2" : "ask_1";
+    int finalValue = twoPauses ? 2 : 1;
+    ImmutableList<Event> events = session.turn(answer(finalId, ImmutableMap.of("v", finalValue)));
+    return outputEventAt(events, "wf@1/j@1").output().orElseThrow();
   }
 
   @Test

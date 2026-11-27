@@ -34,6 +34,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
+import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
@@ -493,7 +494,12 @@ final class Scheduler {
 
   /**
    * Surfaces the interrupts of the nodes still waiting on the workflow, or, when there are none,
-   * records the output of the sole terminal node that produced one as the workflow's output.
+   * makes the sole terminal output the workflow's output, checked against the workflow's output
+   * schema if it has one. With a schema, the terminal node's output counts only for the workflow,
+   * so when a node takes the workflow's output through {@code useAsOutput}, an output event carries
+   * the checked value to it before the end-of-agent event. A null or rejected value never reaches
+   * that node. If the output does not match the schema, the returned {@code Completable} fails with
+   * {@link IllegalArgumentException}.
    */
   private Completable finalizeRun() {
     // A child run from the workflow's own context records its interrupts on the workflow.
@@ -513,21 +519,63 @@ final class Scheduler {
                       + " have at most one terminal output.",
                   workflow.name(), terminalOutputs.size())));
     }
+    Completable outputSent = Completable.complete();
     if (terminalOutputs.size() == 1) {
       String terminalNode = terminalOutputs.get(0);
-      workflowState.produceOutput(nodeOutputs.get(terminalNode));
-      // Unmarked so NodeRunner sends an output that no node event carried for the delegating node.
-      if (!outputsNotCarried.contains(terminalNode) || !workflowState.isDelegatedToANode()) {
-        workflowState.markOutputEmitted();
+      Object output = nodeOutputs.get(terminalNode);
+      Optional<Schema> schema = workflow.outputSchema();
+      if (schema.isEmpty()) {
+        workflowState.produceOutput(output);
+        // Unmarked so NodeRunner sends an output no node event carried for the delegating node.
+        if (!outputsNotCarried.contains(terminalNode) || !workflowState.isDelegatedToANode()) {
+          workflowState.markOutputEmitted();
+        }
+      } else {
+        String what = "output of workflow '" + workflow.name() + "'";
+        Object checked;
+        try {
+          // Checked as node outputs are, so a live and a resumed run hand on the same value.
+          checked = SchemaValues.check(output, schema.get(), what);
+        } catch (IllegalArgumentException e) {
+          return Completable.error(e);
+        }
+        // A schema can read a message as JSON null, which is no output.
+        if (checked != null) {
+          workflowState.produceOutput(checked);
+          // A node that delegated to this workflow gets, and replays, the output from this event.
+          if (workflowState.isDelegatedToANode()) {
+            outputSent =
+                Completable.defer(() -> send(checkedOutputEvent(checked)))
+                    .doOnComplete(workflowState::markOutputEmitted);
+          } else {
+            workflowState.markOutputEmitted();
+          }
+        }
       }
     }
     // On a resumable invocation, a clean finish is marked so a later turn can see it.
     if (!context.invocationContext().isResumable()) {
-      return Completable.complete();
+      return outputSent;
     }
-    return send(
-        workflowEvent(context.invocationContext().branch().orElse(null))
-            .actions(EventActions.builder().endOfAgent(true).build()));
+    return outputSent.andThen(
+        Completable.defer(() ->
+            send(
+                workflowEvent(context.invocationContext().branch().orElse(null))
+                    .actions(EventActions.builder().endOfAgent(true).build()))));
+  }
+
+  /**
+   * Returns a builder of the event carrying the workflow's checked output for the workflow and for
+   * each node in its {@code outputFor}.
+   */
+  private Event.Builder checkedOutputEvent(Object checked) {
+    return workflowEvent(context.invocationContext().branch().orElse(null))
+        .output(checked)
+        .nodeInfo(
+            NodeInfo.builder()
+                .path(workflowState.nodePath())
+                .outputFor(workflowState.outputFor())
+                .build());
   }
 
   /** Returns the longest segment prefix that the dot-separated {@code branches} share, if any. */

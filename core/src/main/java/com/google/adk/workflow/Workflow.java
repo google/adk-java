@@ -87,7 +87,9 @@ public final class Workflow extends BaseNode {
    * Flowable} fails with {@link WorkflowConfigurationException} if more than one terminal node
    * produces an output, or with {@link GraphValidationException}, before any node runs, if a chat
    * agent follows a node other than {@link Start}, the workflow runs inside another one, or an
-   * agent that a graph agent node hands off to has a name that cannot be a node name.
+   * agent that a graph agent node hands off to has a name that cannot be a node name. If the
+   * workflow has an output schema, the terminal output is checked against it, and a mismatch fails
+   * the {@code Flowable} with {@link IllegalArgumentException}.
    */
   @Override
   public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {

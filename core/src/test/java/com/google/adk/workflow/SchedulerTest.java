@@ -16,11 +16,21 @@
 
 package com.google.adk.workflow;
 
+import static com.google.adk.testing.WorkflowTestNodes.dispatcher;
+import static com.google.adk.workflow.WorkflowResumeTesting.answer;
+import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
+import static com.google.adk.workflow.WorkflowResumeTesting.go;
+import static com.google.adk.workflow.WorkflowResumeTesting.instantRetry;
+import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
+import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
+import static com.google.adk.workflow.WorkflowResumeTesting.pathOf;
+import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
@@ -34,22 +44,31 @@ import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
+import com.google.adk.workflow.WorkflowResumeTesting.FailedTurn;
+import com.google.adk.workflow.WorkflowResumeTesting.LiveEventSessionService;
+import com.google.adk.workflow.WorkflowResumeTesting.MessageOutputNode;
+import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.Part;
+import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.observers.TestObserver;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -58,6 +77,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -69,6 +89,14 @@ public final class SchedulerTest {
   private static final Start START = Start.INSTANCE;
   private static final Route YES = new Route.Tag("yes");
   private static final Route NO = new Route.Tag("no");
+  private static final Schema COUNT_SCHEMA =
+      Schema.builder()
+          .type(Type.Known.OBJECT)
+          .properties(ImmutableMap.of("count", Schema.builder().type(Type.Known.INTEGER).build()))
+          .build();
+  private static final Schema INTEGER_SCHEMA = Schema.builder().type(Type.Known.INTEGER).build();
+  private static final RunNodeConfig USE_AS_OUTPUT =
+      RunNodeConfig.builder().runId("c").useAsOutput(true).build();
 
   // Nodes run on other threads, so their events can arrive concurrently.
   private final List<Event> sentEvents = new CopyOnWriteArrayList<>();
@@ -705,6 +733,379 @@ public final class SchedulerTest {
     assertThat(received).isEmpty();
   }
 
+  @Test
+  public void aNestedWorkflowsOutputSchema_handsTheCheckedValueToTheNextNode() {
+    // Arrange: the schema reads {"count": "5"} as {"count": 5}.
+    Workflow root = innerToReply(emitter("n", ImmutableMap.of("count", "5")), COUNT_SCHEMA);
+
+    ImmutableList<Event> events = new WorkflowSession(root, /* resumable= */ false).turn(go());
+
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("count", 5));
+  }
+
+  @Test
+  public void aWorkflowsOutputOutsideItsSchemasEnum_failsTheWorkflowWithoutQuotingIt() {
+    Schema colorSchema =
+        Schema.builder().type(Type.Known.STRING).enum_(ImmutableList.of("red")).build();
+    Workflow inEnum = innerToReply(emitter("n", "red"), colorSchema);
+    Workflow outOfEnum = innerToReply(emitter("n", "blue"), colorSchema);
+
+    ImmutableList<Event> passed = new WorkflowSession(inEnum, /* resumable= */ false).turn(go());
+    FailedTurn failed = new WorkflowSession(outOfEnum, /* resumable= */ false).failingTurn(go());
+
+    assertThat(replyInput(passed)).isEqualTo("red");
+    assertThat(failed.error()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(failed.error())
+        .hasMessageThat()
+        .startsWith("validation error: output of workflow 'inner' does not match its schema: ");
+    assertThat(failed.error()).hasMessageThat().doesNotContain("blue");
+    Event errorEvent =
+        failed.events().stream()
+            .filter(event -> event.errorCode().isPresent())
+            .collect(onlyElement());
+    assertThat(pathOf(errorEvent)).isEqualTo("wf@1/inner@1");
+    assertThat(errorEvent.errorCode()).hasValue(new FinishReason("IllegalArgumentException"));
+  }
+
+  @Test
+  public void aDelegatedWorkflowOutput_isTheCheckedValueLiveAndAfterAResume() {
+    // Arrange: d delegates its output to a workflow whose schema reads {"count": "5"} as
+    // {"count": 5}. A sibling of d finishes at once (live) or asks for input (resumed). The store
+    // keeps each live event but reads the session back in JSON form.
+    Workflow live = delegatingFork(delegator(countInner()), emitter("ask", "x"));
+    WorkflowSession session =
+        new WorkflowSession(
+            delegatingFork(delegator(countInner()), longRunningAsk("ask", "ask_1")),
+            new LiveEventSessionService());
+    session.advance(go());
+
+    ImmutableList<Event> liveEvents =
+        new WorkflowSession(live, new LiveEventSessionService()).turn(go());
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    Map<?, ?> liveOutput = (Map<?, ?>) joinedOutputOfD(liveEvents);
+    assertThat(liveOutput).isEqualTo(ImmutableMap.of("count", 5));
+    assertThrows(UnsupportedOperationException.class, liveOutput::clear);
+    assertThat(joinedOutputOfD(resumed)).isEqualTo(liveOutput);
+  }
+
+  @Test
+  public void aRecordOutputUnderAnObjectSchema_isItsJsonFormLiveAndAfterAResume() {
+    Node terminal = emitter("n", new Count(3));
+
+    ImmutableList<Object> outputs = liveAndResumedReplyInputs(terminal, COUNT_SCHEMA);
+
+    assertThat(outputs).containsExactly(ImmutableMap.of("count", 3), ImmutableMap.of("count", 3));
+  }
+
+  @Test
+  public void anEnumOutputUnderAStringEnumSchema_isItsNameLiveAndAfterAResume() {
+    Schema colorSchema =
+        Schema.builder().type(Type.Known.STRING).enum_(ImmutableList.of("RED")).build();
+    Node terminal = emitter("n", Color.RED);
+
+    ImmutableList<Object> outputs = liveAndResumedReplyInputs(terminal, colorSchema);
+
+    assertThat(outputs).containsExactly("RED", "RED");
+  }
+
+  @Test
+  public void aWorkflowOutputWithNoJsonForm_failsTheWorkflowWithAValidationError() {
+    Workflow root = innerToReply(emitter("n", new Object()), COUNT_SCHEMA);
+
+    FailedTurn failed = new WorkflowSession(root, /* resumable= */ false).failingTurn(go());
+
+    assertThat(failed.error()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(failed.error())
+        .hasMessageThat()
+        .startsWith("validation error: output of workflow 'inner' has no JSON form");
+  }
+
+  @Test
+  public void aJoinHoldingAMessageUnderAStringProperty_readsItsTextLiveAndAfterAResume() {
+    // Arrange: inner ends in a join of a node outputting a message and of the sibling, which asks
+    // for input in the resumed run, so there the join runs after the resume.
+    Schema joinSchema =
+        Schema.builder()
+            .type(Type.Known.OBJECT)
+            .properties(ImmutableMap.of("agent", Schema.builder().type(Type.Known.STRING).build()))
+            .build();
+    Node agent = new MessageOutputNode("agent", "hi", /* schema= */ null);
+
+    ImmutableList<Object> outputs =
+        liveAndResumedReplyInputs(sibling -> innerJoining(agent, sibling, joinSchema));
+
+    assertThat(
+            outputs.stream()
+                .map(output -> ((Map<?, ?>) output).get("agent"))
+                .collect(ImmutableList.toImmutableList()))
+        .containsExactly("hi", "hi");
+  }
+
+  @Test
+  public void aDelegatedWorkflow_sendsItsCheckedOutputBeforeItsEnd() {
+    WorkflowSession session =
+        new WorkflowSession(
+            delegatingFork(delegator(countInner()), longRunningAsk("ask", "ask_1")));
+
+    ImmutableList<Event> events = session.turn(go());
+
+    int output =
+        Iterables.indexOf(
+            events,
+            event -> event.output().isPresent() && pathOf(event).equals("wf@1/d@1/inner@c"));
+    int end =
+        Iterables.indexOf(
+            events, event -> event.author().equals("inner") && event.actions().endOfAgent());
+    assertThat(output).isAtLeast(0);
+    assertThat(output).isLessThan(end);
+  }
+
+  @Test
+  public void aDelegatedWorkflowOutput_isTheCheckedValueAfterAnInTurnRetry() {
+    // Arrange: the schema reads "5" as 5.
+    Node d = delegator(schemaWorkflow("inner", emitter("n", "5"), INTEGER_SCHEMA));
+
+    ImmutableList<Event> events =
+        new WorkflowSession(retriedOnceAfter(d), /* resumable= */ false).turn(go());
+
+    // Assert: n ran once, so d replayed, and reply got the checked value rather than the raw one.
+    assertThat(outputEventAt(events, "wf@1/d@1/inner@c/n@1").output()).hasValue("5");
+    assertThat(replyInput(events)).isEqualTo(5);
+  }
+
+  @Test
+  public void aFunctionNodeBodyDelegatingToACheckedWorkflow_outputsTheCheckedValue() {
+    // Arrange: the body delegates to a workflow whose schema reads "5" as 5.
+    FunctionNode<Void, Object> d =
+        FunctionNodes.builder(Void.class, Object.class)
+            .name("d")
+            .rerunOnResume(true)
+            .body((ctx, unused) -> {
+              Object unusedOutput =
+                  ctx.runNode(
+                          schemaWorkflow("inner", emitter("n", "5"), INTEGER_SCHEMA),
+                          null,
+                          USE_AS_OUTPUT)
+                      .blockingGet();
+              return null;
+            })
+            .build();
+    Workflow root = workflow(new Edge(START, d), new Edge(d, captureInput("reply")));
+
+    ImmutableList<Event> events = new WorkflowSession(root, /* resumable= */ false).turn(go());
+
+    assertThat(replyInput(events)).isEqualTo(5);
+  }
+
+  @Test
+  public void aDelegatorOverATypedFunctionNodeDelegatingToALeaf_receivesTheLeafsOutput() {
+    // Arrange: d delegates to a typed function node f, which delegates to a leaf outputting "ok".
+    FunctionNode<Void, String> f =
+        FunctionNodes.builder(Void.class, String.class)
+            .name("f")
+            .rerunOnResume(true)
+            .body((ctx, unused) -> {
+              Object unusedOutput =
+                  ctx.runNode(emitter("leaf", "ok"), null, USE_AS_OUTPUT).blockingGet();
+              return null;
+            })
+            .build();
+    Node d = delegator(f);
+    Workflow root = workflow(new Edge(START, d), new Edge(d, captureInput("reply")));
+
+    ImmutableList<Event> events = new WorkflowSession(root, /* resumable= */ false).turn(go());
+
+    assertThat(replyInput(events)).isEqualTo("ok");
+  }
+
+  @Test
+  public void aDelegatedWorkflowOutputThatTheCheckKeeps_isRecordedForTheDelegatingNode() {
+    // Arrange: the schema keeps "same" as it is.
+    Workflow inner =
+        schemaWorkflow(
+            "inner", emitter("n", "same"), Schema.builder().type(Type.Known.STRING).build());
+    WorkflowSession session =
+        new WorkflowSession(delegatingFork(delegator(inner), longRunningAsk("ask", "ask_1")));
+
+    ImmutableList<Event> first = session.turn(go());
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    // Assert: the workflow's own event, not the terminal node's, records d's output.
+    Event innerOutput = outputEventAt(first, "wf@1/d@1/inner@c");
+    assertThat(innerOutput.output()).hasValue("same");
+    assertThat(innerOutput.nodeInfo().orElseThrow().outputFor()).contains("wf@1/d@1");
+    assertThat(outputEventAt(first, "wf@1/d@1/inner@c/n@1").nodeInfo().orElseThrow().outputFor())
+        .containsExactly("wf@1/d@1/inner@c/n@1", "wf@1/d@1/inner@c");
+    assertThat(joinedOutputOfD(resumed)).isEqualTo("same");
+  }
+
+  @Test
+  public void aCheckedWorkflowInsideAnUncheckedOne_isTheDelegatingNodesOutputWithoutExtraEvents() {
+    // Arrange: d delegates to outer, which has no schema, over inner, which reads "5" as 5.
+    Workflow outer =
+        Workflow.builder()
+            .name("outer")
+            .edges(new Edge(START, schemaWorkflow("inner", emitter("n", "5"), INTEGER_SCHEMA)))
+            .build();
+    Workflow live = delegatingFork(delegator(outer), emitter("ask", "x"));
+    WorkflowSession session =
+        new WorkflowSession(delegatingFork(delegator(outer), longRunningAsk("ask", "ask_1")));
+
+    ImmutableList<Event> liveEvents = new WorkflowSession(live, /* resumable= */ false).turn(go());
+    ImmutableList<Event> first = session.turn(go());
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    assertThat(joinedOutputOfD(liveEvents)).isEqualTo(5);
+    assertThat(joinedOutputOfD(resumed)).isEqualTo(5);
+    assertThat(outputPathsUnder(first, "wf@1/d@1/"))
+        .containsExactly("wf@1/d@1/outer@c/inner@1/n@1", "wf@1/d@1/outer@c/inner@1");
+  }
+
+  @Test
+  public void aCheckedWorkflowInsideACheckedOne_sendsOnlyTheOuterCheckedOutput() {
+    // Arrange: d delegates to w2 over w1, and both schemas read "5" as 5.
+    Workflow w2 =
+        schemaWorkflow(
+            "w2", schemaWorkflow("w1", emitter("n", "5"), INTEGER_SCHEMA), INTEGER_SCHEMA);
+    Workflow live = delegatingFork(delegator(w2), emitter("ask", "x"));
+    WorkflowSession session =
+        new WorkflowSession(delegatingFork(delegator(w2), longRunningAsk("ask", "ask_1")));
+
+    ImmutableList<Event> liveEvents = new WorkflowSession(live, /* resumable= */ false).turn(go());
+    ImmutableList<Event> first = session.turn(go());
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    assertThat(joinedOutputOfD(liveEvents)).isEqualTo(5);
+    assertThat(joinedOutputOfD(resumed)).isEqualTo(5);
+    assertThat(outputPathsUnder(first, "wf@1/d@1/"))
+        .containsExactly("wf@1/d@1/w2@c/w1@1/n@1", "wf@1/d@1/w2@c");
+  }
+
+  @Test
+  public void anUncheckedWorkflowInsideACheckedOne_sendsNoUncheckedOutputWhenItReruns() {
+    // Arrange: d delegates to w2, which reads "5" as 5, over w1, which has no schema. d asks after
+    // delegating, so the resumed turn reruns d, w2 and w1, and w1 replays n.
+    Workflow w1 = Workflow.builder().name("w1").edges(new Edge(START, emitter("n", "5"))).build();
+    Workflow w2 = schemaWorkflow("w2", w1, INTEGER_SCHEMA);
+    Node d =
+        dispatcher(
+            "d",
+            (ctx, input) ->
+                ctx.runNode(w2, null, USE_AS_OUTPUT)
+                    .flatMap(result ->
+                        ctx.runNode(
+                                longRunningAsk("ask", "ask_1"),
+                                null,
+                                RunNodeConfig.builder().runId("a").build())
+                            .map(unused -> result))
+                    .toFlowable());
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, d), new Edge(d, captureInput("reply"))));
+    session.advance(go());
+
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    assertThat(replyInput(resumed)).isEqualTo(5);
+    assertThat(outputPathsUnder(resumed, "wf@1/d@1/")).doesNotContain("wf@1/d@1/w2@c/w1@1");
+  }
+
+  @Test
+  public void aRootWorkflowsOutputSchema_sendsNoOutputEventOfTheWorkflowsOwn() {
+    // Arrange: the schema reads {"count": "5"} as {"count": 5}.
+    Workflow root = schemaWorkflow("wf", emitter("n", ImmutableMap.of("count", "5")), COUNT_SCHEMA);
+
+    ImmutableList<Event> events = new WorkflowSession(root, /* resumable= */ false).turn(go());
+
+    assertThat(outputPathsUnder(events, "")).containsExactly("wf@1/n@1");
+  }
+
+  @Test
+  public void aCheckedWorkflowsEndOfAgent_waitsForTheCheckedOutputEventToComplete() {
+    CompletableSubject checkedOutputGate = CompletableSubject.create();
+    NodeRunner.EventSink gatingSink =
+        (event, nodeFailure) -> {
+          sentEvents.add(event);
+          if (event.nodeInfo().map(NodeInfo::path).equals(Optional.of("wf@1/d@1/inner@c"))
+              && event.output().isPresent()) {
+            return checkedOutputGate;
+          }
+          return Completable.complete();
+        };
+    Workflow root = workflow(new Edge(START, delegator(countInner())));
+    InvocationContext invocationContext =
+        TestUtils.createInvocationContext(TestUtils.createRootAgent()).toBuilder()
+            .branch("root")
+            .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+            .scheduler(Schedulers.trampoline())
+            .build();
+    var run =
+        NodeRunner.builder()
+            .node(root)
+            .invocationContext(invocationContext)
+            .eventSink(gatingSink)
+            .build()
+            .run(/* nodeInput= */ null)
+            .test();
+
+    run.dispose();
+
+    assertThat(
+            sentEvents.stream()
+                .filter(e -> e.author().equals("inner") && e.actions().endOfAgent())
+                .toList())
+        .isEmpty();
+    assertThat(
+            sentEvents.stream()
+                .filter(e ->
+                    e.nodeInfo().map(NodeInfo::path).equals(Optional.of("wf@1/d@1/inner@c"))
+                        && e.output().isPresent())
+                .toList())
+        .hasSize(1);
+  }
+
+  @Test
+  public void aWorkflowOutputReadAsNull_isNoOutputForTheDelegatingNodeLiveAndAfterAResume() {
+    // Arrange: inner's terminal message "null" reads as JSON null under a nullable schema.
+    Workflow live = delegatingFork(delegator(nullInner()), emitter("ask", "x"));
+    WorkflowSession session =
+        new WorkflowSession(delegatingFork(delegator(nullInner()), longRunningAsk("ask", "ask_1")));
+    session.advance(go());
+
+    ImmutableList<Event> liveEvents = new WorkflowSession(live, /* resumable= */ false).turn(go());
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    assertThat(joinedOutputOfD(liveEvents)).isNull();
+    assertThat(joinedOutputOfD(resumed)).isNull();
+  }
+
+  @Test
+  public void aWorkflowOutputReadAsNull_isNoOutputForTheDelegatingNodeAfterAnInTurnRetry() {
+    Workflow root = retriedOnceAfter(delegator(nullInner()));
+
+    ImmutableList<Event> events = new WorkflowSession(root, /* resumable= */ false).turn(go());
+
+    assertThat(replyInput(events)).isNull();
+  }
+
+  @Test
+  public void aRejectedWorkflowOutput_leavesTheDelegatingNodeFreeToOutputItsFallback() {
+    // Arrange: d catches the failure of a workflow whose schema rejects "abc" and outputs
+    // "fallback".
+    Workflow rejecting = schemaWorkflow("inner", emitter("n", "abc"), INTEGER_SCHEMA);
+    Workflow live = delegatingFork(fallbackDelegator(rejecting), emitter("ask", "x"));
+    WorkflowSession session =
+        new WorkflowSession(
+            delegatingFork(fallbackDelegator(rejecting), longRunningAsk("ask", "ask_1")));
+    session.advance(go());
+
+    ImmutableList<Event> liveEvents = new WorkflowSession(live, /* resumable= */ false).turn(go());
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    assertThat(joinedOutputOfD(liveEvents)).isEqualTo("fallback");
+    assertThat(joinedOutputOfD(resumed)).isEqualTo("fallback");
+  }
+
   @CanIgnoreReturnValue
   private Context run(Workflow workflow) {
     return run(workflow, "root");
@@ -809,6 +1210,153 @@ public final class SchedulerTest {
     return Workflow.builder().name("wf").edges(edges).build();
   }
 
+  /** Returns a workflow named {@code name} that runs {@code terminal} under {@code schema}. */
+  private static Workflow schemaWorkflow(String name, Node terminal, Schema schema) {
+    return Workflow.builder()
+        .name(name)
+        .edges(new Edge(START, terminal))
+        .outputSchema(schema)
+        .build();
+  }
+
+  /**
+   * Returns a workflow that runs {@code terminal} in a workflow named {@code inner}, then reply.
+   */
+  private static Workflow innerToReply(Node terminal, Schema innerOutputSchema) {
+    Workflow inner = schemaWorkflow("inner", terminal, innerOutputSchema);
+    return workflow(new Edge(START, inner), new Edge(inner, captureInput("reply")));
+  }
+
+  /** Returns a workflow whose schema reads {"count": "5"} as {"count": 5}. */
+  private static Workflow countInner() {
+    return schemaWorkflow("inner", emitter("n", ImmutableMap.of("count", "5")), COUNT_SCHEMA);
+  }
+
+  /**
+   * Returns what reply received live and after a resume from a workflow inner that runs {@code
+   * terminal} under {@code schema}, beside a sibling.
+   */
+  private static ImmutableList<Object> liveAndResumedReplyInputs(Node terminal, Schema schema) {
+    return liveAndResumedReplyInputs(sibling -> innerBeside(terminal, sibling, schema));
+  }
+
+  /**
+   * Returns what reply received live and after a resume from the workflow {@code rootWith} builds
+   * around a sibling node. The sibling finishes at once (live) or asks for input (resumed); the
+   * store reads the session back in JSON form.
+   */
+  private static ImmutableList<Object> liveAndResumedReplyInputs(
+      Function<Node, Workflow> rootWith) {
+    WorkflowSession session =
+        new WorkflowSession(
+            rootWith.apply(longRunningAsk("ask", "ask_1")), new LiveEventSessionService());
+    session.advance(go());
+
+    ImmutableList<Event> live =
+        new WorkflowSession(rootWith.apply(emitter("ask", "x")), new LiveEventSessionService())
+            .turn(go());
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+    return ImmutableList.of(replyInput(live), replyInput(resumed));
+  }
+
+  /**
+   * Returns a workflow that runs inner, then reply. Inner, under {@code schema}, runs {@code
+   * terminal} beside {@code sibling}, whose successor outputs nothing.
+   */
+  private static Workflow innerBeside(Node terminal, Node sibling, Schema schema) {
+    Node sink = new TestNode("sink", (ctx, input) -> Flowable.empty());
+    Workflow inner =
+        Workflow.builder()
+            .name("inner")
+            .outputSchema(schema)
+            .edges(new Edge(START, terminal), new Edge(START, sibling), new Edge(sibling, sink))
+            .build();
+    return workflow(new Edge(START, inner), new Edge(inner, captureInput("reply")));
+  }
+
+  /**
+   * Returns a workflow that runs inner, then reply. Inner, under {@code schema}, joins the outputs
+   * of {@code first} and {@code sibling} in j.
+   */
+  private static Workflow innerJoining(Node first, Node sibling, Schema schema) {
+    Node join = JoinNode.builder().name("j").build();
+    Workflow inner =
+        Workflow.builder()
+            .name("inner")
+            .outputSchema(schema)
+            .edges(
+                new Edge(START, first),
+                new Edge(START, sibling),
+                new Edge(first, join),
+                new Edge(sibling, join))
+            .build();
+    return workflow(new Edge(START, inner), new Edge(inner, captureInput("reply")));
+  }
+
+  /** Returns a workflow whose terminal message "null" a nullable schema reads as no output. */
+  private static Workflow nullInner() {
+    Schema nullableInteger = Schema.builder().type(Type.Known.INTEGER).nullable(true).build();
+    return schemaWorkflow(
+        "inner", new MessageOutputNode("n", "null", /* schema= */ null), nullableInteger);
+  }
+
+  /** Returns a node named d that delegates its output to {@code child}. */
+  private static Node delegator(Node child) {
+    return dispatcher(
+        "d", (ctx, input) -> ctx.runNode(child, null, USE_AS_OUTPUT).ignoreElement().toFlowable());
+  }
+
+  /** Returns a node named d that delegates its output to {@code child}, or outputs "fallback". */
+  private static Node fallbackDelegator(Node child) {
+    return dispatcher(
+        "d",
+        (ctx, input) ->
+            ctx.runNode(child, null, USE_AS_OUTPUT)
+                .onErrorResumeNext(error -> Maybe.just("fallback"))
+                .toFlowable());
+  }
+
+  /** Returns a workflow that forks to {@code d} and {@code sibling} and joins both in j. */
+  private static Workflow delegatingFork(Node d, Node sibling) {
+    Node join = JoinNode.builder().name("j").build();
+    return workflow(
+        new Edge(START, d), new Edge(START, sibling), new Edge(d, join), new Edge(sibling, join));
+  }
+
+  /**
+   * Returns a workflow that runs {@code d}, then reply, which fails its first run, so the workflow
+   * retries in the same turn and replays {@code d} from the session.
+   */
+  private static Workflow retriedOnceAfter(Node d) {
+    AtomicInteger runs = new AtomicInteger();
+    Node reply =
+        new TestNode(
+            "reply",
+            (ctx, input) ->
+                runs.incrementAndGet() == 1
+                    ? Flowable.error(new IllegalStateException("flaky"))
+                    : Flowable.just(Collections.singletonMap("received", input)));
+    return Workflow.builder()
+        .name("wf")
+        .edges(new Edge(START, d), new Edge(d, reply))
+        .config(NodeConfig.builder().retryConfig(instantRetry(2)).build())
+        .build();
+  }
+
+  /** Returns what the join j of {@link #delegatingFork} received from d. */
+  private static @Nullable Object joinedOutputOfD(List<Event> events) {
+    return ((Map<?, ?>) outputEventAt(events, "wf@1/j@1").output().orElseThrow()).get("d");
+  }
+
+  /** Returns the paths of the output events whose path starts with {@code prefix}, in order. */
+  private static ImmutableList<String> outputPathsUnder(List<Event> events, String prefix) {
+    return events.stream()
+        .filter(event -> event.output().isPresent())
+        .map(WorkflowResumeTesting::pathOf)
+        .filter(path -> path.startsWith(prefix))
+        .collect(ImmutableList.toImmutableList());
+  }
+
   private static Node emitter(String name, Object output) {
     return new TestNode(name, (ctx, input) -> Flowable.just(output));
   }
@@ -854,6 +1402,12 @@ public final class SchedulerTest {
     public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
       return ++runs >= readyOn ? Flowable.just("ready") : Flowable.empty();
     }
+  }
+
+  private record Count(int count) {}
+
+  private enum Color {
+    RED
   }
 
   /** A node whose output names its run, so the iterations of a loop are distinguishable. */

@@ -115,10 +115,15 @@ public final class NodeExecutionState {
             node.name(),
             runId,
             /* separator= */ '/');
-    this.outputFor =
-        outputParent != null
-            ? ImmutableList.<String>builder().add(nodePath).addAll(outputParent.outputFor).build()
-            : ImmutableList.of(nodePath);
+    if (outputParent == null) {
+      this.outputFor = ImmutableList.of(nodePath);
+    } else if (outputParent.checksItsOutput()) {
+      // Past a workflow that checks its output, only the workflow's own event carries it on.
+      this.outputFor = ImmutableList.of(nodePath, outputParent.nodePath);
+    } else {
+      this.outputFor =
+          ImmutableList.<String>builder().add(nodePath).addAll(outputParent.outputFor).build();
+    }
     this.eventAuthor = parentState == null ? "" : parentState.eventAuthor;
     if (builder.isolationScope != null) {
       this.isolationScope = builder.isolationScope;
@@ -393,15 +398,27 @@ public final class NodeExecutionState {
 
   /**
    * Returns whether a non-workflow node takes this run's output, directly or through enclosing
-   * workflows, as with {@code useAsOutput}.
+   * workflows, as with {@code useAsOutput}. An enclosing workflow that checks its output passes on
+   * its own output instead, so the search stops there.
    */
   boolean isDelegatedToANode() {
     for (NodeExecutionState parent = outputParent; parent != null; parent = parent.outputParent) {
       if (!(parent.node instanceof Workflow)) {
         return true;
       }
+      if (parent.checksItsOutput()) {
+        return false;
+      }
     }
     return false;
+  }
+
+  /**
+   * Returns whether this run is of a workflow with an output schema, whose descendants' output
+   * reaches the workflow's own delegating ancestors only once the workflow has checked it.
+   */
+  private boolean checksItsOutput() {
+    return node instanceof Workflow && node.outputSchema().isPresent();
   }
 
   /** Returns the next run ID for a child node named {@code name}, counting from {@code "1"}. */
@@ -513,7 +530,7 @@ public final class NodeExecutionState {
 
   /**
    * Records that an event carried the output the node produced, which also makes it the output of
-   * each ancestor that delegated its output to this run.
+   * each ancestor that delegated its output to this run, up to a workflow that checks its output.
    *
    * @throws IllegalStateException if the node has no unsent output.
    */
@@ -539,6 +556,9 @@ public final class NodeExecutionState {
         ancestor != null;
         ancestor = ancestor.outputParent) {
       ancestor.recordDelegatedOutput(emitted);
+      if (ancestor.checksItsOutput()) {
+        break;
+      }
     }
   }
 
