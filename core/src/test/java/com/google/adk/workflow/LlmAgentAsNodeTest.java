@@ -586,23 +586,10 @@ public final class LlmAgentAsNodeTest {
         TestLlm.create(
             createFunctionCallLlmResponse(
                 "c1", "set_model_response", ImmutableMap.of("title", "Story", "count", 3)));
-    // Only a model that can't combine tools with an output schema answers via set_model_response.
-    BaseLlm gemini2NamedLlm =
-        new BaseLlm("gemini-2.0-flash") {
-          @Override
-          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-            return scripted.generateContent(llmRequest, stream);
-          }
-
-          @Override
-          public BaseLlmConnection connect(LlmRequest llmRequest) {
-            return scripted.connect(llmRequest);
-          }
-        };
     LlmAgent agent =
         LlmAgent.builder()
             .name("worker")
-            .model(gemini2NamedLlm)
+            .model(gemini2Model(scripted))
             .mode(AgentMode.SINGLE_TURN)
             .outputSchema(schema)
             .tools(new EchoTool())
@@ -614,6 +601,50 @@ public final class LlmAgentAsNodeTest {
     ImmutableMap<String, Object> expected = ImmutableMap.of("title", "Story", "count", 3);
     assertThat(nodeRun.output()).isEqualTo(expected);
     assertThat(stateDeltaValues(nodeRun.events(), "meta")).containsExactly(expected);
+  }
+
+  @Test
+  public void runAsync_setModelResponseOutsideTheEnum_returnsTheErrorAndTakesTheRetry() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "answer",
+                    Schema.builder().type("STRING").enum_(ImmutableList.of("YES", "NO")).build()))
+            .required(ImmutableList.of("answer"))
+            .build();
+    TestLlm scripted =
+        TestLlm.create(
+            createFunctionCallLlmResponse(
+                "c1", "set_model_response", ImmutableMap.of("answer", "MAYBE")),
+            createFunctionCallLlmResponse(
+                "c2", "set_model_response", ImmutableMap.of("answer", "YES")));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("worker")
+            .model(gemini2Model(scripted))
+            .mode(AgentMode.SINGLE_TURN)
+            .outputSchema(schema)
+            .tools(new EchoTool())
+            .build();
+
+    NodeRun nodeRun = runWithSuccessor(agent);
+
+    String error =
+        (String)
+            nodeRun.events().stream()
+                .flatMap(event -> event.functionResponses().stream())
+                .filter(response -> response.name().orElse("").equals("set_model_response"))
+                .findFirst()
+                .orElseThrow()
+                .response()
+                .orElseThrow()
+                .get("error");
+    assertThat(error).contains("property 'answer' does not match its schema");
+    assertThat(error).doesNotContain("MAYBE");
+    assertThat(scripted.getRequests()).hasSize(2);
+    assertThat(nodeRun.output()).isEqualTo(ImmutableMap.of("answer", "YES"));
   }
 
   @Test
@@ -1886,6 +1917,24 @@ public final class LlmAgentAsNodeTest {
                 .build(),
             "go");
     return new NodeRun(ImmutableList.copyOf(events), getOnlyElement(inputs));
+  }
+
+  /**
+   * Returns a model answering as {@code scripted} under a Gemini 2.x name, which can't combine
+   * tools with an output schema and so answers via set_model_response.
+   */
+  private static BaseLlm gemini2Model(TestLlm scripted) {
+    return new BaseLlm("gemini-2.0-flash") {
+      @Override
+      public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+        return scripted.generateContent(llmRequest, stream);
+      }
+
+      @Override
+      public BaseLlmConnection connect(LlmRequest llmRequest) {
+        return scripted.connect(llmRequest);
+      }
+    };
   }
 
   private static LlmAgent.Builder schemaAgent(Schema schema, String answer) {

@@ -46,6 +46,7 @@ public class SetModelResponseTool extends BaseTool {
   // Function parameters must be an object, so a non-object output schema goes into this field.
   private static final String RESPONSE_PARAMETER = "response";
 
+  private final Schema outputSchema;
   private final boolean wrapsOutputSchema;
   private final Schema parameters;
 
@@ -55,6 +56,7 @@ public class SetModelResponseTool extends BaseTool {
         "Set your final response using the required output schema. "
             + "After using any other tools needed to complete the task, always call"
             + " set_model_response with your final answer in the specified schema format.");
+    this.outputSchema = outputSchema;
     this.wrapsOutputSchema = !SchemaUtils.describesObject(outputSchema);
     if (wrapsOutputSchema) {
       // Vertex AI rejects an untyped parameter; a wrapped untyped schema has only items.
@@ -103,20 +105,28 @@ public class SetModelResponseTool extends BaseTool {
         return validationFeedback(sanitizeValidationMessage(e.getMessage()));
       }
       // Fill defaults before dropping nulls so an explicit null is not replaced with a default.
-      Map<String, Object> validatedResponse =
-          excludeNullFields(SchemaUtils.withDefaults(args, parameters), parameters);
-      if (wrapsOutputSchema) {
-        Object response = validatedResponse.get(RESPONSE_PARAMETER);
-        if (response == null) {
-          // A null answer cannot end the run, so the model has to give a value.
-          return validationFeedback("Output arg: " + RESPONSE_PARAMETER + " must not be null");
-        }
-        toolContext.actions().setSetModelResponse(response);
-        // Like a function tool's non-map result.
-        return ImmutableMap.of("result", response);
+      Map<String, Object> withDefaults = SchemaUtils.withDefaults(args, parameters);
+      Map<String, Object> validatedResponse = excludeNullFields(withDefaults, parameters);
+      Object answer =
+          wrapsOutputSchema ? validatedResponse.get(RESPONSE_PARAMETER) : validatedResponse;
+      if (answer == null) {
+        // A null answer cannot end the run, so the model has to give a value.
+        return validationFeedback("Output arg: " + RESPONSE_PARAMETER + " must not be null");
       }
-      toolContext.actions().setSetModelResponse(validatedResponse);
-      return validatedResponse;
+      // validateMapOnSchema skips enum values, which a workflow node's output check enforces.
+      Optional<String> mismatch = SchemaUtils.findMismatch(answer, outputSchema);
+      if (mismatch.isPresent()) {
+        // An anyOf branch can require a null that excludeNullFields dropped.
+        Object withNulls = wrapsOutputSchema ? withDefaults.get(RESPONSE_PARAMETER) : withDefaults;
+        if (SchemaUtils.findMismatch(withNulls, outputSchema).isPresent()) {
+          return validationFeedback("Output args: " + mismatch.get());
+        }
+        answer = withNulls;
+        validatedResponse = withDefaults;
+      }
+      toolContext.actions().setSetModelResponse(answer);
+      // A wrapped answer comes back like a function tool's non-map result.
+      return wrapsOutputSchema ? ImmutableMap.of("result", answer) : validatedResponse;
     });
   }
 
