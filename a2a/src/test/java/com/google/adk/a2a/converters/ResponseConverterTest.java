@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.stream.Collectors.joining;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
@@ -31,17 +32,22 @@ import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FileData;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
+import io.a2a.client.ClientEvent;
 import io.a2a.client.MessageEvent;
+import io.a2a.client.TaskEvent;
 import io.a2a.client.TaskUpdateEvent;
 import io.a2a.spec.Artifact;
 import io.a2a.spec.DataPart;
 import io.a2a.spec.FilePart;
 import io.a2a.spec.FileWithBytes;
+import io.a2a.spec.FileWithUri;
 import io.a2a.spec.Message;
 import io.a2a.spec.Task;
 import io.a2a.spec.TaskArtifactUpdateEvent;
@@ -102,6 +108,114 @@ public final class ResponseConverterTest {
     return new TaskUpdateEvent(
         testTask().status(status).build(),
         testTaskStatusUpdateEvent().isFinal(isFinal).status(status).build());
+  }
+
+  private static final String PEER_URI = "gs://peer-artifacts/app/report.pdf";
+  private static final A2APartConverter ALLOW_PEER =
+      PartConverter.defaultConverter(FileUriPolicy.allowPrefixes("gs://peer-artifacts/"));
+
+  private static FilePart peerFilePart() {
+    return new FilePart(new FileWithUri("application/pdf", "report.pdf", PEER_URI));
+  }
+
+  private static Optional<String> firstFileUri(Event event) {
+    return event.content().flatMap(Content::parts).orElse(ImmutableList.of()).stream()
+        .flatMap(part -> part.fileData().flatMap(FileData::fileUri).stream())
+        .findFirst();
+  }
+
+  @Test
+  public void clientEventToEvent_withConverter_appliesItToEveryEventKind() {
+    Message message =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(peerFilePart()))
+            .build();
+    Artifact artifact =
+        new Artifact.Builder()
+            .artifactId("artifact-1")
+            .parts(ImmutableList.of(peerFilePart()))
+            .build();
+    Task task =
+        testTask()
+            .status(new TaskStatus(TaskState.COMPLETED))
+            .artifacts(ImmutableList.of(artifact))
+            .build();
+    TaskUpdateEvent statusUpdate = statusUpdateEvent(TaskState.COMPLETED, true, peerFilePart());
+    ImmutableList<ClientEvent> events =
+        ImmutableList.of(new MessageEvent(message), new TaskEvent(task), statusUpdate);
+
+    for (ClientEvent clientEvent : events) {
+      Event withDefault =
+          ResponseConverter.clientEventToEvent(clientEvent, invocationContext).get();
+      Event withConverter =
+          ResponseConverter.clientEventToEvent(clientEvent, invocationContext, ALLOW_PEER).get();
+
+      assertWithMessage("default, %s", clientEvent.getClass().getSimpleName())
+          .that(firstFileUri(withDefault))
+          .isEmpty();
+      assertWithMessage("converter, %s", clientEvent.getClass().getSimpleName())
+          .that(firstFileUri(withConverter))
+          .hasValue(PEER_URI);
+    }
+  }
+
+  @Test
+  public void messageToEvent_pendingWithConverter_marksConvertedPartsAsThoughts() {
+    Message message =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(peerFilePart()))
+            .build();
+
+    Event event =
+        ResponseConverter.messageToEvent(
+            message, invocationContext, /* isPending= */ true, ALLOW_PEER);
+
+    com.google.genai.types.Part part = event.content().get().parts().get().get(0);
+    assertThat(part.fileData().flatMap(FileData::fileUri)).hasValue(PEER_URI);
+    assertThat(part.thought()).hasValue(true);
+  }
+
+  @Test
+  public void artifactToEvent_withConverterReturningSeveralParts_keepsAllAndTracksLongRunning() {
+    DataPart call =
+        new DataPart(
+            ImmutableMap.of("name", "approve", "id", "call-1", "args", ImmutableMap.of()),
+            ImmutableMap.of(
+                A2AMetadataKey.TYPE.getType(),
+                A2ADataPartMetadataType.FUNCTION_CALL.getType(),
+                A2AMetadataKey.IS_LONG_RUNNING.getType(),
+                true));
+    A2APartConverter duplicate =
+        a2aPart -> {
+          com.google.genai.types.Part converted =
+              PartConverter.defaultConverter(FileUriPolicy.defaultPolicy()).convert(a2aPart).get(0);
+          return ImmutableList.of(converted, converted);
+        };
+    Artifact artifact =
+        new Artifact.Builder().artifactId("artifact-1").parts(ImmutableList.of(call)).build();
+
+    Event event = ResponseConverter.artifactToEvent(artifact, invocationContext, duplicate);
+
+    assertThat(event.content().get().parts().get()).hasSize(2);
+    assertThat(event.longRunningToolIds()).hasValue(ImmutableSet.of("call-1"));
+  }
+
+  @Test
+  public void messageToEvent_withNullConverter_throws() {
+    Message message =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("hi")))
+            .build();
+
+    assertThrows(
+        NullPointerException.class,
+        () -> ResponseConverter.messageToEvent(message, invocationContext, null));
   }
 
   @Test

@@ -17,6 +17,7 @@
 package com.google.adk.a2a.agent;
 
 import static com.google.common.truth.Truth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -30,6 +31,8 @@ import static org.mockito.Mockito.when;
 
 import com.google.adk.a2a.common.A2AClientError;
 import com.google.adk.a2a.common.A2AMetadata;
+import com.google.adk.a2a.converters.FileUriPolicy;
+import com.google.adk.a2a.converters.PartConverter;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.Callbacks;
@@ -74,6 +77,7 @@ import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Instant;
 import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -306,13 +310,12 @@ public final class RemoteA2AAgentTest {
   @Test
   public void runAsync_aggregatesFiles() {
     RemoteA2AAgent agent = createAgent();
-    mockStreamResponse(
-        consumer -> {
-          consumer.accept(createPartialEvent("Here is a file: ", true, false), agentCard);
-          consumer.accept(
-              createPartialFileEvent("http://example.com/file.txt", "text/plain"), agentCard);
-          consumer.accept(createFinalEvent("Done"), agentCard);
-        });
+    byte[] bytes = "file content".getBytes(UTF_8);
+    mockStreamResponse(consumer -> {
+      consumer.accept(createPartialEvent("Here is a file: ", true, false), agentCard);
+      consumer.accept(createPartialBytesFileEvent(bytes, "text/plain"), agentCard);
+      consumer.accept(createFinalEvent("Done"), agentCard);
+    });
 
     List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
 
@@ -322,15 +325,160 @@ public final class RemoteA2AAgentTest {
     assertAggregated(events.get(1)); // Flushed Aggregation
     assertText(events.get(1), "Here is a file: ");
     Part filePart = events.get(2).content().get().parts().get().get(0);
-    assertThat(filePart.fileData()).isPresent();
-    assertThat(filePart.fileData().get().fileUri().orElse(""))
-        .isEqualTo("http://example.com/file.txt");
+    assertThat(filePart.inlineData()).isPresent();
+    assertThat(filePart.inlineData().get().data().get()).isEqualTo(bytes);
     assertRequestMetadata(events.get(2));
     assertResponseMetadata(events.get(2));
 
     assertText(events.get(3), "Done");
     assertRequestMetadata(events.get(3));
     assertResponseMetadata(events.get(3));
+  }
+
+  @Test
+  public void runAsync_replacesPeerFileUriWithPlaceholder() {
+    RemoteA2AAgent agent = createAgent();
+    mockStreamResponse(consumer -> {
+      consumer.accept(createPartialFileEvent("gs://victim/secret.txt", "text/plain"), agentCard);
+      consumer.accept(createFinalEvent("Done"), agentCard);
+    });
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    String placeholder = "[A2A file reference not loaded: name=\"file\", mime=\"text/plain\"]";
+    List<Part> parts =
+        events.stream()
+            .flatMap(event ->
+                event.content().flatMap(Content::parts).orElse(ImmutableList.of()).stream())
+            .toList();
+    assertThat(parts.stream().filter(part -> part.fileData().isPresent())).isEmpty();
+    assertText(events.get(0), placeholder);
+    assertNotAggregated(events.get(0));
+    // A peer placeholder is buffered like streamed text and flushed before the final event.
+    assertAggregated(events.get(1));
+    assertText(events.get(1), placeholder);
+  }
+
+  @Test
+  public void runAsync_withFileUriPolicy_passesAllowedPeerUri() {
+    RemoteA2AAgent agent =
+        getAgentBuilder()
+            .streaming(true)
+            .fileUriPolicy(FileUriPolicy.allowPrefixes("gs://peer-artifacts/"))
+            .build();
+    mockStreamResponse(consumer -> {
+      consumer.accept(
+          createPartialFileEvent("gs://peer-artifacts/app/report.pdf", "application/pdf"),
+          agentCard);
+      consumer.accept(createFinalEvent("Done"), agentCard);
+    });
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    Part filePart = events.get(0).content().get().parts().get().get(0);
+    assertThat(filePart.fileData().get().fileUri()).hasValue("gs://peer-artifacts/app/report.pdf");
+  }
+
+  @Test
+  public void runAsync_withOwnArtifactsPolicy_passesArtifactsOfTheInvokingSession() {
+    RemoteA2AAgent agent =
+        getAgentBuilder()
+            .streaming(true)
+            .fileUriPolicy(FileUriPolicy.allowOwnArtifacts("artifacts"))
+            .build();
+    mockStreamResponse(consumer -> {
+      consumer.accept(
+          createPartialFileEvent(
+              "gs://artifacts/demo/user/session-1/report.pdf/0", "application/pdf"),
+          agentCard);
+      consumer.accept(
+          createPartialFileEvent(
+              "gs://artifacts/demo/user/session-9/report.pdf/0", "application/pdf"),
+          agentCard);
+      consumer.accept(createFinalEvent("Done"), agentCard);
+    });
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events.get(0).content().get().parts().get().get(0).fileData().get().fileUri())
+        .hasValue("gs://artifacts/demo/user/session-1/report.pdf/0");
+    assertThat(events.get(1).content().get().parts().get().get(0).fileData()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_withSessionLackingAppOrUser_admitsNoOwnArtifacts() {
+    RemoteA2AAgent agent =
+        getAgentBuilder()
+            .streaming(true)
+            .fileUriPolicy(FileUriPolicy.allowOwnArtifacts("artifacts"))
+            .build();
+    ImmutableList<Session> sessions =
+        ImmutableList.of(
+            Session.builder("session-1").events(session.immutableEvents()).build(),
+            Session.builder("session-1").appName("demo").events(session.immutableEvents()).build(),
+            Session.builder("session-1").userId("user").events(session.immutableEvents()).build());
+
+    for (Session partialSession : sessions) {
+      mockStreamResponse(consumer -> {
+        consumer.accept(
+            createPartialFileEvent(
+                "gs://artifacts/demo/user/session-1/report.pdf/0", "application/pdf"),
+            agentCard);
+        consumer.accept(createFinalEvent("Done"), agentCard);
+      });
+
+      List<Event> events =
+          agent
+              .runAsync(invocationContext.toBuilder().session(partialSession).build())
+              .toList()
+              .blockingGet();
+
+      assertThat(events.get(0).content().get().parts().get().get(0).fileData()).isEmpty();
+    }
+  }
+
+  @Test
+  public void runAsync_withRejectPolicy_skipsPeerFilePart() {
+    RemoteA2AAgent agent =
+        getAgentBuilder()
+            .streaming(true)
+            .fileUriPolicy(
+                FileUriPolicy.builder().onDisallowed(FileUriPolicy.DisallowedAction.REJECT).build())
+            .build();
+    mockStreamResponse(consumer -> {
+      consumer.accept(createPartialFileEvent("gs://victim/secret.txt", "text/plain"), agentCard);
+      consumer.accept(createFinalEvent("Done"), agentCard);
+    });
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertText(events.get(0), "Done");
+  }
+
+  @Test
+  public void runAsync_withPartConverter_usesItForPeerParts() {
+    RemoteA2AAgent agent =
+        getAgentBuilder()
+            .streaming(true)
+            .a2aPartConverter(a2aPart ->
+                ImmutableList.of(Part.builder().text("converted by custom converter").build()))
+            .build();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("Done"), agentCard));
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertText(events.get(0), "converted by custom converter");
+  }
+
+  @Test
+  public void build_withPolicyAndConverter_throws() {
+    RemoteA2AAgent.Builder builder =
+        getAgentBuilder()
+            .fileUriPolicy(FileUriPolicy.allowAll())
+            .a2aPartConverter(PartConverter.defaultConverter(FileUriPolicy.allowAll()));
+
+    assertThrows(IllegalStateException.class, builder::build);
   }
 
   @Test
@@ -1333,6 +1481,15 @@ public final class RemoteA2AAgentTest {
   private ClientEvent createPartialFileEvent(String uri, String mimeType) {
     return createTestEvent(
         new FilePart(new FileWithUri(mimeType, "file", uri)), TaskState.WORKING, true, false);
+  }
+
+  private ClientEvent createPartialBytesFileEvent(byte[] bytes, String mimeType) {
+    return createTestEvent(
+        new FilePart(
+            new FileWithBytes(mimeType, "file", Base64.getEncoder().encodeToString(bytes))),
+        TaskState.WORKING,
+        true,
+        false);
   }
 
   private ClientEvent createFinalEvent(String text) {

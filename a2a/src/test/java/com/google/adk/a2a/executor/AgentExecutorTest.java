@@ -26,6 +26,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.google.adk.a2a.converters.A2APartConverter;
+import com.google.adk.a2a.converters.FileUriPolicy;
+import com.google.adk.a2a.converters.PartConverter;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.RunConfig;
@@ -43,8 +46,12 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.a2a.server.agentexecution.RequestContext;
 import io.a2a.server.events.EventQueue;
+import io.a2a.spec.FilePart;
+import io.a2a.spec.FileWithUri;
+import io.a2a.spec.InvalidParamsError;
 import io.a2a.spec.Message;
 import io.a2a.spec.MessageSendParams;
+import io.a2a.spec.Task;
 import io.a2a.spec.TaskArtifactUpdateEvent;
 import io.a2a.spec.TaskState;
 import io.a2a.spec.TaskStatus;
@@ -453,6 +460,161 @@ public final class AgentExecutorTest {
   }
 
   @Test
+  public void execute_withCallerFileUri_doesNotPassUriToAgent() {
+    testAgent.setEventsToEmit(Flowable.empty());
+    AgentExecutor executor = executorWith(new InMemorySessionService());
+    Message message =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.USER)
+            .parts(
+                ImmutableList.of(
+                    new TextPart("Summarize this"),
+                    new FilePart(
+                        new FileWithUri("text/plain", "secret.txt", "gs://victim/secret.txt"))))
+            .build();
+    RequestContext ctx = mock(RequestContext.class);
+    when(ctx.getMessage()).thenReturn(message);
+    when(ctx.getTaskId()).thenReturn("task-1");
+    when(ctx.getContextId()).thenReturn(CONTEXT_ID);
+
+    executor.execute(ctx, eventQueue);
+
+    List<Part> parts = testAgent.lastInvocationContext.userContent().get().parts().get();
+    assertThat(parts.stream().filter(part -> part.fileData().isPresent())).isEmpty();
+    assertThat(parts.get(1).text())
+        .hasValue("[A2A file reference not loaded: name=\"secret.txt\", mime=\"text/plain\"]");
+  }
+
+  @Test
+  public void execute_withFileUriPolicy_passesAllowedUriToAgent() {
+    testAgent.setEventsToEmit(Flowable.empty());
+    AgentExecutor executor =
+        executorWith(
+            AgentExecutorConfig.builder()
+                .fileUriPolicy(FileUriPolicy.allowPrefixes("gs://shared/inbox/"))
+                .build());
+
+    executor.execute(
+        requestWithFileUri("gs://shared/inbox/report.pdf", "task-allowed"), eventQueue);
+
+    Part filePart = testAgent.lastInvocationContext.userContent().get().parts().get().get(1);
+    assertThat(filePart.fileData().get().fileUri()).hasValue("gs://shared/inbox/report.pdf");
+  }
+
+  @Test
+  public void execute_withOwnArtifactsPolicy_passesOnlyArtifactsOfTheCallersContext() {
+    testAgent.setEventsToEmit(Flowable.empty());
+    AgentExecutor executor =
+        executorWith(
+            AgentExecutorConfig.builder()
+                .fileUriPolicy(FileUriPolicy.allowOwnArtifacts("artifacts"))
+                .build());
+    String ownArtifact =
+        "gs://artifacts/" + APP_NAME + "/" + CONTEXT_USER_ID + "/" + CONTEXT_ID + "/report.pdf/0";
+
+    executor.execute(requestWithFileUri(ownArtifact, "task-own"), eventQueue);
+    Part ownPart = testAgent.lastInvocationContext.userContent().get().parts().get().get(1);
+    executor.execute(
+        requestWithFileUri(
+            "gs://artifacts/" + APP_NAME + "/A2A_USER_other/other/report.pdf/0", "task-other"),
+        eventQueue);
+    Part otherPart = testAgent.lastInvocationContext.userContent().get().parts().get().get(1);
+
+    assertThat(ownPart.fileData().get().fileUri()).hasValue(ownArtifact);
+    assertThat(otherPart.fileData()).isEmpty();
+  }
+
+  @Test
+  public void execute_withPartConverter_usesConverter() {
+    testAgent.setEventsToEmit(Flowable.empty());
+    A2APartConverter dropFiles =
+        a2aPart ->
+            a2aPart instanceof FilePart
+                ? ImmutableList.of()
+                : PartConverter.defaultConverter(FileUriPolicy.defaultPolicy()).convert(a2aPart);
+    AgentExecutor executor =
+        executorWith(AgentExecutorConfig.builder().a2aPartConverter(dropFiles).build());
+
+    executor.execute(requestWithFileUri("gs://victim/secret.txt", "task-converter"), eventQueue);
+
+    List<Part> parts = testAgent.lastInvocationContext.userContent().get().parts().get();
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).text()).hasValue("Summarize this");
+  }
+
+  @Test
+  public void execute_withRejectPolicy_enqueuesInvalidParamsAndStartsNoTask() {
+    testAgent.setEventsToEmit(Flowable.empty());
+    AgentExecutor executor =
+        executorWith(
+            AgentExecutorConfig.builder()
+                .fileUriPolicy(
+                    FileUriPolicy.builder()
+                        .onDisallowed(FileUriPolicy.DisallowedAction.REJECT)
+                        .build())
+                .build());
+
+    executor.execute(requestWithFileUri("gs://victim/secret.txt", "task-rejected"), eventQueue);
+
+    assertThat(enqueuedEvents).hasSize(1);
+    InvalidParamsError error = (InvalidParamsError) enqueuedEvents.get(0);
+    assertThat(error.getCode()).isEqualTo(InvalidParamsError.DEFAULT_CODE);
+    assertThat(error).hasMessageThat().doesNotContain("victim");
+    assertThat(testAgent.lastInvocationContext).isNull();
+    // The task id is not left marked as running, so a corrected retry is accepted.
+    Message retry =
+        new Message.Builder()
+            .messageId("msg-retry")
+            .role(Message.Role.USER)
+            .parts(ImmutableList.of(new TextPart("Summarize this")))
+            .build();
+    RequestContext retryCtx = mock(RequestContext.class);
+    when(retryCtx.getMessage()).thenReturn(retry);
+    when(retryCtx.getTaskId()).thenReturn("task-rejected");
+    when(retryCtx.getContextId()).thenReturn(CONTEXT_ID);
+    executor.execute(retryCtx, eventQueue);
+    assertThat(testAgent.lastInvocationContext).isNotNull();
+  }
+
+  @Test
+  public void execute_withRejectPolicyOnExistingTask_enqueuesOnlyTheError() {
+    testAgent.setEventsToEmit(Flowable.empty());
+    AgentExecutor executor =
+        executorWith(
+            AgentExecutorConfig.builder()
+                .fileUriPolicy(
+                    FileUriPolicy.builder()
+                        .onDisallowed(FileUriPolicy.DisallowedAction.REJECT)
+                        .build())
+                .build());
+    RequestContext ctx = requestWithFileUri("gs://victim/secret.txt", "task-existing");
+    when(ctx.getTask())
+        .thenReturn(
+            new Task.Builder()
+                .id("task-existing")
+                .contextId(CONTEXT_ID)
+                .status(new TaskStatus(TaskState.INPUT_REQUIRED))
+                .build());
+
+    executor.execute(ctx, eventQueue);
+
+    assertThat(enqueuedEvents).hasSize(1);
+    assertThat(enqueuedEvents.get(0)).isInstanceOf(InvalidParamsError.class);
+    assertThat(testAgent.lastInvocationContext).isNull();
+  }
+
+  @Test
+  public void config_withPolicyAndConverter_throws() {
+    AgentExecutorConfig.Builder builder =
+        AgentExecutorConfig.builder()
+            .fileUriPolicy(FileUriPolicy.allowAll())
+            .a2aPartConverter(PartConverter.defaultConverter(FileUriPolicy.allowAll()));
+
+    assertThrows(IllegalStateException.class, builder::build);
+  }
+
+  @Test
   public void execute_withoutRequestMetadata_leavesRunConfigCustomMetadataEmpty() {
     testAgent.setEventsToEmit(Flowable.empty());
     AgentExecutor executor =
@@ -511,6 +673,32 @@ public final class AgentExecutorTest {
         .artifactService(new InMemoryArtifactService())
         .agentExecutorConfig(AgentExecutorConfig.builder().build())
         .build();
+  }
+
+  private AgentExecutor executorWith(AgentExecutorConfig config) {
+    return new AgentExecutor.Builder()
+        .app(App.builder().name(APP_NAME).rootAgent(testAgent).build())
+        .sessionService(new InMemorySessionService())
+        .artifactService(new InMemoryArtifactService())
+        .agentExecutorConfig(config)
+        .build();
+  }
+
+  private static RequestContext requestWithFileUri(String uri, String taskId) {
+    Message message =
+        new Message.Builder()
+            .messageId("msg-" + taskId)
+            .role(Message.Role.USER)
+            .parts(
+                ImmutableList.of(
+                    new TextPart("Summarize this"),
+                    new FilePart(new FileWithUri("application/pdf", "report.pdf", uri))))
+            .build();
+    RequestContext ctx = mock(RequestContext.class);
+    when(ctx.getMessage()).thenReturn(message);
+    when(ctx.getTaskId()).thenReturn(taskId);
+    when(ctx.getContextId()).thenReturn(CONTEXT_ID);
+    return ctx;
   }
 
   /** Makes the next turn emit one model event; a fresh id keeps turns distinguishable. */

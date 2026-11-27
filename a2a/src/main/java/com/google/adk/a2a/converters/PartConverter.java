@@ -21,8 +21,11 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.a2a.common.GenAiFieldMissingException;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Blob;
 import com.google.genai.types.CodeExecutionResult;
 import com.google.genai.types.Content;
@@ -47,6 +50,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.UnaryOperator;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,6 +77,12 @@ public final class PartConverter {
   public static final String A2A_DATA_PART_END_TAG = "</a2a_datapart_json>";
   public static final String A2A_DATA_PART_TEXT_MIME_TYPE = "text/plain";
 
+  private static final int MAX_PLACEHOLDER_VALUE_LENGTH = 128;
+  private static final ImmutableSet<String> LOGGED_URI_SCHEMES =
+      ImmutableSet.of("gs", "https", "http", "file", "data", "ftp", "s3");
+  private static final A2APartConverter DEFAULT_CONVERTER =
+      defaultConverter(FileUriPolicy.defaultPolicy());
+
   public static Optional<TextPart> toTextPart(io.a2a.spec.Part<?> part) {
     if (part instanceof TextPart textPart) {
       return Optional.of(textPart);
@@ -79,10 +90,73 @@ public final class PartConverter {
     return Optional.empty();
   }
 
-  /** Convert an A2A JSON part into a Google GenAI part representation. */
+  /**
+   * Converts an A2A part into a GenAI part.
+   *
+   * <p>File URIs are not passed on: a {@link FileWithUri} becomes a text placeholder, as under
+   * {@link FileUriPolicy#defaultPolicy()}. Use {@link #defaultConverter(FileUriPolicy)} to admit
+   * some.
+   */
   public static com.google.genai.types.Part toGenaiPart(io.a2a.spec.Part<?> a2aPart) {
-    checkNotNull(a2aPart, "A2A part cannot be null");
+    // The default policy's action is PLACEHOLDER, so every part converts to exactly one part.
+    return DEFAULT_CONVERTER.convert(a2aPart).get(0);
+  }
 
+  /**
+   * Returns the converter ADK uses for A2A parts from callers and remote agents, admitting the file
+   * URIs that {@code policy} allows.
+   */
+  public static A2APartConverter defaultConverter(FileUriPolicy policy) {
+    return defaultConverter(policy, UnaryOperator.identity());
+  }
+
+  /**
+   * Returns the converter ADK uses for A2A parts that arrive in the given ADK session, admitting
+   * the file URIs that {@code policy} allows. Only a converter that knows the session can admit
+   * URIs through {@link FileUriPolicy.Builder#allowOwnArtifacts(String)}.
+   */
+  public static A2APartConverter defaultConverter(
+      FileUriPolicy policy, String appName, String userId, String sessionId) {
+    checkNotNull(appName, "appName");
+    checkNotNull(userId, "userId");
+    checkNotNull(sessionId, "sessionId");
+    return defaultConverter(policy, context -> context.withSession(appName, userId, sessionId));
+  }
+
+  private static A2APartConverter defaultConverter(
+      FileUriPolicy policy, UnaryOperator<FileUriPolicy.FileUriContext> addSession) {
+    checkNotNull(policy, "policy");
+    return a2aPart -> {
+      checkNotNull(a2aPart, "A2A part cannot be null");
+      if (a2aPart instanceof FilePart filePart
+          && filePart.getFile() instanceof FileWithUri fileWithUri
+          && (fileWithUri.uri() == null
+              || !policy.isAllowed(
+                  addSession.apply(
+                      FileUriPolicy.FileUriContext.of(
+                          fileWithUri.uri(), fileWithUri.mimeType(), fileWithUri.name()))))) {
+        return disallowedFilePart(filePart, fileWithUri, policy.onDisallowed());
+      }
+      return ImmutableList.of(convertPart(a2aPart));
+    };
+  }
+
+  /** Converts A2A parts into GenAI parts, passing on no file URIs; see {@link #toGenaiPart}. */
+  public static ImmutableList<com.google.genai.types.Part> toGenaiParts(
+      List<io.a2a.spec.Part<?>> a2aParts) {
+    return toGenaiParts(a2aParts, DEFAULT_CONVERTER);
+  }
+
+  /** Converts A2A parts into GenAI parts with {@code converter}. */
+  public static ImmutableList<com.google.genai.types.Part> toGenaiParts(
+      List<io.a2a.spec.Part<?>> a2aParts, A2APartConverter converter) {
+    checkNotNull(converter, "converter");
+    return a2aParts.stream()
+        .flatMap(a2aPart -> converter.convert(a2aPart).stream())
+        .collect(toImmutableList());
+  }
+
+  private static com.google.genai.types.Part convertPart(io.a2a.spec.Part<?> a2aPart) {
     if (a2aPart instanceof TextPart textPart) {
       com.google.genai.types.Part.Builder partBuilder =
           com.google.genai.types.Part.builder().text(textPart.getText());
@@ -108,22 +182,80 @@ public final class PartConverter {
     throw new IllegalArgumentException("Unsupported A2A part type: " + a2aPart.getClass());
   }
 
-  public static ImmutableList<com.google.genai.types.Part> toGenaiParts(
-      List<io.a2a.spec.Part<?>> a2aParts) {
-    return a2aParts.stream().map(PartConverter::toGenaiPart).collect(toImmutableList());
+  private static ImmutableList<com.google.genai.types.Part> disallowedFilePart(
+      FilePart filePart, FileWithUri fileWithUri, FileUriPolicy.DisallowedAction action) {
+    if (logger.isWarnEnabled()) {
+      logger.warn(
+          "A2A file URI not allowed by the file URI policy (scheme: {}); action: {}",
+          uriScheme(fileWithUri.uri()),
+          action);
+    }
+    return switch (action) {
+      case PLACEHOLDER -> ImmutableList.of(placeholderPart(filePart));
+      case DROP -> ImmutableList.of();
+      case REJECT -> throw new DisallowedFileUriException();
+    };
+  }
+
+  private static com.google.genai.types.Part placeholderPart(FilePart filePart) {
+    FileWithUri fileWithUri = (FileWithUri) filePart.getFile();
+    String text =
+        String.format(
+            "[A2A file reference not loaded: name=\"%s\", mime=\"%s\"]",
+            sanitizeForPlaceholder(fileWithUri.name()),
+            sanitizeForPlaceholder(fileWithUri.mimeType()));
+    com.google.genai.types.Part.Builder builder = com.google.genai.types.Part.builder().text(text);
+    Map<String, Object> metadata = filePart.getMetadata();
+    if (metadata != null && !metadata.isEmpty()) {
+      builder.partMetadata(metadata);
+    }
+    return builder.build();
+  }
+
+  /** Keeps a caller-chosen value on one line and inside its quotes in the placeholder. */
+  private static String sanitizeForPlaceholder(@Nullable String value) {
+    if (value == null) {
+      return "";
+    }
+    String cleaned =
+        value
+            .codePoints()
+            .map(c -> Character.isISOControl(c) || c == '\u2028' || c == '\u2029' ? ' ' : c)
+            .filter(c -> c != '"' && c != '\\')
+            .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+            .toString()
+            .trim();
+    // Counted in code points, so the cut never splits a surrogate pair.
+    return cleaned
+        .codePoints()
+        .limit(MAX_PLACEHOLDER_VALUE_LENGTH)
+        .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+        .toString();
+  }
+
+  /** Names the URI's scheme for logs, without echoing caller-chosen text. */
+  @VisibleForTesting
+  static String uriScheme(@Nullable String uri) {
+    if (uri == null) {
+      return "none";
+    }
+    String lowerUri = Ascii.toLowerCase(uri);
+    return LOGGED_URI_SCHEMES.stream()
+        .filter(scheme -> lowerUri.startsWith(scheme + ":"))
+        .findFirst()
+        .orElse("other");
   }
 
   private static com.google.genai.types.Part convertFilePartToGenAiPart(FilePart filePart) {
     FileContent fileContent = filePart.getFile();
     Map<String, Object> metadata = filePart.getMetadata();
     if (fileContent instanceof FileWithUri fileWithUri) {
+      FileData.Builder fileData = FileData.builder().fileUri(fileWithUri.uri());
+      if (fileWithUri.mimeType() != null) {
+        fileData.mimeType(fileWithUri.mimeType());
+      }
       com.google.genai.types.Part.Builder builder =
-          com.google.genai.types.Part.builder()
-              .fileData(
-                  FileData.builder()
-                      .fileUri(fileWithUri.uri())
-                      .mimeType(fileWithUri.mimeType())
-                      .build());
+          com.google.genai.types.Part.builder().fileData(fileData.build());
       if (metadata != null && !metadata.isEmpty()) {
         builder.partMetadata(metadata);
       }
@@ -271,13 +403,19 @@ public final class PartConverter {
   }
 
   /**
-   * Converts an A2A Message to a Google GenAI Content object.
+   * Converts an A2A Message to a Google GenAI Content object, passing on no file URIs; see {@link
+   * #toGenaiPart}.
    *
    * @param message The A2A Message to convert.
    * @return The converted Google GenAI Content object.
    */
   public static Content messageToContent(Message message) {
-    ImmutableList<com.google.genai.types.Part> parts = toGenaiParts(message.getParts());
+    return messageToContent(message, DEFAULT_CONVERTER);
+  }
+
+  /** Converts an A2A Message to a Google GenAI Content object with {@code converter}. */
+  public static Content messageToContent(Message message, A2APartConverter converter) {
+    ImmutableList<com.google.genai.types.Part> parts = toGenaiParts(message.getParts(), converter);
     return Content.builder().role("user").parts(parts).build();
   }
 
