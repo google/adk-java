@@ -17,15 +17,18 @@
 package com.google.adk.tools;
 
 import static com.google.adk.testing.TestUtils.createEvent;
+import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createSubAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
@@ -73,6 +76,21 @@ public final class AgentToolTest {
   @Before
   public void setUp() {
     sessionService = new InMemorySessionService();
+  }
+
+  @Test
+  public void create_withATaskAgent_throws() {
+    LlmAgent task =
+        LlmAgent.builder()
+            .name("booker")
+            .model(createTestLlm(LlmResponse.builder().build()))
+            .mode(AgentMode.TASK)
+            .build();
+
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> AgentTool.create(task));
+
+    assertThat(e).hasMessageThat().contains("can't run the task agent 'booker'");
   }
 
   @Test
@@ -383,6 +401,187 @@ public final class AgentToolTest {
         agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
 
     assertThat(result).containsExactly("result", "First text part. Second text part.");
+  }
+
+  @Test
+  public void call_treeWithATaskAgent_runsTheTaskAndReturnsTheReply() {
+    TestLlm workerModel =
+        TestLlm.create(
+            createFunctionCallLlmResponse(
+                "f1", "finish_task", ImmutableMap.of("result", "worked")));
+    LlmAgent worker =
+        LlmAgent.builder()
+            .name("worker")
+            .description("Does the work.")
+            .model(workerModel)
+            .mode(AgentMode.TASK)
+            .build();
+    TestLlm coordinatorModel =
+        TestLlm.create(
+            createFunctionCallLlmResponse("t1", "worker", ImmutableMap.of("request", "do it")),
+            createTextLlmResponse("coordinator done"));
+    LlmAgent coordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .description("Coordinates.")
+            .model(coordinatorModel)
+            .subAgents(worker)
+            .build();
+    AgentTool agentTool = AgentTool.create(coordinator);
+
+    Map<String, Object> result =
+        agentTool
+            .runAsync(ImmutableMap.of("request", "go"), createToolContext(coordinator))
+            .blockingGet();
+
+    assertThat(result).containsExactly("result", "coordinator done");
+    assertThat(workerModel.getRequests()).hasSize(1);
+    assertThat(coordinatorModel.getLastRequest().contents().toString()).contains("worked");
+  }
+
+  @Test
+  public void call_treeWithASingleTurnAgent_runsItAsATool() {
+    TestLlm helperModel = TestLlm.create(createTextLlmResponse("Paris"));
+    LlmAgent helper =
+        LlmAgent.builder()
+            .name("helper")
+            .description("Answers.")
+            .model(helperModel)
+            .mode(AgentMode.SINGLE_TURN)
+            .build();
+    TestLlm coordinatorModel =
+        TestLlm.create(
+            createFunctionCallLlmResponse("h1", "helper", ImmutableMap.of("request", "capital?")),
+            createTextLlmResponse("coordinator done"));
+    LlmAgent coordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .description("Coordinates.")
+            .model(coordinatorModel)
+            .subAgents(helper)
+            .build();
+
+    // The caller's name need not be a valid app name.
+    LlmAgent caller = LlmAgent.builder().name("front-desk").build();
+
+    Map<String, Object> result =
+        AgentTool.create(coordinator)
+            .runAsync(ImmutableMap.of("request", "go"), createToolContext(caller))
+            .blockingGet();
+
+    assertThat(result).containsExactly("result", "coordinator done");
+    assertThat(helperModel.getRequests()).hasSize(1);
+    assertThat(coordinatorModel.getLastRequest().contents().toString()).contains("Paris");
+  }
+
+  @Test
+  public void call_treeWithModesAndIncludePlugins_runsTheCallersPlugins() {
+    AtomicBoolean callbackCalled = new AtomicBoolean(false);
+    Plugin plugin =
+        new Plugin() {
+          @Override
+          public String getName() {
+            return "plugin";
+          }
+
+          @Override
+          public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
+            callbackCalled.set(true);
+            return Maybe.empty();
+          }
+        };
+    TestLlm helperModel = TestLlm.create(createTextLlmResponse("Paris"));
+    LlmAgent coordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .description("Coordinates.")
+            .model(
+                TestLlm.create(
+                    createFunctionCallLlmResponse(
+                        "h1", "helper", ImmutableMap.of("request", "capital?")),
+                    createTextLlmResponse("coordinator done")))
+            .subAgents(
+                LlmAgent.builder()
+                    .name("helper")
+                    .description("Answers.")
+                    .model(helperModel)
+                    .mode(AgentMode.SINGLE_TURN)
+                    .build())
+            .build();
+    Session session =
+        sessionService
+            .createSession("test-app", "test-user", (Map<String, Object>) null, "test-session")
+            .blockingGet();
+    ToolContext toolContext =
+        ToolContext.builder(
+                InvocationContext.builder()
+                    .invocationId(InvocationContext.newInvocationContextId())
+                    .agent(coordinator)
+                    .session(session)
+                    .sessionService(sessionService)
+                    .pluginManager(new PluginManager(ImmutableList.of(plugin)))
+                    .build())
+            .build();
+
+    Map<String, Object> result =
+        AgentTool.create(coordinator, /* skipSummarization= */ false, /* includePlugins= */ true)
+            .runAsync(ImmutableMap.of("request", "go"), toolContext)
+            .blockingGet();
+
+    assertThat(result).containsExactly("result", "coordinator done");
+    assertThat(callbackCalled.get()).isTrue();
+    // The helper runs only on the workflow path, so the plugins reached that path.
+    assertThat(helperModel.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void create_treeWithModesAndADottedName_throws() {
+    LlmAgent root =
+        LlmAgent.builder()
+            .name("root")
+            .mode(AgentMode.CHAT)
+            .subAgents(LlmAgent.builder().name("billing.desk").build())
+            .build();
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> AgentTool.create(root));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "Agents [billing.desk] run as workflow nodes, so their names must not contain '.'.");
+  }
+
+  @Test
+  public void create_nonLlmAgentWithAModeBelow_throws() {
+    SequentialAgent steps =
+        SequentialAgent.builder()
+            .name("steps")
+            .subAgents(modeAgent("worker", AgentMode.TASK))
+            .build();
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> AgentTool.create(steps));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("AgentTool runs agent modes only under an LlmAgent, but 'steps' is not one.");
+  }
+
+  @Test
+  public void create_singleTurnAgent_throws() {
+    LlmAgent agent = modeAgent("single", AgentMode.SINGLE_TURN);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> AgentTool.create(agent));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("AgentTool can't run the single-turn agent 'single' as a root.");
+  }
+
+  private static LlmAgent modeAgent(String name, AgentMode mode) {
+    return LlmAgent.builder().name(name).mode(mode).build();
   }
 
   @Test

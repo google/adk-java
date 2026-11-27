@@ -219,6 +219,21 @@ public final class RunnerTest {
   }
 
   @Test
+  public void build_rootWithAMockLlmAgentSubAgent_keepsTheClassicFlow() {
+    // A mock agent's fields stay null, as when a test mocks a subclass of LlmAgent.
+    LlmAgent mockSubAgent = mock(LlmAgent.class);
+    LlmAgent root =
+        LlmAgent.builder()
+            .name("root")
+            .model(createTestLlm(createLlmResponse(createContent("hi"))))
+            .subAgents(mockSubAgent)
+            .build();
+
+    Runner unused =
+        Runner.builder().app(App.builder().name("test").rootAgent(root).build()).build();
+  }
+
+  @Test
   public void eventsCompaction_enabled() {
     TestLlm testLlm =
         createTestLlm(
@@ -3843,7 +3858,6 @@ public final class RunnerTest {
 
   // ResumabilityConfig is off by default and reflects the configured value.
   @Test
-  @SuppressWarnings("deprecation") // ResumabilityConfig is intentionally deprecated (partial).
   public void resumabilityConfig_defaultsToNotResumable() {
     assertThat(ResumabilityConfig.builder().build().isResumable()).isFalse();
     assertThat(ResumabilityConfig.builder().resumable(true).build().isResumable()).isTrue();

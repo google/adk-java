@@ -23,6 +23,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.AgentMode;
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.Role;
@@ -189,7 +190,7 @@ public final class Contents implements RequestProcessor {
             .flatMap(call -> call.args().filter(args -> !args.isEmpty()).stream())
             .findFirst()
             .<List<Part>>map(args -> ImmutableList.of(Part.fromText(argsText(args))))
-            .or(() -> singleTurn ? Optional.empty() : context.userContent().flatMap(Content::parts))
+            .or(() -> singleTurn ? Optional.empty() : taskRequest(context, isolationScope))
             .orElse(ImmutableList.of());
     if (task.isEmpty()) {
       return Optional.empty();
@@ -199,6 +200,31 @@ public final class Contents implements RequestProcessor {
       parts.add(Part.fromText(SINGLE_TURN_NUDGE));
     }
     return Optional.of(Content.builder().role(Role.USER).parts(parts).build());
+  }
+
+  /**
+   * Returns the parts of the request of the task in {@code isolationScope} that no call delegated:
+   * for a task root agent's scope, the message that started the invocation, which later replies
+   * join; else the user content.
+   */
+  private static Optional<List<Part>> taskRequest(
+      InvocationContext context, String isolationScope) {
+    BaseAgent root = context.agent().rootAgent();
+    boolean rootTaskScope =
+        root instanceof LlmAgent rootAgent
+            && rootAgent.hasMode(AgentMode.TASK)
+            && isolationScope.startsWith(root.name() + "@")
+            && isolationScope.indexOf('/') < 0;
+    if (!rootTaskScope) {
+      return context.userContent().flatMap(Content::parts);
+    }
+    return context.session().immutableEvents().stream()
+        .filter(event -> context.invocationId().equals(event.invocationId()))
+        .filter(event ->
+            Objects.equals(event.author(), Role.USER) && event.functionResponses().isEmpty())
+        .flatMap(event -> event.content().flatMap(Content::parts).stream())
+        .filter(parts -> !parts.isEmpty())
+        .findFirst();
   }
 
   /** Writes call arguments as JSON, or as their text when a value has no JSON form. */

@@ -16,10 +16,14 @@
 
 package com.google.adk.tools;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.SchemaUtils;
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.BaseAgentConfig;
 import com.google.adk.agents.ConfigAgentUtils;
@@ -28,6 +32,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.StreamingMode;
+import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.plugins.Plugin;
@@ -47,8 +52,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-/** AgentTool implements a tool that allows an agent to call another agent. */
+/**
+ * AgentTool implements a tool that allows an agent to call another agent.
+ *
+ * <p>An {@link LlmAgent} whose tree sets an agent mode runs as a workflow node, so its task and
+ * single-turn sub-agents work; any other agent runs outside a workflow, so its tree may not set a
+ * mode. The agent itself can't be a single-turn or task agent.
+ */
 public class AgentTool extends BaseTool {
+
+  // An App needs a name that is an identifier, while the nested runner uses the caller's.
+  private static final String NESTED_APP_NAME = "agent_tool";
 
   private final BaseAgent agent;
   private final boolean skipSummarization;
@@ -94,9 +108,73 @@ public class AgentTool extends BaseTool {
 
   protected AgentTool(BaseAgent agent, boolean skipSummarization, boolean includePlugins) {
     super(agent.name(), agent.description());
+    requireRunnableRoot(agent);
     this.agent = agent;
     this.skipSummarization = skipSummarization;
     this.includePlugins = includePlugins;
+  }
+
+  /**
+   * Throws {@link IllegalArgumentException} if this tool can't run {@code agent} or return its
+   * output.
+   */
+  private static void requireRunnableRoot(BaseAgent agent) {
+    boolean setsMode = setsMode(agent);
+    checkArgument(
+        agent instanceof LlmAgent || !setsMode,
+        "AgentTool runs agent modes only under an LlmAgent, but '%s' is not one.",
+        agent.name());
+    // A single-turn agent runs only as its parent's child node; as a root it would lose its mode.
+    checkArgument(
+        !hasMode(agent, AgentMode.SINGLE_TURN),
+        "AgentTool can't run the single-turn agent '%s' as a root.",
+        agent.name());
+    // A task ends in a finish_task response with no text, so its output would be lost.
+    checkArgument(
+        !hasMode(agent, AgentMode.TASK),
+        "AgentTool can't run the task agent '%s'; add it to a chat agent's subAgents.",
+        agent.name());
+    // Agents in a tree with modes run as workflow nodes, whose paths use '.' as a separator.
+    if (setsMode) {
+      ImmutableList<String> dottedNames =
+          agentTree(agent).stream()
+              .map(BaseAgent::name)
+              .filter(name -> name.contains("."))
+              .sorted()
+              .distinct()
+              .collect(toImmutableList());
+      checkArgument(
+          dottedNames.isEmpty(),
+          "Agents %s run as workflow nodes, so their names must not contain '.'.",
+          dottedNames);
+    }
+  }
+
+  /** Returns {@code agent} and every agent below it. */
+  private static ImmutableList<BaseAgent> agentTree(BaseAgent agent) {
+    ImmutableList.Builder<BaseAgent> tree = ImmutableList.builder();
+    tree.add(agent);
+    if (agent.subAgents() != null) {
+      agent.subAgents().forEach(subAgent -> tree.addAll(agentTree(subAgent)));
+    }
+    return tree.build();
+  }
+
+  private static boolean hasMode(BaseAgent agent, AgentMode mode) {
+    return modeOf(agent).equals(Optional.of(mode));
+  }
+
+  /** Returns whether {@code agent} or an agent below it sets a mode. */
+  private static boolean setsMode(BaseAgent agent) {
+    return modeOf(agent).isPresent()
+        || (agent.subAgents() != null && agent.subAgents().stream().anyMatch(AgentTool::setsMode));
+  }
+
+  private static Optional<AgentMode> modeOf(BaseAgent agent) {
+    // A mocked LlmAgent returns null from mode().
+    return agent instanceof LlmAgent llmAgent && llmAgent.mode() != null
+        ? llmAgent.mode()
+        : Optional.empty();
   }
 
   @VisibleForTesting
@@ -188,12 +266,18 @@ public class AgentTool extends BaseTool {
     InvocationContext parentContext = toolContext.invocationContext();
     ImmutableList<Plugin> plugins =
         this.includePlugins ? ImmutableList.of(parentContext.pluginManager()) : ImmutableList.of();
+    // Set before app(), so the runner keeps the caller's agent name as its app name.
+    Runner.Builder runnerBuilder = Runner.builder().appName(toolContext.agentName());
+    // A tree with modes runs as a workflow node, as Python's AgentTool runs a root LlmAgent.
+    if (agent instanceof LlmAgent llmAgent && setsMode(llmAgent)) {
+      runnerBuilder.app(
+          App.builder().name(NESTED_APP_NAME).rootNode(llmAgent).plugins(plugins).build());
+    } else {
+      runnerBuilder.agent(this.agent).plugins(plugins);
+    }
     // The nested run inherits the caller's scheduler, clock, and id provider.
     Runner runner =
-        Runner.builder()
-            .agent(this.agent)
-            .appName(toolContext.agentName())
-            .plugins(plugins)
+        runnerBuilder
             .memoryService(new InMemoryMemoryService())
             .scheduler(parentContext.scheduler())
             .instantSource(parentContext.instantSource())

@@ -18,12 +18,15 @@ package com.google.adk.agents;
 
 import com.google.adk.SchemaUtils;
 import com.google.adk.models.LlmRequest;
-import com.google.adk.tools.AgentTool;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.adk.workflow.DynamicNodeFailedException;
 import com.google.adk.workflow.RunNodeConfig;
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
+import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Collections;
@@ -38,18 +41,29 @@ import org.jspecify.annotations.Nullable;
  */
 final class SingleTurnAgentTool extends BaseTool {
 
+  // The parameters AgentTool declares for an agent without an input schema.
+  private static final Schema DEFAULT_INPUT_SCHEMA =
+      Schema.builder()
+          .type("OBJECT")
+          .properties(ImmutableMap.of("request", Schema.builder().type("STRING").build()))
+          .required(ImmutableList.of("request"))
+          .build();
+
   private final LlmAgent agent;
-  private final Optional<FunctionDeclaration> declaration;
 
   SingleTurnAgentTool(LlmAgent agent) {
     super(agent.name(), agent.description());
     this.agent = agent;
-    this.declaration = AgentTool.create(agent).declaration();
   }
 
   @Override
   public Optional<FunctionDeclaration> declaration() {
-    return declaration;
+    return Optional.of(
+        FunctionDeclaration.builder()
+            .name(name())
+            .description(Strings.nullToEmpty(description()))
+            .parameters(agent.inputSchema().orElse(DEFAULT_INPUT_SCHEMA))
+            .build());
   }
 
   /** Outside a workflow the agent is a transfer target instead, so the model is not offered it. */
