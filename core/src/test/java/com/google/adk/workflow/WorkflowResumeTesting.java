@@ -245,6 +245,21 @@ final class WorkflowResumeTesting {
       this(root, resumable, new InMemorySessionService(), plugins);
     }
 
+    /** A session whose app uses {@code resumabilityConfig}, such as legacy resumability. */
+    WorkflowSession(Node root, ResumabilityConfig resumabilityConfig) {
+      this.runner =
+          Runner.builder()
+              .app(
+                  App.builder()
+                      .name(APP)
+                      .rootNode(root)
+                      .resumabilityConfig(resumabilityConfig)
+                      .build())
+              .sessionService(new InMemorySessionService())
+              .build();
+      this.sessionId = runner.sessionService().createSession(APP, USER).blockingGet().id();
+    }
+
     private WorkflowSession(
         Node root, boolean resumable, BaseSessionService sessionService, Plugin... plugins) {
       App.Builder app = App.builder().name(APP).rootNode(root).plugins(plugins);

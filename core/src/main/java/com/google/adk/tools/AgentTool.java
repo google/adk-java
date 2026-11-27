@@ -16,10 +16,13 @@
 
 package com.google.adk.tools;
 
+import static com.google.common.base.Preconditions.checkArgument;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.SchemaUtils;
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.BaseAgentConfig;
 import com.google.adk.agents.ConfigAgentUtils;
@@ -94,6 +97,11 @@ public class AgentTool extends BaseTool {
 
   protected AgentTool(BaseAgent agent, boolean skipSummarization, boolean includePlugins) {
     super(agent.name(), agent.description());
+    // A task ends in a finish_task response with no text, so its output would be lost.
+    checkArgument(
+        !(agent instanceof LlmAgent llmAgent && llmAgent.hasMode(AgentMode.TASK)),
+        "AgentTool can't run the task agent '%s'; add it to a chat agent's subAgents.",
+        agent.name());
     this.agent = agent;
     this.skipSummarization = skipSummarization;
     this.includePlugins = includePlugins;
