@@ -17,10 +17,12 @@
 package com.google.adk.models;
 
 import static com.google.adk.testing.TestUtils.createInvocationContext;
+import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assume.assumeNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -31,6 +33,7 @@ import com.anthropic.backends.Backend;
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.core.JsonValue;
+import com.anthropic.core.http.HttpRequest;
 import com.anthropic.models.messages.Base64ImageSource;
 import com.anthropic.models.messages.CacheControlEphemeral;
 import com.anthropic.models.messages.ContentBlock;
@@ -1529,8 +1532,9 @@ public final class ClaudeTest {
 
     String userAgent = getOnlyElement(headers.get("user-agent"));
     assertThat(userAgent).startsWith("AnthropicClientImpl/Java ");
-    assertThat(userAgent).endsWith(" " + TrackingHeaders.VALUE);
-    assertThat(headers.get("x-goog-api-client")).containsExactly(TrackingHeaders.VALUE);
+    assertThat(userAgent).endsWith(" " + TrackingHeaders.value(/* includeRuntimeTag= */ false));
+    assertThat(headers.get("x-goog-api-client"))
+        .containsExactly(TrackingHeaders.value(/* includeRuntimeTag= */ false));
   }
 
   @Test
@@ -1538,14 +1542,41 @@ public final class ClaudeTest {
     Headers headers =
         headersSentThrough(AnthropicOkHttpClient.builder().putHeader("User-Agent", "my-app/1.0"));
 
-    assertThat(headers.get("user-agent")).containsExactly("my-app/1.0 " + TrackingHeaders.VALUE);
-    assertThat(headers.get("x-goog-api-client")).containsExactly(TrackingHeaders.VALUE);
+    assertThat(headers.get("user-agent"))
+        .containsExactly("my-app/1.0 " + TrackingHeaders.value(/* includeRuntimeTag= */ false));
+    assertThat(headers.get("x-goog-api-client"))
+        .containsExactly(TrackingHeaders.value(/* includeRuntimeTag= */ false));
+  }
+
+  @Test
+  public void generateContent_googleApiHost_sendsTheRuntimeTag() throws Exception {
+    assumeNotNull(System.getenv("K_SERVICE"));
+
+    Headers headers =
+        headersSentThrough(
+            AnthropicOkHttpClient.builder(), "https://us-east5-aiplatform.googleapis.com");
+
+    String value = TrackingHeaders.ADK_TAG + "+cloud_run gl-java/" + JAVA_VERSION.value();
+    assertThat(getOnlyElement(headers.get("user-agent"))).endsWith(" " + value);
+    assertThat(headers.get("x-goog-api-client")).containsExactly(value);
+  }
+
+  @Test
+  public void generateContent_otherHost_sendsNoRuntimeTag() throws Exception {
+    Headers headers = headersSentThrough(AnthropicOkHttpClient.builder(), ANTHROPIC_API_URL);
+
+    assertThat(getOnlyElement(headers.get("user-agent")))
+        .endsWith(" " + TrackingHeaders.value(/* includeRuntimeTag= */ false));
+    assertThat(headers.get("x-goog-api-client"))
+        .containsExactly(TrackingHeaders.value(/* includeRuntimeTag= */ false));
   }
 
   @Test
   public void constructor_nullClient_doesNotThrow() {
     assertThat(new Claude("claude-test", (AnthropicClient) null).model()).isEqualTo("claude-test");
   }
+
+  private static final String ANTHROPIC_API_URL = "https://api.anthropic.com";
 
   private static final String MESSAGE_JSON =
       "{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\","
@@ -1674,7 +1705,7 @@ public final class ClaudeTest {
   private List<LlmResponse> streamedResponses(String sseBody, LlmRequest request) throws Exception {
     HttpServer server = serve("text/event-stream", sseBody, new AtomicReference<>());
     try {
-      return claudeServedBy(server, AnthropicOkHttpClient.builder())
+      return claudeServedBy(server, AnthropicOkHttpClient.builder(), ANTHROPIC_API_URL)
           .generateContent(request, /* stream= */ true)
           .toList()
           .blockingGet();
@@ -1737,11 +1768,20 @@ public final class ClaudeTest {
    */
   private static Headers headersSentThrough(AnthropicOkHttpClient.Builder clientBuilder)
       throws Exception {
+    return headersSentThrough(clientBuilder, ANTHROPIC_API_URL);
+  }
+
+  /**
+   * Like {@link #headersSentThrough(AnthropicOkHttpClient.Builder)}, with a client that reports
+   * {@code reportedBaseUrl} as its base URL.
+   */
+  private static Headers headersSentThrough(
+      AnthropicOkHttpClient.Builder clientBuilder, String reportedBaseUrl) throws Exception {
     AtomicReference<Headers> requestHeaders = new AtomicReference<>();
     HttpServer server = serve("application/json", MESSAGE_JSON, requestHeaders);
     try {
       LlmResponse response =
-          claudeServedBy(server, clientBuilder)
+          claudeServedBy(server, clientBuilder, reportedBaseUrl)
               .generateContent(request(userText("Ping")), /* stream= */ false)
               .blockingFirst();
 
@@ -1772,9 +1812,13 @@ public final class ClaudeTest {
     return server;
   }
 
+  /**
+   * Returns a {@link Claude} whose client reports {@code reportedBaseUrl} as its base URL but sends
+   * every request to {@code server}.
+   */
   private static Claude claudeServedBy(
-      HttpServer server, AnthropicOkHttpClient.Builder clientBuilder) {
-    String baseUrl =
+      HttpServer server, AnthropicOkHttpClient.Builder clientBuilder, String reportedBaseUrl) {
+    String serverUrl =
         "http://"
             + InetAddresses.toUriString(server.getAddress().getAddress())
             + ":"
@@ -1783,7 +1827,12 @@ public final class ClaudeTest {
         new Backend() {
           @Override
           public String baseUrl() {
-            return baseUrl;
+            return reportedBaseUrl;
+          }
+
+          @Override
+          public HttpRequest prepareRequest(HttpRequest request) {
+            return request.toBuilder().baseUrl(serverUrl).build();
           }
 
           @Override

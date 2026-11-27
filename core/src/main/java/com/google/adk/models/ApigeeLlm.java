@@ -104,8 +104,9 @@ public class ApigeeLlm extends BaseLlm {
             // adds its own gl-java tag.
             .headers(
                 this.apiType == ApiType.CHAT_COMPLETIONS
-                    ? TrackingHeaders.mergeInto(callerHeaders)
-                    : TrackingHeaders.mergeIntoGenAiSdkHeaders(callerHeaders));
+                    ? TrackingHeaders.mergeInto(callerHeaders, /* includeRuntimeTag= */ false)
+                    : TrackingHeaders.mergeIntoGenAiSdkHeaders(
+                        callerHeaders, /* includeRuntimeTag= */ false));
     String apiVersion = identifyApiVersion(modelName);
     if (!apiVersion.isEmpty()) {
       httpOptionsBuilder.apiVersion(apiVersion);

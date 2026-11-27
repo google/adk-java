@@ -16,32 +16,25 @@
 
 package com.google.adk.models;
 
+import static com.google.adk.models.LocalModelServer.GENERATE_CONTENT_JSON;
+import static com.google.adk.models.LocalModelServer.headersSentToLocalServer;
 import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
-import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assume.assumeNotNull;
 
 import com.google.adk.models.FakeGeminiApi.Kind;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.net.InetAddresses;
 import com.google.genai.Client;
 import com.google.genai.types.ClientOptions;
 import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.HttpOptions;
 import com.google.genai.types.Part;
-import com.sun.net.httpserver.HttpServer;
-import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
-import java.util.function.Supplier;
 import okhttp3.Headers;
 import okhttp3.OkHttpClient;
 import org.junit.Test;
@@ -75,15 +68,19 @@ public final class GeminiTrackingHeadersTest {
   @Test
   public void generateContent_adkBuiltApiKeyClient_sendsTrackingHeaders() throws Exception {
     assertTrackingHeaders(
-        headersSentByAdkBuiltClient(() -> new Gemini("gemini-test", "test-api-key")),
+        headersSentToLocalServer(
+                url -> new Gemini("gemini-test", "test-api-key"), GENERATE_CONTENT_JSON)
+            ::getFirst,
         TrackingHeaders.ADK_TAG);
   }
 
   @Test
   public void generateContent_adkBuiltBuilderClient_sendsTrackingHeaders() throws Exception {
     assertTrackingHeaders(
-        headersSentByAdkBuiltClient(
-            () -> Gemini.builder().modelName("gemini-test").apiKey("test-api-key").build()),
+        headersSentToLocalServer(
+                url -> Gemini.builder().modelName("gemini-test").apiKey("test-api-key").build(),
+                GENERATE_CONTENT_JSON)
+            ::getFirst,
         TrackingHeaders.ADK_TAG);
   }
 
@@ -92,7 +89,9 @@ public final class GeminiTrackingHeadersTest {
     assumeNotNull(System.getenv("GOOGLE_API_KEY"));
 
     assertTrackingHeaders(
-        headersSentByAdkBuiltClient(() -> LlmRegistry.getLlm("gemini-tracking-headers-test")),
+        headersSentToLocalServer(
+                url -> LlmRegistry.getLlm("gemini-tracking-headers-test"), GENERATE_CONTENT_JSON)
+            ::getFirst,
         TrackingHeaders.ADK_TAG);
   }
 
@@ -103,8 +102,10 @@ public final class GeminiTrackingHeadersTest {
 
     // Empty credentials let the environment configure the backend, here the Gemini API key.
     assertTrackingHeaders(
-        headersSentByAdkBuiltClient(
-            () -> new Gemini("gemini-test", VertexCredentials.builder().build())),
+        headersSentToLocalServer(
+                url -> new Gemini("gemini-test", VertexCredentials.builder().build()),
+                GENERATE_CONTENT_JSON)
+            ::getFirst,
         TrackingHeaders.ADK_TAG);
   }
 
@@ -163,44 +164,6 @@ public final class GeminiTrackingHeadersTest {
     Headers headers = onlyGenerateHeaders();
     assertThat(headers.get("user-agent")).endsWith(" my-app/1.0 google-adk/0.0.1");
     assertTrackingHeaders(headers::get, "google-adk/0.0.1");
-  }
-
-  /**
-   * Sends one request through a {@link Gemini} that builds its own client pointed at a local server
-   * with {@link Client#setDefaultBaseUrls}, and returns the headers the server received.
-   */
-  private static Function<String, String> headersSentByAdkBuiltClient(
-      Supplier<? extends BaseLlm> model) throws Exception {
-    AtomicReference<com.sun.net.httpserver.Headers> received = new AtomicReference<>();
-    HttpServer server =
-        HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-    server.createContext(
-        "/",
-        exchange -> {
-          received.set(exchange.getRequestHeaders());
-          byte[] body = GENERATE_CONTENT_JSON.getBytes(UTF_8);
-          exchange.getResponseHeaders().set("Content-Type", "application/json");
-          exchange.sendResponseHeaders(200, body.length);
-          try (OutputStream out = exchange.getResponseBody()) {
-            out.write(body);
-          }
-        });
-    server.start();
-    Optional<String> serverUrl =
-        Optional.of(
-            "http://"
-                + InetAddresses.toUriString(server.getAddress().getAddress())
-                + ":"
-                + server.getAddress().getPort());
-    // The environment can select Vertex AI instead of the Gemini API, so redirect both backends.
-    Client.setDefaultBaseUrls(serverUrl, serverUrl);
-    try {
-      generate(model.get(), request(), /* stream= */ false);
-      return name -> received.get().getFirst(name);
-    } finally {
-      Client.setDefaultBaseUrls(Optional.empty(), Optional.empty());
-      server.stop(0);
-    }
   }
 
   private Client clientWithHeaders(Map<String, String> headers) {
@@ -262,8 +225,4 @@ public final class GeminiTrackingHeadersTest {
               .containsNoDuplicates();
         });
   }
-
-  private static final String GENERATE_CONTENT_JSON =
-      "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]},"
-          + "\"finishReason\":\"STOP\"}]}";
 }

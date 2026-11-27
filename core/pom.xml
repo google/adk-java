@@ -251,6 +251,10 @@
       </plugin>
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- a hosting runtime variable adds a suffix to the tracking headers tests assert -->
+          <excludedEnvironmentVariables>GOOGLE_CLOUD_AGENT_ENGINE_ID,K_SERVICE,CLOUD_RUN_JOB,KUBERNETES_SERVICE_HOST</excludedEnvironmentVariables>
+        </configuration>
         <executions>
           <execution>
             <!-- run all tests with standard env -->
@@ -293,7 +297,7 @@
                 <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
                 <GOOGLE_GENAI_USE_VERTEXAI>false</GOOGLE_GENAI_USE_VERTEXAI>
               </environmentVariables>
-              <excludedEnvironmentVariables>GOOGLE_GENAI_USE_ENTERPRISE</excludedEnvironmentVariables>
+              <excludedEnvironmentVariables>GOOGLE_GENAI_USE_ENTERPRISE,GOOGLE_CLOUD_AGENT_ENGINE_ID,K_SERVICE,CLOUD_RUN_JOB,KUBERNETES_SERVICE_HOST</excludedEnvironmentVariables>
             </configuration>
           </execution>
           <execution>
@@ -308,7 +312,7 @@
                 <!-- runs a second variant of the test method -->
                 <GOOGLE_GENAI_USE_VERTEXAI>true</GOOGLE_GENAI_USE_VERTEXAI>
               </environmentVariables>
-              <excludedEnvironmentVariables>GOOGLE_GENAI_USE_ENTERPRISE</excludedEnvironmentVariables>
+              <excludedEnvironmentVariables>GOOGLE_GENAI_USE_ENTERPRISE,GOOGLE_CLOUD_AGENT_ENGINE_ID,K_SERVICE,CLOUD_RUN_JOB,KUBERNETES_SERVICE_HOST</excludedEnvironmentVariables>
             </configuration>
           </execution>
           <execution>
@@ -322,7 +326,7 @@
                 <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
                 <GOOGLE_GENAI_USE_ENTERPRISE>true</GOOGLE_GENAI_USE_ENTERPRISE>
               </environmentVariables>
-              <excludedEnvironmentVariables>GOOGLE_GENAI_USE_VERTEXAI</excludedEnvironmentVariables>
+              <excludedEnvironmentVariables>GOOGLE_GENAI_USE_VERTEXAI,GOOGLE_CLOUD_AGENT_ENGINE_ID,K_SERVICE,CLOUD_RUN_JOB,KUBERNETES_SERVICE_HOST</excludedEnvironmentVariables>
             </configuration>
           </execution>
           <execution>
@@ -351,6 +355,22 @@
                 <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
                 <GOOGLE_GENAI_USE_VERTEXAI>false</GOOGLE_GENAI_USE_VERTEXAI>
               </environmentVariables>
+            </configuration>
+          </execution>
+          <execution>
+            <id>runtime-tag-tracking-headers</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <test>RuntimeTagTrackingHeadersTest, ClaudeTest#generateContent_googleApiHost_sendsTheRuntimeTag+generateContent_otherHost_sendsNoRuntimeTag</test>
+              <!-- these tests run as on Cloud Run; Apigee genai reads the API key -->
+              <environmentVariables>
+                <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
+                <K_SERVICE>test-service</K_SERVICE>
+                <GOOGLE_GENAI_USE_VERTEXAI>false</GOOGLE_GENAI_USE_VERTEXAI>
+              </environmentVariables>
+              <excludedEnvironmentVariables>GOOGLE_CLOUD_AGENT_ENGINE_ID,CLOUD_RUN_JOB,KUBERNETES_SERVICE_HOST</excludedEnvironmentVariables>
             </configuration>
           </execution>
         </executions>
