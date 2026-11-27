@@ -258,7 +258,12 @@ public class SpringAI extends BaseLlm {
         return Flowable.empty();
       }
       for (Part part : chunkParts) {
-        if (part.text().isPresent()) {
+        if (part.thoughtSignature().isPresent()) {
+          // A signature covers one complete block. Merging signed text would invalidate replay,
+          // and dropping empty text would turn signed thinking into redacted thinking.
+          flushText();
+          parts.add(part);
+        } else if (part.text().isPresent()) {
           boolean isThought = part.thought().orElse(false);
           if (isThought != textIsThought) {
             flushText();
