@@ -17,6 +17,7 @@
 package com.google.adk.summarizer;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventCompaction;
@@ -36,7 +37,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * This class performs events compaction in a sliding window fashion based on the {@link
- * EventsCompactionConfig}.
+ * EventsCompactionConfig}. It summarizes only events without an isolation scope.
  */
 public final class SlidingWindowEventCompactor implements EventCompactor {
 
@@ -116,8 +117,12 @@ public final class SlidingWindowEventCompactor implements EventCompactor {
     long lastCompactTimestamp = -1L;
     int targetSize = -1;
 
+    // Scoped events stay out, as in Python, so a task's private turns never reach the summary.
+    ImmutableList<Event> events =
+        session.immutableEvents().stream()
+            .filter(event -> event.isolationScope().isEmpty())
+            .collect(toImmutableList());
     // Scan the list of events backward so that timestamp are in decreasing fashion.
-    ImmutableList<Event> events = session.immutableEvents();
     ListIterator<Event> iter = events.listIterator(events.size());
     while (iter.hasPrevious()) {
       Event event = iter.previous();

@@ -24,6 +24,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.sessions.BaseSessionService;
@@ -62,6 +63,7 @@ public class CompactionTest {
 
     when(context.session()).thenReturn(session);
     when(context.sessionService()).thenReturn(sessionService);
+    when(context.agent()).thenReturn(LlmAgent.builder().name("agent").build());
   }
 
   @Test
@@ -94,7 +96,7 @@ public class CompactionTest {
     when(context.session()).thenReturn(session);
 
     // Summarizer mock
-    Event summaryEvent = mock(Event.class);
+    Event summaryEvent = Event.builder().id("summary").timestamp(4).build();
     when(summarizer.summarizeEvents(any())).thenReturn(Maybe.just(summaryEvent));
     when(sessionService.appendEvent(any(), any())).thenReturn(Single.just(summaryEvent));
 
@@ -107,6 +109,37 @@ public class CompactionTest {
 
     // Verify compaction happened and result was appended
     verify(sessionService).appendEvent(eq(session), eq(summaryEvent));
+  }
+
+  @Test
+  public void processRequest_inAScope_compactsOnlyThatScope() {
+    EventsCompactionConfig config = new EventsCompactionConfig(5, 1, summarizer, 100, 1);
+    when(context.eventsCompactionConfig()).thenReturn(Optional.of(config));
+    when(context.isolationScope()).thenReturn(Optional.of("t1"));
+    Event taskTurn = scoped(Event.builder().timestamp(1), "t1");
+    Event otherTurn = Event.builder().timestamp(2).build();
+    Event taskReply =
+        scoped(
+            Event.builder()
+                .timestamp(3)
+                .author("agent")
+                .usageMetadata(
+                    GenerateContentResponseUsageMetadata.builder().promptTokenCount(200).build()),
+            "t1");
+    session =
+        Session.builder("test-session")
+            .events(ImmutableList.of(taskTurn, otherTurn, taskReply))
+            .build();
+    when(context.session()).thenReturn(session);
+    Event summaryEvent = Event.builder().id("summary").timestamp(4).build();
+    when(summarizer.summarizeEvents(any())).thenReturn(Maybe.just(summaryEvent));
+    when(sessionService.appendEvent(any(), any())).thenReturn(Single.just(summaryEvent));
+
+    new Compaction().processRequest(context, request).test().assertNoErrors();
+
+    verify(summarizer).summarizeEvents(eq(ImmutableList.of(taskTurn)));
+    verify(sessionService)
+        .appendEvent(eq(session), eq(summaryEvent.toBuilder().isolationScope("t1").build()));
   }
 
   @Test
@@ -153,7 +186,7 @@ public class CompactionTest {
         Session.builder("test-session").events(ImmutableList.of(event1, event2, event3)).build();
     when(context.session()).thenReturn(session);
 
-    Event summaryEvent = mock(Event.class);
+    Event summaryEvent = Event.builder().id("summary").timestamp(4).build();
     when(summarizer.summarizeEvents(any())).thenReturn(Maybe.just(summaryEvent));
     when(sessionService.appendEvent(any(), any())).thenReturn(Single.just(summaryEvent));
 
@@ -188,10 +221,15 @@ public class CompactionTest {
   private static Event eventWithPromptTokenCount(long timestamp, int promptTokenCount) {
     return Event.builder()
         .timestamp(timestamp)
+        .author("agent")
         .usageMetadata(
             GenerateContentResponseUsageMetadata.builder()
                 .promptTokenCount(promptTokenCount)
                 .build())
         .build();
+  }
+
+  private static Event scoped(Event.Builder event, String scope) {
+    return event.isolationScope(scope).build();
   }
 }

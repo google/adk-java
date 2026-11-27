@@ -436,6 +436,82 @@ public class TailRetentionEventCompactorTest {
     assertThat(e4.timestamp()).isEqualTo(4);
   }
 
+  @Test
+  public void compact_withAScope_summarizesOnlyItsEventsAndGivesTheSummaryItsScope() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            inScope(createEvent(1, "Task1"), "t1"),
+            createEvent(2, "Other"),
+            inScope(createEvent(3, "Task2"), "t1"),
+            withUsage(inScope(createEvent(4, "Task3"), "t1"), 200),
+            withUsage(createEvent(5, "Unscoped"), 10));
+    Session session = Session.builder("id").events(events).build();
+    Event compactedEvent = createCompactedEvent(1, 1, "Summary", 6);
+    when(mockSummarizer.summarizeEvents(any())).thenReturn(Maybe.just(compactedEvent));
+    when(mockSessionService.appendEvent(any(), any())).then(i -> Single.just(i.getArgument(1)));
+    TailRetentionEventCompactor compactor =
+        new TailRetentionEventCompactor(mockSummarizer, 2, 100, "t1", /* agentName= */ null);
+
+    compactor.compact(session, mockSessionService).test().assertComplete();
+
+    verify(mockSummarizer).summarizeEvents(eventListCaptor.capture());
+    assertThat(eventListCaptor.getValue().stream().map(event -> getPromptText(event)))
+        .containsExactly("Task1");
+    verify(mockSessionService)
+        .appendEvent(eq(session), eq(compactedEvent.toBuilder().isolationScope("t1").build()));
+  }
+
+  @Test
+  public void compact_withAnAgentName_skipsAnotherAgentsCountInTheScope() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            inScope(createEvent(1, "Task1"), "t1"),
+            inScope(createEvent(2, "Task2"), "t1"),
+            withUsage(inScope(createEvent(3, "Task3"), "t1"), 200).toBuilder()
+                .author("worker")
+                .build(),
+            withUsage(inScope(createEvent(4, "Helper"), "t1"), 10).toBuilder()
+                .author("helper")
+                .build());
+    Session session = Session.builder("id").events(events).build();
+    Event compactedEvent = createCompactedEvent(1, 2, "Summary", 5);
+    when(mockSummarizer.summarizeEvents(any())).thenReturn(Maybe.just(compactedEvent));
+    when(mockSessionService.appendEvent(any(), any())).then(i -> Single.just(i.getArgument(1)));
+    TailRetentionEventCompactor compactor =
+        new TailRetentionEventCompactor(mockSummarizer, 2, 100, "t1", "worker");
+
+    compactor.compact(session, mockSessionService).test().assertComplete();
+
+    // The helper's small count measures its own prompt, so the worker's count decides.
+    verify(mockSummarizer).summarizeEvents(any());
+  }
+
+  @Test
+  public void compact_withoutAScope_leavesScopedEventsOut() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createEvent(1, "Event1"),
+            inScope(createEvent(2, "Task"), "t1"),
+            createEvent(3, "Retain1"),
+            withUsage(createEvent(4, "Retain2"), 200));
+    Session session = Session.builder("id").events(events).build();
+    Event compactedEvent = createCompactedEvent(1, 1, "Summary", 5);
+    when(mockSummarizer.summarizeEvents(any())).thenReturn(Maybe.just(compactedEvent));
+    when(mockSessionService.appendEvent(any(), any())).then(i -> Single.just(i.getArgument(1)));
+    TailRetentionEventCompactor compactor = new TailRetentionEventCompactor(mockSummarizer, 2, 100);
+
+    compactor.compact(session, mockSessionService).test().assertComplete();
+
+    verify(mockSummarizer).summarizeEvents(eventListCaptor.capture());
+    assertThat(eventListCaptor.getValue().stream().map(event -> getPromptText(event)))
+        .containsExactly("Event1");
+    verify(mockSessionService).appendEvent(eq(session), eq(compactedEvent));
+  }
+
+  private static Event inScope(Event event, String scope) {
+    return event.toBuilder().isolationScope(scope).build();
+  }
+
   private static Event createEvent(long timestamp, String text) {
     return Event.builder()
         .timestamp(timestamp)

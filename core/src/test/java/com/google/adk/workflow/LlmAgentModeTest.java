@@ -744,6 +744,23 @@ public final class LlmAgentModeTest {
   }
 
   @Test
+  public void singleTurnSubAgentOfARootNodeAgent_runsAsATool() {
+    TestLlm model =
+        TestLlm.create(
+            createFunctionCallLlmResponse("call_1", "helper", ImmutableMap.of("request", "hi")),
+            createTextLlmResponse("done"));
+    LlmAgent coordinator =
+        chat(
+            "coordinator",
+            model,
+            singleTurn("helper", TestLlm.create(createTextLlmResponse("Paris"))));
+
+    new WorkflowSession(coordinator).advance(go());
+
+    assertThat(onlyResult(model)).isEqualTo("Paris");
+  }
+
+  @Test
   public void singleTurnSubAgentOutsideAWorkflow_isATransferTargetAndNotATool() {
     TestLlm helperModel = TestLlm.create("Paris");
     TestLlm model =
