@@ -40,6 +40,7 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.flows.llmflows.PersistBarrier;
+import com.google.adk.flows.llmflows.SteeringState;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.Model;
 import com.google.adk.platform.UuidProvider;
@@ -65,6 +66,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.MapMaker;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
 import com.google.genai.types.Content;
@@ -81,6 +83,8 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.functions.Action;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.time.InstantSource;
 import java.util.ArrayList;
@@ -95,6 +99,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
@@ -110,6 +115,7 @@ public class Runner {
   private final String appName;
   private final BaseArtifactService artifactService;
   private final BaseSessionService sessionService;
+  private final BaseSteeringService steeringService;
   @Nullable private final BaseMemoryService memoryService;
   private final PluginManager pluginManager;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
@@ -118,8 +124,14 @@ public class Runner {
   @Nullable private final Scheduler scheduler;
   private final InstantSource instantSource;
   private final UuidProvider uuidProvider;
-  private final ConcurrentMap<String, Completable> activeSessionCompletables =
+
+  // Tail of each session's run queue, including runs waiting to start.
+  private final ConcurrentMap<String, SessionRun> activeSessionRuns =
       new MapMaker().weakValues().makeMap();
+  // Installed only while executing a serialized session, so runAsyncImpl overrides remain
+  // effective.
+  private final ConcurrentMap<SessionKey, SteeringInputQueue> activeInputQueues =
+      new ConcurrentHashMap<>();
 
   /** Builder for {@link Runner}. */
   public static class Builder {
@@ -130,6 +142,7 @@ public class Runner {
     private @Nullable BaseSessionService sessionService = null;
     // Distinguishes "never set" (a shared in-memory default is created) from an explicit null.
     private boolean sessionServiceSet;
+    private @Nullable BaseSteeringService steeringService;
     @Nullable private BaseMemoryService memoryService = null;
     private List<? extends Plugin> plugins = ImmutableList.of();
     @Nullable private Scheduler scheduler = null;
@@ -167,6 +180,14 @@ public class Runner {
     public Builder sessionService(BaseSessionService sessionService) {
       this.sessionService = sessionService;
       this.sessionServiceSet = true;
+      return this;
+    }
+
+    /** Sets the steering service shared by executors and remote steering submitters. */
+    @Experimental
+    @CanIgnoreReturnValue
+    public Builder steeringService(BaseSteeringService steeringService) {
+      this.steeringService = Objects.requireNonNull(steeringService);
       return this;
     }
 
@@ -295,12 +316,16 @@ public class Runner {
                 instantSource,
                 uuidProvider);
       }
+      if (steeringService == null) {
+        steeringService = new InMemorySteeringService(uuidProvider);
+      }
       return new Runner(
           buildAgent,
           buildNode,
           buildAppName,
           artifactService,
           sessionService,
+          steeringService,
           memoryService,
           buildPlugins,
           buildEventsCompactionConfig,
@@ -396,6 +421,7 @@ public class Runner {
         appName,
         artifactService,
         sessionService,
+        new InMemorySteeringService(),
         memoryService,
         plugins,
         eventsCompactionConfig,
@@ -412,6 +438,7 @@ public class Runner {
       String appName,
       BaseArtifactService artifactService,
       BaseSessionService sessionService,
+      BaseSteeringService steeringService,
       @Nullable BaseMemoryService memoryService,
       List<? extends Plugin> plugins,
       @Nullable EventsCompactionConfig eventsCompactionConfig,
@@ -428,6 +455,7 @@ public class Runner {
     this.appName = appName;
     this.artifactService = artifactService;
     this.sessionService = sessionService;
+    this.steeringService = steeringService;
     this.memoryService = memoryService;
     this.pluginManager = new PluginManager(plugins);
     this.eventsCompactionConfig =
@@ -476,6 +504,11 @@ public class Runner {
 
   public BaseSessionService sessionService() {
     return this.sessionService;
+  }
+
+  @Experimental
+  public BaseSteeringService steeringService() {
+    return this.steeringService;
   }
 
   @Nullable
@@ -543,6 +576,24 @@ public class Runner {
       boolean saveInputBlobsAsArtifacts,
       @Nullable Map<String, Object> stateDelta,
       @Nullable String taskScope) {
+    return createUserMessageEvent(
+        session,
+        newMessage,
+        invocationContext,
+        saveInputBlobsAsArtifacts,
+        stateDelta,
+        taskScope,
+        /* additionalInputId= */ null);
+  }
+
+  private Single<Event> createUserMessageEvent(
+      Session session,
+      Content newMessage,
+      InvocationContext invocationContext,
+      boolean saveInputBlobsAsArtifacts,
+      @Nullable Map<String, Object> stateDelta,
+      @Nullable String taskScope,
+      @Nullable String additionalInputId) {
     checkArgument(newMessage.parts().isPresent(), "No parts in the new_message.");
     // As in Python, the call that the first answer matches gives the branch and scope.
     Event answeredCall = callAnsweredFirst(session, newMessage).orElse(null);
@@ -560,7 +611,12 @@ public class Runner {
         if (part.inlineData().isEmpty()) {
           continue;
         }
-        String fileName = "artifact_" + invocationContext.invocationId() + "_" + i;
+        String fileName =
+            "artifact_"
+                + invocationContext.invocationId()
+                + (additionalInputId != null ? "_" + additionalInputId : "")
+                + "_"
+                + i;
         saveArtifactsFlow =
             saveArtifactsFlow.andThen(
                 this.artifactService
@@ -575,7 +631,7 @@ public class Runner {
     }
     Event.Builder eventBuilder =
         Event.builder()
-            .id(invocationContext.newUuid())
+            .id(additionalInputId != null ? additionalInputId : invocationContext.newUuid())
             .timestamp(invocationContext.now().toEpochMilli())
             .invocationId(invocationContext.invocationId())
             .author(Role.USER)
@@ -604,6 +660,106 @@ public class Runner {
   }
 
   /**
+   * See {@link #runSteerableAsync(String, String, Content, SteeringInputQueue, RunConfig, Map)}.
+   */
+  @Experimental
+  public Flowable<Event> runSteerableAsync(
+      String userId, String sessionId, Content newMessage, SteeringInputQueue inputQueue) {
+    return runSteerableAsync(
+        userId, sessionId, newMessage, inputQueue, RunConfig.builder().build());
+  }
+
+  /**
+   * See {@link #runSteerableAsync(String, String, Content, SteeringInputQueue, RunConfig, Map)}.
+   */
+  @Experimental
+  public Flowable<Event> runSteerableAsync(
+      String userId,
+      String sessionId,
+      Content newMessage,
+      SteeringInputQueue inputQueue,
+      RunConfig runConfig) {
+    return runSteerableAsync(
+        userId, sessionId, newMessage, inputQueue, runConfig, /* stateDelta= */ null);
+  }
+
+  /**
+   * Runs an ordinary invocation with an input queue and steering enabled.
+   *
+   * <p>Subscribe to the returned stream to start, and observe {@link SteeringInputQueue#started()}
+   * before submitting user messages. The input queue is single-use; create a new one for another
+   * execution. Cancelling an active subscription or closing the input queue cancels the run. If
+   * external scheduling can prevent subscription, close the input queue explicitly on cancellation.
+   * Only a non-resumable root LlmAgent without sub-agents and with conversation history is
+   * supported. Live execution uses {@link LiveRequestQueue} instead.
+   */
+  @Experimental
+  public Flowable<Event> runSteerableAsync(
+      String userId,
+      String sessionId,
+      Content newMessage,
+      SteeringInputQueue inputQueue,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta) {
+    Preconditions.checkNotNull(inputQueue, "inputQueue cannot be null");
+    return inputQueue.attach(
+        () -> runAsync(userId, sessionId, newMessage, runConfig, stateDelta, inputQueue));
+  }
+
+  /**
+   * See {@link #runSteerableAsync(String, String, Content, SteeringInputQueue, RunConfig, Map)}.
+   */
+  @Experimental
+  public Flowable<Event> runSteerableAsync(
+      SessionKey sessionKey,
+      Content newMessage,
+      SteeringInputQueue inputQueue,
+      RunConfig runConfig) {
+    return runSteerableAsync(
+        sessionKey.userId(), sessionKey.id(), newMessage, inputQueue, runConfig);
+  }
+
+  /**
+   * Accepts text for an active invocation registered with this Runner's input service.
+   *
+   * <p>Admission is immediate and throws if the invocation is closed or its user/session does not
+   * match. The returned receipt completes with the persisted user event, or fails if the invocation
+   * ends before consuming it. Subscribing is optional and does not resubmit the input. Persistence
+   * makes the input available to subsequent model requests; it does not acknowledge model receipt.
+   * Inputs are consumed in order after the current model/tool step. Pending inputs extend normal
+   * execution within the same invocation and budget, but cannot override cancellation, limits,
+   * pending tool results or confirmations, or callbacks that end the invocation.
+   *
+   * <p>Submit through a Runner connected to the executor's {@link BaseSteeringService}. The default
+   * service is in-memory; cross-process submission requires a shared backend. Obtain the invocation
+   * ID from its events or callbacks. A retry is a separate submission. Durability and crash cleanup
+   * depend on the service implementation; this API does not resume a crashed invocation.
+   */
+  @Experimental
+  public Single<Event> steer(String userId, String sessionId, String invocationId, String text) {
+    checkArgument(text != null && !text.isBlank(), "Steering text must not be blank");
+    return steer(
+        userId,
+        sessionId,
+        invocationId,
+        Content.builder().role(Role.USER).parts(Part.fromText(text)).build());
+  }
+
+  /**
+   * Accepts a user message for an active invocation, with the same receipt semantics as {@link
+   * #steer(String, String, String, String)}. Text, inline data, and file references are supported;
+   * model output and tool responses must use their respective execution paths.
+   */
+  @Experimental
+  public Single<Event> steer(
+      String userId, String sessionId, String invocationId, Content message) {
+    return steeringService.submit(
+        new SessionKey(appName, userId, sessionId),
+        invocationId,
+        SteeringState.userContent(message));
+  }
+
+  /**
    * Runs the agent with an invocation-based mode.
    *
    * <p>TODO: make this the main implementation.
@@ -621,6 +777,16 @@ public class Runner {
       Content newMessage,
       RunConfig runConfig,
       @Nullable Map<String, Object> stateDelta) {
+    return runAsync(userId, sessionId, newMessage, runConfig, stateDelta, /* inputQueue= */ null);
+  }
+
+  private Flowable<Event> runAsync(
+      String userId,
+      String sessionId,
+      Content newMessage,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta,
+      @Nullable SteeringInputQueue inputQueue) {
     Flowable<Event> result =
         Flowable.defer(() ->
                 this.sessionService
@@ -636,11 +802,32 @@ public class Runner {
                                   String.format(
                                       "Session not found: %s for user %s", sessionId, userId)));
                         }))
-                    .flatMapPublisher(
-                        session -> this.runAsyncImpl(session, newMessage, runConfig, stateDelta)))
+                    .flatMapPublisher(session ->
+                        runWithInputQueue(
+                            session, newMessage, runConfig, stateDelta, inputQueue)))
             .compose(Tracing.trace("invocation"));
 
     return serializePerSession(sessionId, result);
+  }
+
+  private Flowable<Event> runWithInputQueue(
+      Session session,
+      Content newMessage,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta,
+      @Nullable SteeringInputQueue inputQueue) {
+    if (inputQueue == null) {
+      return runAsyncImpl(session, newMessage, runConfig, stateDelta);
+    }
+    return Flowable.defer(() -> {
+      validateSteering(runConfig);
+      if (!inputQueue.bind(session.sessionKey(), activeInputQueues)) {
+        // The queue publishes cancellation after closing admission. Let takeUntil deliver it.
+        return Flowable.never();
+      }
+      // Keep the existing virtual extension point, including asynchronous subclass overrides.
+      return runAsyncImpl(session, newMessage, runConfig, stateDelta);
+    });
   }
 
   /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
@@ -741,27 +928,43 @@ public class Runner {
         return result;
       }
 
-      CompletableSubject requestCompletion = CompletableSubject.create();
-
-      Completable[] previousHolder = new Completable[1];
-
-      activeSessionCompletables.compute(
-          sessionId,
-          (key, current) -> {
-            previousHolder[0] = current;
-            return requestCompletion;
-          });
-
-      Completable previous = previousHolder[0];
-
-      Flowable<Event> sequenced =
-          (previous == null) ? result : previous.onErrorComplete().andThen(result);
-
-      return sequenced.doFinally(() -> {
-        requestCompletion.onComplete();
-        activeSessionCompletables.remove(sessionId, requestCompletion);
+      SessionRun request =
+          activeSessionRuns.compute(sessionId, (key, previous) -> new SessionRun(previous));
+      Completable ready = request.predecessor;
+      if (request.queued) {
+        Context callerContext = Context.current();
+        ready = ready.andThen(Completable.create(emitter -> {
+          // The task owns its worker until callbacks return, even if the run is cancelled.
+          Disposable unused = Schedulers.io().scheduleDirect(callerContext.wrap(emitter::onComplete));
+        }));
+      }
+      return ready.andThen(result).doFinally(() -> {
+        // A cancelled run waits for its predecessor; the executor keeps long queues off the stack.
+        Disposable unused = request.predecessor.subscribe(() -> {
+          if (activeSessionRuns.remove(sessionId, request)) {
+            request.completed.onComplete();
+          } else {
+            request.completions.execute(request.completed::onComplete);
+          }
+        });
       });
     });
+  }
+
+  private static final class SessionRun {
+    final CompletableSubject completed = CompletableSubject.create();
+    final Completable predecessor;
+    final Executor completions;
+    final boolean queued;
+
+    SessionRun(@Nullable SessionRun previous) {
+      queued = previous != null;
+      predecessor = previous == null ? Completable.complete() : previous.completed;
+      completions =
+          previous == null
+              ? MoreExecutors.newSequentialExecutor(MoreExecutors.directExecutor())
+              : previous.completions;
+    }
   }
 
   /**
@@ -916,6 +1119,20 @@ public class Runner {
         .compose(Tracing.withContext(capturedContext));
   }
 
+  private void validateSteering(RunConfig runConfig) {
+    checkArgument(
+        node == null
+            && agent instanceof LlmAgent
+            && agent.parentAgent() == null
+            && agent.subAgents().isEmpty()
+            && !isResumable()
+            && !isLegacyResumability()
+            && runConfig.streamingMode() != RunConfig.StreamingMode.BIDI
+            && ((LlmAgent) agent).includeContents() == LlmAgent.IncludeContents.DEFAULT,
+        "Steering requires a non-resumable root LlmAgent without sub-agents and with conversation"
+            + " history");
+  }
+
   /**
    * Runs the root of {@code context} and drives the persist / plugin-callback pipeline shared by
    * both invocation paths, through the after-run and compaction brackets. A {@code beforeRunEvent}
@@ -929,13 +1146,66 @@ public class Runner {
     // Let BaseLlmFlow block each step until this Runner has persisted the prior step's events.
     PersistBarrier.enable(context);
 
-    return beforeRunEvent
-        .toFlowable()
-        .switchIfEmpty(
-            runRoot(
-                context, event -> processEvent(context, sessionToPersist, onEachPersisted, event)))
-        .concatWith(Completable.defer(() -> pluginManager.afterRunCallback(context)))
-        .concatWith(Completable.defer(() -> compactEvents(sessionToPersist)));
+    return Flowable.defer(() -> {
+      SteeringInputQueue inputQueue = activeInputQueues.get(sessionToPersist.sessionKey());
+      SteeringState inputs = null;
+      if (inputQueue != null) {
+        inputs =
+            new SteeringState(
+                context,
+                steeringService.open(sessionToPersist.sessionKey(), context.invocationId()),
+                (stepContext, pendingInput) ->
+                    pluginManager
+                        .onUserMessageCallback(stepContext, pendingInput.content())
+                        .defaultIfEmpty(pendingInput.content())
+                        .flatMap(updated ->
+                            createUserMessageEvent(
+                                sessionToPersist,
+                                SteeringState.userContent(updated),
+                                stepContext,
+                                context.runConfig().saveInputBlobsAsArtifacts(),
+                                /* stateDelta= */ null,
+                                /* taskScope= */ null,
+                                pendingInput.id()))
+                        .map(event ->
+                            event.toBuilder()
+                                .branch(stepContext.branch().orElse(null))
+                                .build()));
+      }
+      SteeringState registeredInputs = inputs;
+      Action closeInputs =
+          () -> {
+            if (registeredInputs != null) {
+              registeredInputs.close();
+            }
+          };
+      return Flowable.defer(() -> {
+            if (inputQueue != null) {
+              inputQueue.started(
+                  context.invocationId(),
+                  message ->
+                      steer(
+                          sessionToPersist.userId(),
+                          sessionToPersist.id(),
+                          context.invocationId(),
+                          message));
+            }
+            return beforeRunEvent
+                .toFlowable()
+                .switchIfEmpty(
+                    runRoot(
+                        context,
+                        event ->
+                            processEvent(
+                                context, sessionToPersist, onEachPersisted, event)));
+          })
+          // Close before lifecycle callbacks and terminal signals, including when beforeRun
+          // short-circuits execution and the LLM flow never starts. doFinally covers cancel.
+          .doOnTerminate(closeInputs)
+          .doFinally(closeInputs)
+          .concatWith(Completable.defer(() -> pluginManager.afterRunCallback(context)))
+          .concatWith(Completable.defer(() -> compactEvents(sessionToPersist)));
+    });
   }
 
   /**
@@ -956,6 +1226,8 @@ public class Runner {
             ? Single.just(event)
             : this.sessionService
                 .appendEvent(sessionToPersist, event)
+                .doOnSuccess(persisted ->
+                    SteeringState.get(context).ifPresent(inputs -> inputs.persisted(persisted)))
                 // Release (or fail) BaseLlmFlow's wait for this step (see PersistBarrier).
                 .doOnSuccess(unusedEvent -> PersistBarrier.markPersisted(context, event.id()))
                 .doOnError(error -> PersistBarrier.markFailed(context, event.id(), error));

@@ -119,10 +119,15 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.observers.TestObserver;
+import io.reactivex.rxjava3.processors.PublishProcessor;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subjects.MaybeSubject;
 import io.reactivex.rxjava3.subjects.PublishSubject;
+import io.reactivex.rxjava3.subjects.ReplaySubject;
+import io.reactivex.rxjava3.subjects.SingleSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Duration;
 import java.time.Instant;
@@ -136,6 +141,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -216,6 +222,1995 @@ public final class RunnerTest {
   @After
   public void tearDown() {
     Tracing.setTracerForTesting(originalTracer);
+  }
+
+  @Test
+  public void steeringInputQueue_startsLazilyAndAcceptsInputWithoutInvocationBookkeeping() {
+    PublishProcessor<LlmResponse> response = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            calls.getAndIncrement() == 0
+                ? response
+                : Flowable.just(createTextLlmResponse("updated")));
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+    RunConfig config =
+        RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.SSE).setMaxLlmCalls(7).build();
+    SteeringInputQueue input = new SteeringInputQueue();
+    Flowable<Event> inputStream =
+        runner.runSteerableAsync(
+            "user",
+            session.id(),
+            steeringUserContent("original"),
+            input,
+            config,
+            ImmutableMap.of("preference", "concise"));
+    AtomicReference<Single<Event>> earlyReceipt = new AtomicReference<>();
+    TestObserver<String> ready =
+        input
+            .started()
+            .doOnSuccess(id -> earlyReceipt.set(input.steer("before first token")))
+            .test();
+    ready.assertNotComplete();
+    assertThat(model.getRequests()).isEmpty();
+    assertThat(storedSteeringEvents()).isEmpty();
+    assertThrows(IllegalStateException.class, () -> input.steer("before subscription"));
+
+    TestSubscriber<Event> events = inputStream.test();
+    ready.assertComplete().assertNoErrors().assertValue(context.get().invocationId());
+    earlyReceipt.get().test().assertComplete().assertNoErrors();
+    assertThat(context.get().runConfig()).isSameInstanceAs(config);
+    assertThat(context.get().runConfig().streamingMode()).isEqualTo(RunConfig.StreamingMode.SSE);
+    assertThat(context.get().runConfig().maxLlmCalls()).isEqualTo(7);
+    assertThat(context.get().session().state()).containsEntry("preference", "concise");
+    assertThat(requestTexts(model.getRequests().get(0)))
+        .containsExactly("original", "before first token")
+        .inOrder();
+    assertThrows(IllegalArgumentException.class, () -> input.steer(" "));
+    Single<Event> receipt = input.steer("during first request");
+    receipt.test().assertNotComplete();
+    response.onNext(createTextLlmResponse("first"));
+    response.onComplete();
+
+    events.assertComplete().assertNoErrors();
+    receipt.test().assertComplete().assertNoErrors();
+    assertThat(requestTexts(model.getRequests().get(1)))
+        .containsExactly("original", "before first token", "first", "during first request")
+        .inOrder();
+    assertThat(events.values().stream().map(Event::invocationId).distinct().toList())
+        .containsExactly(ready.values().get(0));
+    input.started().test().assertValue(ready.values().get(0));
+    assertThrows(IllegalStateException.class, () -> input.steer("after completion"));
+  }
+
+  @Test
+  public void steeringInputQueue_repeatedSubscriptionDoesNotRestartOrCancelOriginalRun() {
+    for (boolean scheduled : ImmutableList.of(false, true)) {
+      session = runner.sessionService().createSession("test", "user").blockingGet();
+      PublishProcessor<LlmResponse> response = PublishProcessor.create();
+      TestLlm model = new TestLlm(() -> response);
+      prepareSteeringRunner(
+          createTestAgent(model), runner.sessionService(), new AtomicReference<>());
+      SteeringInputQueue input = new SteeringInputQueue();
+      io.reactivex.rxjava3.schedulers.TestScheduler scheduler =
+          new io.reactivex.rxjava3.schedulers.TestScheduler();
+      Flowable<Event> inputStream =
+          runner.runSteerableAsync("user", session.id(), steeringUserContent("original"), input);
+      if (scheduled) {
+        inputStream = inputStream.subscribeOn(scheduler);
+      }
+      TestSubscriber<Event> first = inputStream.test();
+      scheduler.triggerActions();
+      TestSubscriber<Event> duplicate = inputStream.test();
+      scheduler.triggerActions();
+      duplicate.assertError(IllegalStateException.class);
+      duplicate.cancel();
+      assertThat(response.hasSubscribers()).isTrue();
+      first.assertNotComplete();
+      input.started().test().assertComplete().assertNoErrors();
+      response.onNext(createTextLlmResponse("done"));
+      response.onComplete();
+      first.assertComplete().assertNoErrors();
+      TestSubscriber<Event> completed = inputStream.test();
+      scheduler.triggerActions();
+      completed.assertError(IllegalStateException.class);
+      assertThat(model.getRequests()).hasSize(1);
+      assertThat(storedSteeringEvents()).hasSize(2);
+    }
+  }
+
+  @Test
+  public void steeringInputQueue_startupFailureFailsReadinessAndDoesNotPersistUnsupportedInput() {
+    SteeringInputQueue missing = new SteeringInputQueue();
+    Flowable<Event> missingStream =
+        runner.runSteerableAsync(
+            "user",
+            "missing",
+            steeringUserContent("original"),
+            missing,
+            RunConfig.builder().setAutoCreateSession(false).build());
+    TestObserver<String> missingReady = missing.started().test();
+    missingStream.test().assertError(IllegalArgumentException.class);
+    missingReady.assertError(IllegalArgumentException.class);
+    assertThrows(IllegalStateException.class, () -> missing.steer("late"));
+
+    SteeringInputQueue unsupported = new SteeringInputQueue();
+    Flowable<Event> unsupportedStream =
+        runner.runSteerableAsync(
+            "user",
+            session.id(),
+            steeringUserContent("original"),
+            unsupported,
+            RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.BIDI).build());
+    TestObserver<String> unsupportedReady = unsupported.started().test();
+    unsupportedStream.test().assertError(IllegalArgumentException.class);
+    unsupportedReady.assertError(IllegalArgumentException.class);
+    assertThat(storedSteeringEvents()).isEmpty();
+  }
+
+  @Test
+  public void steeringInputQueue_cancelDuringStartupFailsReadinessWithoutStartingAgent() {
+    InMemorySessionService sessions = Mockito.spy(new InMemorySessionService());
+    SingleSubject<Session> loaded = SingleSubject.create();
+    Mockito.doReturn(loaded.toMaybe())
+        .when(sessions)
+        .getSession(anyString(), anyString(), anyString(), any());
+    TestLlm model = new TestLlm(Flowable::never);
+    prepareSteeringRunner(createTestAgent(model), sessions, new AtomicReference<>());
+    SteeringInputQueue input = new SteeringInputQueue();
+    Flowable<Event> inputStream =
+        runner.runSteerableAsync("user", session.id(), steeringUserContent("original"), input);
+    TestObserver<String> ready = input.started().test();
+    TestSubscriber<Event> events = inputStream.test();
+    ready.assertNotComplete();
+    assertThrows(IllegalStateException.class, () -> input.steer("not ready"));
+    events.cancel();
+    ready.assertError(java.util.concurrent.CancellationException.class);
+    assertThat(loaded.hasObservers()).isFalse();
+    loaded.onSuccess(session);
+    assertThat(model.getRequests()).isEmpty();
+    assertThrows(IllegalStateException.class, () -> input.steer("cancelled"));
+  }
+
+  @Test
+  public void steeringInputQueue_closeDuringSessionLoadDoesNotCompleteNormally() {
+    InMemorySessionService sessions = Mockito.spy(new InMemorySessionService());
+    SingleSubject<Session> loaded = SingleSubject.create();
+    Mockito.doReturn(loaded.toMaybe())
+        .when(sessions)
+        .getSession(anyString(), anyString(), anyString(), any());
+    TestLlm model = new TestLlm(Flowable::never);
+    prepareSteeringRunner(createTestAgent(model), sessions, new AtomicReference<>());
+    SteeringInputQueue input = new SteeringInputQueue();
+    TestSubscriber<Event> events =
+        runner
+            .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+            .test();
+    // Finish loading after close rejects readiness but before it publishes cancellation.
+    TestObserver<String> ready =
+        input.started().doOnError(error -> loaded.onSuccess(session)).test();
+
+    input.close();
+
+    ready.assertError(java.util.concurrent.CancellationException.class);
+    events.assertError(java.util.concurrent.CancellationException.class);
+    assertThat(model.getRequests()).isEmpty();
+    assertThrows(IllegalStateException.class, () -> input.steer("late"));
+  }
+
+  @Test
+  public void steeringInputQueue_cancelOrErrorAfterStartupFailsPendingInputs() {
+    for (boolean cancel : ImmutableList.of(false, true)) {
+      PublishProcessor<LlmResponse> response = PublishProcessor.create();
+      TestLlm model = new TestLlm(() -> response);
+      session = runner.sessionService().createSession("test", "user").blockingGet();
+      AtomicReference<InvocationContext> context = new AtomicReference<>();
+      prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+      SteeringInputQueue input = new SteeringInputQueue();
+      Flowable<Event> inputStream =
+          runner.runSteerableAsync("user", session.id(), steeringUserContent("original"), input);
+      AtomicBoolean errorDelivered = new AtomicBoolean();
+      TestSubscriber<Event> events =
+          inputStream
+              .doOnError(error -> {
+                assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                        runner.steer(
+                            "user", session.id(), context.get().invocationId(), "too late"));
+                errorDelivered.set(true);
+              })
+              .test();
+      TestObserver<Event> receipt = input.steer("pending").test();
+      IllegalArgumentException failure = new IllegalArgumentException("model failed");
+      if (cancel) {
+        events.cancel();
+      } else {
+        response.onError(failure);
+        events.assertError(failure);
+        assertThat(errorDelivered.get()).isTrue();
+      }
+      input.started().test().assertComplete().assertNoErrors();
+      receipt.assertError(IllegalStateException.class);
+      assertThrows(IllegalStateException.class, () -> input.steer("closed"));
+      assertThat(response.hasSubscribers()).isFalse();
+      assertThat(storedSteeringEvents()).hasSize(1);
+    }
+  }
+
+  @Test
+  public void steeringInputQueue_readyObserverCanCancelWithoutLeakingAdmission() {
+    TestLlm model = new TestLlm(Flowable::never);
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), new AtomicReference<>());
+    SteeringInputQueue input = new SteeringInputQueue();
+    Flowable<Event> inputStream =
+        runner.runSteerableAsync("user", session.id(), steeringUserContent("original"), input);
+    TestSubscriber<Event> events = new TestSubscriber<>();
+    AtomicReference<TestObserver<Event>> receipt = new AtomicReference<>();
+    input
+        .started()
+        .doOnSuccess(id -> {
+          receipt.set(input.steer("cancel immediately").test());
+          events.cancel();
+        })
+        .test();
+    inputStream.subscribe(events);
+    receipt.get().assertError(IllegalStateException.class);
+    assertThrows(IllegalStateException.class, () -> input.steer("after cancellation"));
+    assertThat(model.getRequests()).isEmpty();
+  }
+
+  @Test
+  public void steeringInputQueue_waitsForPreviousInvocationInSameSession() {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    PublishProcessor<LlmResponse> secondResponse = PublishProcessor.create();
+    CompletableSubject secondModelStarted = CompletableSubject.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            calls.getAndIncrement() == 0
+                ? firstResponse
+                : secondResponse.doOnSubscribe(unused -> secondModelStarted.onComplete()));
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), new AtomicReference<>());
+    SteeringInputQueue first = new SteeringInputQueue();
+    Flowable<Event> firstStream =
+        runner.runSteerableAsync("user", session.id(), steeringUserContent("one"), first);
+    SteeringInputQueue second = new SteeringInputQueue();
+    Flowable<Event> secondStream =
+        runner.runSteerableAsync("user", session.id(), steeringUserContent("two"), second);
+    TestSubscriber<Event> firstEvents = firstStream.test();
+    TestSubscriber<Event> secondEvents = secondStream.test();
+    TestObserver<String> secondReady = second.started().test();
+    try {
+      secondReady.assertNotComplete();
+      assertThrows(IllegalStateException.class, () -> second.steer("waiting"));
+      firstResponse.onNext(createTextLlmResponse("first done"));
+      firstResponse.onComplete();
+      firstEvents.assertComplete().assertNoErrors();
+      secondModelStarted.test().awaitDone(5, SECONDS).assertComplete().assertNoErrors();
+      secondReady.assertComplete().assertNoErrors();
+      assertThat(secondReady.values().get(0)).isNotEqualTo(first.started().blockingGet());
+      assertThat(requestTexts(model.getRequests().get(1)))
+          .containsExactly("one", "first done", "two")
+          .inOrder();
+      assertThrows(IllegalStateException.class, () -> first.steer("wrong run"));
+    } finally {
+      firstEvents.cancel();
+      secondEvents.cancel();
+    }
+  }
+
+  @Test
+  public void steeringInputQueue_initialPersistenceControlsReadiness() {
+    for (boolean fail : ImmutableList.of(false, true)) {
+      InMemorySessionService backing = new InMemorySessionService();
+      InMemorySessionService sessions = Mockito.spy(backing);
+      CompletableSubject persisted = CompletableSubject.create();
+      Mockito.doAnswer(call -> {
+            Session current = call.getArgument(0);
+            Event event = call.getArgument(1);
+            return persisted.andThen(Single.defer(() -> backing.appendEvent(current, event)));
+          })
+          .when(sessions)
+          .appendEvent(any(), any());
+      session = sessions.createSession("test", "user").blockingGet();
+      TestLlm model = new TestLlm(() -> Flowable.just(createTextLlmResponse("done")));
+      prepareSteeringRunner(createTestAgent(model), sessions, new AtomicReference<>());
+      SteeringInputQueue input = new SteeringInputQueue();
+      Flowable<Event> inputStream =
+          runner.runSteerableAsync("user", session.id(), steeringUserContent("original"), input);
+      TestObserver<String> ready = input.started().test();
+      TestSubscriber<Event> events = inputStream.test();
+      ready.assertNotComplete();
+      assertThat(model.getRequests()).isEmpty();
+      assertThrows(IllegalStateException.class, () -> input.steer("not persisted"));
+      if (fail) {
+        IllegalStateException failure = new IllegalStateException("initial append failed");
+        persisted.onError(failure);
+        ready.assertError(failure);
+        events.assertError(failure);
+        assertThat(storedSteeringEvents()).isEmpty();
+      } else {
+        persisted.onComplete();
+        ready.assertComplete().assertNoErrors();
+        events.assertComplete().assertNoErrors();
+        assertThat(model.getRequests()).hasSize(1);
+      }
+      assertThrows(IllegalStateException.class, () -> input.steer("ended"));
+    }
+  }
+
+  @Test
+  public void runAsync_remainsColdAndSupportsRepeatedSubscriptionsWithoutSteering() {
+    TestLlm model = new TestLlm(() -> Flowable.just(createTextLlmResponse("done")));
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+    Flowable<Event> events = runner.runAsync("user", session.id(), steeringUserContent("original"));
+    assertThat(model.getRequests()).isEmpty();
+    TestSubscriber<Event> first = events.test();
+    first.assertComplete().assertNoErrors();
+    String firstId = context.get().invocationId();
+    TestSubscriber<Event> second = events.test();
+    second.assertComplete().assertNoErrors();
+    assertThat(context.get().invocationId()).isNotEqualTo(firstId);
+    assertThat(model.getRequests()).hasSize(2);
+    assertThat(storedSteeringEvents()).hasSize(4);
+  }
+
+  @SuppressWarnings("deprecation") // Exercise the existing protected subclass extension point.
+  @Test
+  public void steeringInputQueue_preservesRejectingAndAsynchronousRunnerOverrides() {
+    AtomicBoolean reject = new AtomicBoolean(true);
+    AtomicInteger calls = new AtomicInteger();
+    CompletableSubject release = CompletableSubject.create();
+    TestLlm model = new TestLlm(Flowable::never);
+    BaseSessionService sessions = runner.sessionService();
+    runner =
+        new Runner(createTestAgent(model), "test", new InMemoryArtifactService(), sessions, null) {
+          @Override
+          protected Flowable<Event> runAsyncImpl(
+              Session current,
+              Content message,
+              RunConfig config,
+              @Nullable Map<String, Object> delta) {
+            calls.incrementAndGet();
+            if (reject.get()) {
+              return Flowable.error(new IllegalStateException("subclass rejected"));
+            }
+            return release.andThen(
+                Flowable.defer(
+                    () -> super.runAsyncImpl(current, message, config.toBuilder().build(), delta)));
+          }
+        };
+    runner
+        .runAsync("user", session.id(), steeringUserContent("ordinary"))
+        .test()
+        .assertError(IllegalStateException.class);
+    SteeringInputQueue rejected = new SteeringInputQueue();
+    runner
+        .runSteerableAsync("user", session.id(), steeringUserContent("rejected"), rejected)
+        .test()
+        .assertError(IllegalStateException.class);
+    rejected.started().test().assertError(IllegalStateException.class);
+    assertThat(storedSteeringEvents()).isEmpty();
+    reject.set(false);
+    SteeringInputQueue input = new SteeringInputQueue();
+    TestSubscriber<Event> events =
+        runner
+            .runSteerableAsync(
+                session.sessionKey(),
+                steeringUserContent("allowed"),
+                input,
+                RunConfig.builder().build())
+            .test();
+    input.started().test().assertNotComplete();
+    release.onComplete();
+    input.started().test().assertComplete().assertNoErrors();
+    TestObserver<Event> receipt = input.steer("pending").test();
+    input.close();
+    events.assertError(java.util.concurrent.CancellationException.class);
+    receipt.assertError(IllegalStateException.class);
+    assertThat(calls.get()).isEqualTo(3);
+    assertThat(model.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void steeringInputQueue_closesWhenExternalSchedulingIsCancelledBeforeSubscription() {
+    TestLlm model = new TestLlm(Flowable::never);
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), new AtomicReference<>());
+    SteeringInputQueue input = new SteeringInputQueue();
+    io.reactivex.rxjava3.schedulers.TestScheduler scheduler =
+        new io.reactivex.rxjava3.schedulers.TestScheduler();
+    TestObserver<String> ready = input.started().test();
+    Flowable<Event> source =
+        runner.runSteerableAsync("user", session.id(), steeringUserContent("original"), input);
+    TestSubscriber<Event> events = source.subscribeOn(scheduler).test();
+    events.cancel();
+    input.close();
+    ready.assertError(java.util.concurrent.CancellationException.class);
+    scheduler.triggerActions();
+    input.close();
+    source.test().assertError(IllegalStateException.class);
+    assertThat(model.getRequests()).isEmpty();
+    assertThat(storedSteeringEvents()).isEmpty();
+  }
+
+  @Test
+  public void steeringInputQueue_cancellingQueuedRunDoesNotReleaseFollowingRunEarly() {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            calls.getAndIncrement() == 0
+                ? firstResponse
+                : Flowable.just(createTextLlmResponse("third done")));
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), new AtomicReference<>());
+    SteeringInputQueue first = new SteeringInputQueue();
+    SteeringInputQueue second = new SteeringInputQueue();
+    SteeringInputQueue third = new SteeringInputQueue();
+    TestSubscriber<Event> one =
+        runner.runSteerableAsync("user", session.id(), steeringUserContent("one"), first).test();
+    TestSubscriber<Event> two =
+        runner.runSteerableAsync("user", session.id(), steeringUserContent("two"), second).test();
+    TestSubscriber<Event> three =
+        runner.runSteerableAsync("user", session.id(), steeringUserContent("three"), third).test();
+    try {
+      second.close();
+      two.assertError(java.util.concurrent.CancellationException.class);
+      second.started().test().assertError(java.util.concurrent.CancellationException.class);
+      three.assertNotComplete().assertNoErrors();
+      third.started().test().assertNotComplete().assertNoErrors();
+      assertThat(model.getRequests()).hasSize(1);
+      firstResponse.onNext(createTextLlmResponse("first done"));
+      firstResponse.onComplete();
+      one.assertComplete().assertNoErrors();
+      three.awaitDone(5, SECONDS).assertComplete().assertNoErrors();
+      assertThat(requestTexts(model.getRequests().get(1)))
+          .containsExactly("one", "first done", "three")
+          .inOrder();
+    } finally {
+      one.cancel();
+      two.cancel();
+      three.cancel();
+    }
+  }
+
+  @SuppressWarnings("deprecation") // Exercise the existing protected subclass extension point.
+  @Test
+  public void steeringInputQueue_cancelDuringSourceConstructionReleasesBinding() throws Exception {
+    java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    TestLlm model = new TestLlm(Flowable::never);
+    runner =
+        new Runner(
+            createTestAgent(model),
+            "test",
+            new InMemoryArtifactService(),
+            runner.sessionService(),
+            null) {
+          @Override
+          protected Flowable<Event> runAsyncImpl(
+              Session current,
+              Content message,
+              RunConfig config,
+              @Nullable Map<String, Object> delta) {
+            if (message.equals(steeringUserContent("first"))) {
+              entered.countDown();
+              try {
+                assertThat(release.await(5, SECONDS)).isTrue();
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return Flowable.error(e);
+              }
+            }
+            return super.runAsyncImpl(current, message, config, delta);
+          }
+        };
+    java.util.concurrent.ExecutorService executor =
+        java.util.concurrent.Executors.newSingleThreadExecutor();
+    SteeringInputQueue first = new SteeringInputQueue();
+    SteeringInputQueue second = new SteeringInputQueue();
+    TestSubscriber<Event> firstEvents = new TestSubscriber<>();
+    try {
+      var subscription =
+          executor.submit(() ->
+              runner
+                  .runSteerableAsync("user", session.id(), steeringUserContent("first"), first)
+                  .subscribe(firstEvents));
+      assertThat(entered.await(5, SECONDS)).isTrue();
+      first.close();
+      firstEvents.assertError(java.util.concurrent.CancellationException.class);
+      first.started().test().assertError(java.util.concurrent.CancellationException.class);
+      TestSubscriber<Event> secondEvents =
+          runner
+              .runSteerableAsync("user", session.id(), steeringUserContent("second"), second)
+              .test();
+      secondEvents.assertNotComplete().assertNoErrors();
+      second.started().test().assertComplete().assertNoErrors();
+
+      release.countDown();
+      subscription.get(5, SECONDS);
+      // The old source must not affect the new invocation when its construction returns.
+      TestObserver<Event> receipt = second.steer("still active").test();
+      assertThat(model.getRequests()).hasSize(1);
+      assertThat(requestTexts(model.getRequests().get(0))).containsExactly("second");
+      assertThat(simplifyEvents(storedSteeringEvents())).containsExactly("user: second");
+      second.close();
+      receipt.assertError(IllegalStateException.class);
+      secondEvents.assertError(java.util.concurrent.CancellationException.class);
+    } finally {
+      release.countDown();
+      first.close();
+      second.close();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void steeringInputQueue_contentPreservesMediaAndUsesUserMessageCallbacks() {
+    PublishProcessor<LlmResponse> first = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            calls.getAndIncrement() == 0
+                ? first
+                : Flowable.just(createTextLlmResponse("done")));
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), new AtomicReference<>());
+    Part image = Part.fromBytes("image".getBytes(UTF_8), "image/png");
+    Part file = Part.fromUri("gs://example/video.mp4", "video/mp4");
+    Part audio = Part.fromBytes("audio".getBytes(UTF_8), "audio/wav");
+    Content mixed = Content.builder().parts(Part.fromText("review media"), image, file).build();
+    Content mediaOnly = Content.fromParts(audio);
+    when(plugin.onUserMessageCallback(any(), any()))
+        .thenAnswer(call -> {
+          Content message = call.getArgument(1);
+          if (message.parts().orElse(ImmutableList.of()).contains(image)) {
+            return Maybe.just(
+                message.toBuilder()
+                    .parts(
+                        ImmutableList.<Part>builder()
+                            .addAll(message.parts().orElseThrow())
+                            .add(Part.fromText("resolved context"))
+                            .build())
+                    .build());
+          }
+          return Maybe.empty();
+        });
+    SteeringInputQueue input = new SteeringInputQueue();
+    TestSubscriber<Event> events =
+        runner
+            .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+            .test();
+    TestObserver<Event> mixedReceipt = input.steer(mixed).test();
+    // The lower-level Runner entry point accepts the same Content form.
+    TestObserver<Event> mediaReceipt =
+        runner.steer("user", session.id(), input.started().blockingGet(), mediaOnly).test();
+    first.onNext(createTextLlmResponse("first"));
+    first.onComplete();
+    events.assertComplete().assertNoErrors();
+    mixedReceipt.assertComplete().assertNoErrors();
+    mediaReceipt.assertComplete().assertNoErrors();
+    Content persisted = mixedReceipt.values().get(0).content().orElseThrow();
+    assertThat(persisted.role()).hasValue("user");
+    assertThat(persisted.parts().orElseThrow())
+        .containsExactly(
+            Part.fromText("review media"), image, file, Part.fromText("resolved context"))
+        .inOrder();
+    assertThat(mediaReceipt.values().get(0).content().orElseThrow().parts().orElseThrow())
+        .containsExactly(audio);
+    assertThat(
+            model.getRequests().get(1).contents().stream()
+                .flatMap(c -> c.parts().orElse(ImmutableList.of()).stream())
+                .toList())
+        .containsAtLeast(image, file, audio);
+    assertThat(mixed.role()).isEmpty();
+    assertThat(mixed.parts().orElseThrow()).hasSize(3);
+    verify(plugin, times(3)).onUserMessageCallback(any(), any());
+  }
+
+  @Test
+  public void steeringInputQueue_rejectsInvalidOrControlContentBeforeAdmission() {
+    PublishProcessor<LlmResponse> response = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            calls.getAndIncrement() == 0
+                ? response
+                : Flowable.just(createTextLlmResponse("done")));
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), new AtomicReference<>());
+    SteeringInputQueue input = new SteeringInputQueue();
+    TestSubscriber<Event> events =
+        runner
+            .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+            .test();
+    for (Content invalid :
+        ImmutableList.of(
+            Content.builder().build(),
+            Content.fromParts(),
+            Content.fromParts(Part.fromText(" ")),
+            Content.fromParts(Part.builder().build()),
+            Content.builder().role("model").parts(Part.fromText("not user")).build(),
+            Content.builder().role("tool").parts(Part.fromText("not user")).build(),
+            Content.fromParts(Part.fromBytes(new byte[0], "image/png")),
+            Content.fromParts(Part.fromUri(" ", "image/png")),
+            Content.fromParts(Part.fromFunctionCall("tool", ImmutableMap.of())),
+            Content.fromParts(
+                Part.fromText("valid text"), Part.fromFunctionResponse("tool", ImmutableMap.of())),
+            Content.fromParts(Part.builder().text("private thought").thought(true).build()))) {
+      assertThrows(IllegalArgumentException.class, () -> input.steer(invalid));
+    }
+    assertThrows(IllegalArgumentException.class, () -> input.steer((Content) null));
+    verify(plugin, times(1)).onUserMessageCallback(any(), any());
+    TestObserver<Event> accepted = input.steer("valid").test();
+    response.onNext(createTextLlmResponse("first"));
+    response.onComplete();
+    events.assertComplete().assertNoErrors();
+    accepted.assertComplete().assertNoErrors();
+    assertThat(storedSteeringEvents().stream().filter(e -> e.author().equals("user")).count())
+        .isEqualTo(2);
+  }
+
+  @Test
+  public void steeringInputQueue_validatesContentReturnedByUserMessageCallback() {
+    PublishProcessor<LlmResponse> response = PublishProcessor.create();
+    TestLlm model = new TestLlm(() -> response);
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), new AtomicReference<>());
+    when(plugin.onUserMessageCallback(any(), any()))
+        .thenAnswer(call -> {
+          Content message = call.getArgument(1);
+          return message.equals(steeringUserContent("replacement"))
+              ? Maybe.just(
+                  Content.fromParts(Part.fromFunctionResponse("tool", ImmutableMap.of())))
+              : Maybe.empty();
+        });
+    SteeringInputQueue input = new SteeringInputQueue();
+    TestSubscriber<Event> events =
+        runner
+            .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+            .test();
+    TestObserver<Event> receipt = input.steer("replacement").test();
+    response.onNext(createTextLlmResponse("first"));
+    response.onComplete();
+    events.assertError(IllegalArgumentException.class);
+    receipt.assertError(IllegalStateException.class);
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(storedSteeringEvents().stream().filter(e -> e.author().equals("user")).count())
+        .isEqualTo(1);
+  }
+
+  @Test
+  public void steeringInputQueue_savedAttachmentsKeepDistinctReferencesWithinInvocation() {
+    PublishProcessor<LlmResponse> response = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            calls.getAndIncrement() == 0
+                ? response
+                : Flowable.just(createTextLlmResponse("done")));
+    InMemoryArtifactService artifacts = new InMemoryArtifactService();
+    runner =
+        Runner.builder()
+            .appName("test")
+            .agent(createTestAgent(model))
+            .sessionService(runner.sessionService())
+            .artifactService(artifacts)
+            .build();
+    Content initial =
+        Content.fromParts(
+            Part.fromText("initial"), Part.fromBytes("initial".getBytes(UTF_8), "image/png"));
+    Content one =
+        Content.fromParts(Part.fromText("one"), Part.fromBytes("one".getBytes(UTF_8), "image/png"));
+    Content two =
+        Content.fromParts(Part.fromText("two"), Part.fromBytes("two".getBytes(UTF_8), "image/png"));
+    SteeringInputQueue input = new SteeringInputQueue();
+    TestSubscriber<Event> events =
+        runner
+            .runSteerableAsync(
+                "user",
+                session.id(),
+                initial,
+                input,
+                RunConfig.builder().setSaveInputBlobsAsArtifacts(true).build())
+            .test();
+    TestObserver<Event> firstReceipt = input.steer(one).test();
+    TestObserver<Event> secondReceipt = input.steer(two).test();
+    response.onNext(createTextLlmResponse("first"));
+    response.onComplete();
+    events.assertComplete().assertNoErrors();
+    firstReceipt.assertComplete().assertNoErrors();
+    secondReceipt.assertComplete().assertNoErrors();
+    List<String> names =
+        artifacts.listArtifactKeys("test", "user", session.id()).blockingGet().filenames();
+    assertThat(names).hasSize(3);
+    List<Event> inputs =
+        storedSteeringEvents().stream().filter(e -> e.author().equals("user")).toList();
+    for (Event event : inputs) {
+      List<Part> parts = event.content().orElseThrow().parts().orElseThrow();
+      String name =
+          names.stream()
+              .filter(n -> parts.get(1).text().orElseThrow().equals(placeholderFor(n)))
+              .findFirst()
+              .orElseThrow();
+      Part stored = artifacts.loadArtifact("test", "user", session.id(), name).blockingGet();
+      assertThat(new String(stored.inlineData().orElseThrow().data().orElseThrow(), UTF_8))
+          .isEqualTo(parts.get(0).text().orElseThrow());
+      assertThat(artifacts.listVersions("test", "user", session.id(), name).blockingGet())
+          .containsExactly(0);
+    }
+    assertThat(names).contains("artifact_" + input.started().blockingGet() + "_1");
+    for (Content original : ImmutableList.of(initial, one, two)) {
+      assertThat(original.parts().orElseThrow().get(1).inlineData()).isPresent();
+    }
+  }
+
+  @Test
+  public void steeringInputQueue_artifactFailureFailsReceiptAndStopsBeforeNextRequest() {
+    InMemoryArtifactService artifacts = Mockito.spy(new InMemoryArtifactService());
+    IllegalStateException failure = new IllegalStateException("artifact storage failed");
+    Mockito.doReturn(Single.error(failure))
+        .when(artifacts)
+        .saveArtifact(anyString(), anyString(), anyString(), anyString(), any());
+    PublishProcessor<LlmResponse> response = PublishProcessor.create();
+    TestLlm model = new TestLlm(() -> response);
+    runner =
+        Runner.builder()
+            .appName("test")
+            .agent(createTestAgent(model))
+            .sessionService(runner.sessionService())
+            .artifactService(artifacts)
+            .build();
+    SteeringInputQueue input = new SteeringInputQueue();
+    TestSubscriber<Event> events =
+        runner
+            .runSteerableAsync(
+                "user",
+                session.id(),
+                steeringUserContent("original"),
+                input,
+                RunConfig.builder().setSaveInputBlobsAsArtifacts(true).build())
+            .test();
+    TestObserver<Event> receipt =
+        input.steer(Content.fromParts(Part.fromBytes("image".getBytes(UTF_8), "image/png"))).test();
+    response.onNext(createTextLlmResponse("first"));
+    response.onComplete();
+    events.assertError(failure);
+    receipt.assertError(IllegalStateException.class);
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(storedSteeringEvents().stream().filter(e -> e.author().equals("user")).count())
+        .isEqualTo(1);
+  }
+
+  @Test
+  public void steeringInputQueue_racingStartupAndCloseTerminatesReadinessAndAdmission()
+      throws Exception {
+    java.util.concurrent.ExecutorService executor =
+        java.util.concurrent.Executors.newFixedThreadPool(2);
+    List<Throwable> undeliverable = new java.util.concurrent.CopyOnWriteArrayList<>();
+    var previousHandler = io.reactivex.rxjava3.plugins.RxJavaPlugins.getErrorHandler();
+    io.reactivex.rxjava3.plugins.RxJavaPlugins.setErrorHandler(undeliverable::add);
+    try {
+      for (int attempt = 0; attempt < 20; attempt++) {
+        SingleSubject<Content> release = SingleSubject.create();
+        TestLlm model = new TestLlm(Flowable::never);
+        prepareSteeringRunner(
+            createTestAgent(model), runner.sessionService(), new AtomicReference<>());
+        when(plugin.onUserMessageCallback(any(), any())).thenReturn(release.toMaybe());
+        SteeringInputQueue input = new SteeringInputQueue();
+        java.util.concurrent.CountDownLatch readySignal =
+            new java.util.concurrent.CountDownLatch(1);
+        TestObserver<String> ready =
+            input.started().doOnSuccess(id -> readySignal.countDown()).test();
+        TestSubscriber<Event> events =
+            runner
+                .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+                .test();
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        boolean closeAfterReady = attempt % 2 == 0;
+        var cancel =
+            executor.submit(() -> {
+              start.await();
+              if (closeAfterReady) {
+                assertThat(readySignal.await(5, SECONDS)).isTrue();
+              }
+              input.close();
+              return null;
+            });
+        var initialize =
+            executor.submit(() -> {
+              start.await();
+              release.onSuccess(steeringUserContent("original"));
+              return null;
+            });
+        start.countDown();
+        cancel.get(5, SECONDS);
+        initialize.get(5, SECONDS);
+        events.awaitDone(5, SECONDS).assertError(java.util.concurrent.CancellationException.class);
+        if (ready.values().isEmpty()) {
+          ready.assertError(java.util.concurrent.CancellationException.class);
+        } else {
+          ready.assertComplete().assertNoErrors();
+          assertThrows(
+              IllegalStateException.class,
+              () -> runner.steer("user", session.id(), ready.values().get(0), "closed"));
+        }
+        assertThrows(IllegalStateException.class, () -> input.steer("closed"));
+      }
+      assertThat(undeliverable).isEmpty();
+    } finally {
+      executor.shutdownNow();
+      io.reactivex.rxjava3.plugins.RxJavaPlugins.setErrorHandler(previousHandler);
+    }
+  }
+
+  @Test
+  public void steering_finalResponseContinuesSameInvocationAndPreservesInputOrder() {
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    List<Single<Event>> receipts = new ArrayList<>();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() -> {
+          if (calls.getAndIncrement() == 0) {
+            receipts.add(
+                runner.steer("user", session.id(), context.get().invocationId(), "seven days"));
+            receipts.add(
+                runner.steer("user", session.id(), context.get().invocationId(), "only sales"));
+            return Flowable.just(createTextLlmResponse("first answer"));
+          }
+          return Flowable.just(createTextLlmResponse("updated answer"));
+        });
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+    when(plugin.onUserMessageCallback(any(), any()))
+        .thenAnswer(call -> {
+          Content input = call.getArgument(1);
+          return input.equals(steeringUserContent("seven days"))
+              ? Maybe.just(steeringUserContent("last seven days"))
+              : Maybe.empty();
+        });
+
+    List<Event> events = runWithSteering().toList().blockingGet();
+
+    assertThat(calls.get()).isEqualTo(2);
+    assertThat(events.stream().map(Event::invocationId).distinct().toList())
+        .containsExactly(context.get().invocationId());
+    assertThat(requestTexts(model.getRequests().get(1)))
+        .containsExactly("original", "first answer", "last seven days", "only sales")
+        .inOrder();
+    assertThat(events.stream().filter(e -> e.author().equals("user")).count()).isEqualTo(2);
+    for (Single<Event> receipt : receipts) {
+      Event event = receipt.blockingGet();
+      receipt.test().assertValue(event).assertComplete().assertNoErrors();
+      assertThat(event.author()).isEqualTo("user");
+      assertThat(event.content().orElseThrow().role()).hasValue("user");
+      assertThat(storedSteeringEvents().stream().filter(e -> e.id().equals(event.id())).count())
+          .isEqualTo(1);
+    }
+    verify(plugin, times(3)).onUserMessageCallback(any(), any());
+    assertThrows(
+        IllegalStateException.class,
+        () -> runner.steer("user", session.id(), context.get().invocationId(), "too late"));
+  }
+
+  @Test
+  public void steering_waitsForFinalAndUserEventPersistence() {
+    CompletableSubject finalSaved = CompletableSubject.create();
+    CompletableSubject inputSaved = CompletableSubject.create();
+    AtomicBoolean firstFinal = new AtomicBoolean(true);
+    InMemorySessionService backing = new InMemorySessionService();
+    InMemorySessionService sessions = Mockito.spy(backing);
+    Mockito.doAnswer(call -> {
+          Session current = call.getArgument(0);
+          Event event = call.getArgument(1);
+          if (!event.author().equals("user") && firstFinal.getAndSet(false)) {
+            return finalSaved.andThen(Single.defer(() -> backing.appendEvent(current, event)));
+          }
+          if (event.content().filter(steeringUserContent("late input")::equals).isPresent()) {
+            return inputSaved.andThen(Single.defer(() -> backing.appendEvent(current, event)));
+          }
+          return backing.appendEvent(current, event);
+        })
+        .when(sessions)
+        .appendEvent(any(), any());
+    session = sessions.createSession("test", "user").blockingGet();
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    TestLlm model =
+        createTestLlm(
+            createTextLlmResponse("first"),
+            createTextLlmResponse("second"),
+            createTextLlmResponse("third"));
+    prepareSteeringRunner(createTestAgent(model), sessions, context);
+    TestSubscriber<Event> run = runWithSteering().test();
+    TestObserver<Event> receipt =
+        runner.steer("user", session.id(), context.get().invocationId(), "late input").test();
+
+    finalSaved.onComplete();
+    run.assertNotComplete();
+    receipt.assertNotComplete();
+    assertThat(model.getRequests()).hasSize(1);
+
+    TestObserver<Event> laterReceipt =
+        runner
+            .steer("user", session.id(), context.get().invocationId(), "during persistence")
+            .test();
+    inputSaved.onComplete();
+    run.assertComplete().assertNoErrors();
+    receipt.assertComplete().assertNoErrors();
+    laterReceipt.assertComplete().assertNoErrors();
+    assertThat(model.getRequests()).hasSize(3);
+    assertThat(requestTexts(model.getRequests().get(2)))
+        .containsExactly("original", "first", "late input", "second", "during persistence")
+        .inOrder();
+    assertThat(requestTexts(model.getRequests().get(1)))
+        .containsExactly("original", "first", "late input")
+        .inOrder();
+  }
+
+  @Test
+  public void steering_waitsForEntireParallelToolBatch() {
+    SingleSubject<Map<String, Object>> firstResult = SingleSubject.create();
+    SingleSubject<Map<String, Object>> secondResult = SingleSubject.create();
+    BaseTool tool =
+        new EchoTool() {
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext context) {
+            return ((Number) args.get("index")).intValue() == 0 ? firstResult : secondResult;
+          }
+        };
+    TestLlm model =
+        createTestLlm(
+            createLlmResponse(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.builder()
+                            .functionCall(
+                                FunctionCall.builder()
+                                    .id("call-1")
+                                    .name(tool.name())
+                                    .args(ImmutableMap.of("index", 0))
+                                    .build())
+                            .build(),
+                        Part.builder()
+                            .functionCall(
+                                FunctionCall.builder()
+                                    .id("call-2")
+                                    .name(tool.name())
+                                    .args(ImmutableMap.of("index", 1))
+                                    .build())
+                            .build())
+                    .build()),
+            createTextLlmResponse("done"));
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    prepareSteeringRunner(
+        createTestAgentBuilder(model).tools(tool).build(), runner.sessionService(), context);
+    TestSubscriber<Event> run = runWithSteering().test();
+    TestObserver<Event> receipt =
+        runner.steer("user", session.id(), context.get().invocationId(), "after tools").test();
+    receipt.assertNotComplete();
+    assertThat(model.getRequests()).hasSize(1);
+
+    assertThat(firstResult.hasObservers()).isTrue();
+    assertThat(secondResult.hasObservers()).isTrue();
+    firstResult.onSuccess(ImmutableMap.of("answer", "first completed"));
+    run.assertNotComplete();
+    receipt.assertNotComplete();
+    assertThat(model.getRequests()).hasSize(1);
+
+    secondResult.onSuccess(ImmutableMap.of("answer", "second completed"));
+
+    run.assertComplete().assertNoErrors();
+    receipt.assertComplete().assertNoErrors();
+    List<Content> contents = model.getRequests().get(1).contents();
+    assertThat(
+            contents.stream()
+                .flatMap(content -> content.parts().orElseThrow().stream())
+                .flatMap(part -> part.functionResponse().stream())
+                .map(response -> response.id().orElseThrow())
+                .toList())
+        .containsExactly("call-1", "call-2");
+    assertThat(contents.get(contents.size() - 2).parts().orElseThrow().get(0).functionResponse())
+        .isPresent();
+    assertThat(contents.get(contents.size() - 1)).isEqualTo(steeringUserContent("after tools"));
+  }
+
+  @Test
+  public void steering_cancelReportsUnconsumedAndDoesNotLeakIntoNextInvocation() {
+    PublishProcessor<LlmResponse> response = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            calls.getAndIncrement() == 0
+                ? response
+                : Flowable.just(createTextLlmResponse("new run")));
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+    TestSubscriber<Event> run = runWithSteering().test();
+    String oldInvocation = context.get().invocationId();
+    TestObserver<Event> receipt =
+        runner.steer("user", session.id(), oldInvocation, "discard").test();
+
+    run.cancel();
+
+    receipt.assertError(IllegalStateException.class);
+    assertThat(response.hasSubscribers()).isFalse();
+    runWithSteering().test().assertComplete().assertNoErrors();
+    assertThat(context.get().invocationId()).isNotEqualTo(oldInvocation);
+    assertThat(requestTexts(model.getRequests().get(1))).doesNotContain("discard");
+    assertThrows(
+        IllegalStateException.class,
+        () -> runner.steer("user", session.id(), oldInvocation, "stale"));
+  }
+
+  @Test
+  public void steering_rejectsWrongUserSessionInvocationAndBlankInput() {
+    TestLlm model = new TestLlm(Flowable::never);
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+    TestSubscriber<Event> run = runWithSteering().test();
+    String id = context.get().invocationId();
+    try {
+      assertThrows(IllegalStateException.class, () -> runner.steer("other", session.id(), id, "x"));
+      assertThrows(IllegalStateException.class, () -> runner.steer("user", "other", id, "x"));
+      assertThrows(
+          IllegalStateException.class, () -> runner.steer("user", session.id(), "other", "x"));
+      assertThrows(
+          IllegalArgumentException.class, () -> runner.steer("user", session.id(), id, " "));
+    } finally {
+      run.cancel();
+    }
+  }
+
+  @Test
+  public void steering_isOptIn() {
+    TestLlm model = new TestLlm(Flowable::never);
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+    TestSubscriber<Event> run =
+        runner.runAsync("user", session.id(), steeringUserContent("original")).test();
+    try {
+      assertThrows(
+          IllegalStateException.class,
+          () -> runner.steer("user", session.id(), context.get().invocationId(), "x"));
+    } finally {
+      run.cancel();
+    }
+  }
+
+  @Test
+  public void steering_doesNotResetStepLimit() {
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    List<Single<Event>> receipts = new ArrayList<>();
+    TestLlm model =
+        new TestLlm(() -> {
+          receipts.add(
+              runner.steer("user", session.id(), context.get().invocationId(), "more"));
+          return Flowable.just(createTextLlmResponse("answer"));
+        });
+    prepareSteeringRunner(
+        createTestAgentBuilder(model).maxSteps(2).build(), runner.sessionService(), context);
+
+    runWithSteering().test().assertComplete().assertNoErrors();
+
+    assertThat(model.getRequests()).hasSize(2);
+    receipts.get(0).test().assertComplete().assertNoErrors();
+    receipts.get(1).test().assertError(IllegalStateException.class);
+  }
+
+  @Test
+  public void steering_doesNotResetLlmCallLimit() {
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    TestLlm model =
+        new TestLlm(() -> {
+          runner.steer("user", session.id(), context.get().invocationId(), "more");
+          return Flowable.just(createTextLlmResponse("answer"));
+        });
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+
+    runner
+        .runSteerableAsync(
+            "user",
+            session.id(),
+            steeringUserContent("original"),
+            new SteeringInputQueue(),
+            RunConfig.builder().maxLlmCalls(2).build())
+        .test()
+        .assertError(com.google.adk.models.LlmCallsLimitExceededException.class);
+
+    assertThat(model.getRequests()).hasSize(2);
+  }
+
+  @Test
+  public void steering_explicitEndDoesNotContinue() {
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    AtomicReference<Single<Event>> receipt = new AtomicReference<>();
+    TestLlm model =
+        new TestLlm(() -> {
+          receipt.set(runner.steer("user", session.id(), context.get().invocationId(), "more"));
+          return Flowable.just(createTextLlmResponse("answer"));
+        });
+    prepareSteeringRunner(
+        createTestAgentBuilder(model)
+            .afterModelCallback((ctx, response) -> {
+              ctx.invocationContext().setEndInvocation(true);
+              return Maybe.empty();
+            })
+            .build(),
+        runner.sessionService(),
+        context);
+
+    runWithSteering().test().assertComplete().assertNoErrors();
+
+    assertThat(model.getRequests()).hasSize(1);
+    receipt.get().test().assertError(IllegalStateException.class);
+  }
+
+  @Test
+  public void steering_pendingToolOrConfirmationStopsBeforeConsumingInput() {
+    for (String scenario : ImmutableList.of("pending", "confirmation", "mixed")) {
+      boolean confirmation = scenario.equals("confirmation");
+      session = runner.sessionService().createSession("test", "user").blockingGet();
+      PublishProcessor<LlmResponse> response = PublishProcessor.create();
+      AtomicInteger calls = new AtomicInteger();
+      TestLlm model =
+          new TestLlm(() ->
+              calls.getAndIncrement() == 0
+                  ? response
+                  : Flowable.just(createTextLlmResponse("must not continue")));
+      String toolName = confirmation ? "echoTool" : "pendingTool";
+      prepareSteeringRunner(
+          createTestAgentBuilder(model)
+              .tools(
+                  FunctionTool.create(
+                      Tools.class,
+                      "pendingTool",
+                      /* requireConfirmation= */ false,
+                      /* isLongRunning= */ true),
+                  FunctionTool.create(Tools.class, "echoTool", confirmation))
+              .build(),
+          runner.sessionService(),
+          new AtomicReference<>());
+      SteeringInputQueue input = new SteeringInputQueue();
+      TestSubscriber<Event> run =
+          runner
+              .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+              .test();
+      TestObserver<Event> receipt = input.steer("additional instruction").test();
+
+      ImmutableList.Builder<Part> callsInBatch = ImmutableList.builder();
+      callsInBatch.add(
+          Part.builder()
+              .functionCall(
+                  FunctionCall.builder()
+                      .id("pending")
+                      .name(toolName)
+                      .args(ImmutableMap.of("message", "hello")))
+              .build());
+      if (scenario.equals("mixed")) {
+        callsInBatch.add(
+            Part.builder()
+                .functionCall(
+                    FunctionCall.builder()
+                        .id("completed")
+                        .name("echoTool")
+                        .args(ImmutableMap.of("message", "done")))
+                .build());
+      }
+      response.onNext(
+          createLlmResponse(Content.builder().role("model").parts(callsInBatch.build()).build()));
+      response.onComplete();
+
+      run.assertComplete().assertNoErrors();
+      assertWithMessage("scenario=%s", scenario).that(model.getRequests()).hasSize(1);
+      assertThat(run.values().stream().anyMatch(Event::hasPendingLongRunningToolCall)).isTrue();
+      receipt.assertError(IllegalStateException.class);
+      assertThat(
+              storedSteeringEvents().stream().flatMap(event -> event.content().stream()).toList())
+          .doesNotContain(steeringUserContent("additional instruction"));
+      assertThrows(IllegalStateException.class, () -> input.steer("after pause"));
+    }
+  }
+
+  @Test
+  public void steering_longRunningToolWithImmediateResultStillConsumesInput() {
+    PublishProcessor<LlmResponse> response = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            calls.getAndIncrement() == 0
+                ? response
+                : Flowable.just(createTextLlmResponse("done")));
+    prepareSteeringRunner(
+        createTestAgentBuilder(model)
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "echoTool",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build(),
+        runner.sessionService(),
+        new AtomicReference<>());
+    SteeringInputQueue input = new SteeringInputQueue();
+    TestSubscriber<Event> run =
+        runner
+            .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+            .test();
+    TestObserver<Event> receipt = input.steer("additional instruction").test();
+
+    response.onNext(
+        createFunctionCallLlmResponse(
+            "completed", "echoTool", ImmutableMap.of("message", "hello")));
+    response.onComplete();
+
+    run.assertComplete().assertNoErrors();
+    receipt.assertComplete().assertNoErrors();
+    assertThat(model.getRequests()).hasSize(2);
+    assertThat(requestTexts(model.getRequests().get(1))).contains("additional instruction");
+    assertThat(run.values().stream().flatMap(event -> event.functionResponses().stream()).count())
+        .isEqualTo(1);
+  }
+
+  @Test
+  public void steering_emptyResponseDoesNotDiscardAcceptedInput() {
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    AtomicReference<Single<Event>> receipt = new AtomicReference<>();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() -> {
+          if (calls.getAndIncrement() == 0) {
+            receipt.set(
+                runner.steer("user", session.id(), context.get().invocationId(), "more"));
+            return Flowable.empty();
+          }
+          return Flowable.just(createTextLlmResponse("updated"));
+        });
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+
+    runWithSteering().test().assertComplete().assertNoErrors();
+
+    receipt.get().test().assertComplete().assertNoErrors();
+    assertThat(model.getRequests()).hasSize(2);
+    assertThat(requestTexts(model.getRequests().get(1)))
+        .containsExactly("original", "more")
+        .inOrder();
+  }
+
+  @Test
+  public void steering_admissionAndFinalClosureHonorBothOrderings() throws Exception {
+    java.util.concurrent.ExecutorService executor =
+        java.util.concurrent.Executors.newSingleThreadExecutor();
+    try {
+      for (boolean closeFirst : ImmutableList.of(false, true)) {
+        java.util.concurrent.CountDownLatch atBoundary = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        AtomicBoolean firstBoundary = new AtomicBoolean(true);
+        InMemorySteeringService service = Mockito.spy(new InMemorySteeringService());
+        Mockito.doAnswer(call -> {
+              BaseSteeringService.Inbox actual = (BaseSteeringService.Inbox) call.callRealMethod();
+              BaseSteeringService.Inbox inbox =
+                  Mockito.mock(
+                      BaseSteeringService.Inbox.class,
+                      org.mockito.AdditionalAnswers.delegatesTo(actual));
+              Mockito.doAnswer(close -> {
+                    if (!firstBoundary.compareAndSet(true, false)) {
+                      return actual.closeIfIdle();
+                    }
+                    // Pause before or after the real atomic close, while Runner is still active.
+                    boolean closed = closeFirst && actual.closeIfIdle();
+                    atBoundary.countDown();
+                    assertThat(release.await(5, SECONDS)).isTrue();
+                    return closeFirst ? closed : actual.closeIfIdle();
+                  })
+                  .when(inbox)
+                  .closeIfIdle();
+              return inbox;
+            })
+            .when(service)
+            .open(any(), anyString());
+        PublishProcessor<LlmResponse> response = PublishProcessor.create();
+        AtomicInteger calls = new AtomicInteger();
+        TestLlm model =
+            new TestLlm(() ->
+                calls.getAndIncrement() == 0
+                    ? response
+                    : Flowable.just(createTextLlmResponse("updated")));
+        runner =
+            Runner.builder()
+                .appName("test")
+                .agent(createTestAgent(model))
+                .sessionService(runner.sessionService())
+                .steeringService(service)
+                .build();
+        session = runner.sessionService().createSession("test", "user").blockingGet();
+        Runner submitter =
+            Runner.builder().appName("test").agent(agent).steeringService(service).build();
+        SteeringInputQueue input = new SteeringInputQueue();
+        TestSubscriber<Event> run =
+            runner
+                .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+                .test();
+        String invocationId = input.started().blockingGet();
+        TestObserver<Event> receipt = new TestObserver<>();
+        try {
+          var completion =
+              executor.submit(() -> {
+                response.onNext(createTextLlmResponse("first"));
+                response.onComplete();
+              });
+          assertThat(atBoundary.await(5, SECONDS)).isTrue();
+          run.assertNotComplete();
+          if (closeFirst) {
+            assertThrows(
+                IllegalStateException.class,
+                () -> submitter.steer("user", session.id(), invocationId, "correction"));
+          } else {
+            submitter.steer("user", session.id(), invocationId, "correction").subscribe(receipt);
+            receipt.assertNotComplete();
+          }
+          release.countDown();
+          completion.get(5, SECONDS);
+          run.assertComplete().assertNoErrors();
+          assertThat(model.getRequests()).hasSize(closeFirst ? 1 : 2);
+          if (!closeFirst) {
+            receipt.assertComplete().assertNoErrors();
+            assertThat(storedSteeringEvents()).contains(receipt.values().get(0));
+            assertThat(requestTexts(model.getRequests().get(1))).contains("correction");
+          }
+        } finally {
+          release.countDown();
+          run.cancel();
+        }
+      }
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void steering_racingNormalCompletionIsConsumedOrRejected() throws Exception {
+    java.util.concurrent.ExecutorService executor =
+        java.util.concurrent.Executors.newFixedThreadPool(2);
+    try {
+      for (int attempt = 0; attempt < 30; attempt++) {
+        PublishProcessor<LlmResponse> response = PublishProcessor.create();
+        AtomicInteger calls = new AtomicInteger();
+        TestLlm model =
+            new TestLlm(() ->
+                calls.getAndIncrement() == 0
+                    ? response
+                    : Flowable.just(createTextLlmResponse("updated")));
+        AtomicReference<InvocationContext> context = new AtomicReference<>();
+        prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+        TestSubscriber<Event> run = runWithSteering().test();
+        Runner submitter =
+            attempt % 2 == 0
+                ? runner
+                : Runner.builder()
+                    .appName("test")
+                    .agent(agent)
+                    .steeringService(runner.steeringService())
+                    .build();
+        String invocationId = context.get().invocationId();
+        String input = "racing input " + attempt;
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        var submission =
+            executor.submit(() -> {
+              start.await();
+              try {
+                return Optional.of(submitter.steer("user", session.id(), invocationId, input));
+              } catch (IllegalStateException closed) {
+                return Optional.<Single<Event>>empty();
+              }
+            });
+        var completion =
+            executor.submit(() -> {
+              start.await();
+              response.onNext(createTextLlmResponse("first"));
+              response.onComplete();
+              return null;
+            });
+        start.countDown();
+        Optional<Single<Event>> accepted = submission.get(5, SECONDS);
+        completion.get(5, SECONDS);
+        run.awaitDone(5, SECONDS).assertComplete().assertNoErrors();
+        if (accepted.isPresent()) {
+          accepted.orElseThrow().test().assertComplete().assertNoErrors();
+          assertThat(model.getRequests()).hasSize(2);
+          assertThat(requestTexts(model.getRequests().get(1))).contains(input);
+        } else {
+          assertThat(model.getRequests()).hasSize(1);
+        }
+      }
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void steering_sseWaitsForCompleteResponse() {
+    PublishProcessor<LlmResponse> response = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            calls.getAndIncrement() == 0
+                ? response
+                : Flowable.just(createTextLlmResponse("updated")));
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+    TestSubscriber<Event> run =
+        runner
+            .runSteerableAsync(
+                "user",
+                session.id(),
+                steeringUserContent("original"),
+                new SteeringInputQueue(),
+                RunConfig.builder().streamingMode(RunConfig.StreamingMode.SSE).build())
+            .test();
+    response.onNext(createTextLlmResponse("par").toBuilder().partial(true).build());
+    TestObserver<Event> receipt =
+        runner.steer("user", session.id(), context.get().invocationId(), "more").test();
+    receipt.assertNotComplete();
+    assertThat(model.getRequests()).hasSize(1);
+
+    response.onNext(createTextLlmResponse("complete"));
+    response.onComplete();
+
+    run.assertComplete().assertNoErrors();
+    receipt.assertComplete().assertNoErrors();
+    assertThat(requestTexts(model.getRequests().get(1)))
+        .containsExactly("original", "complete", "more")
+        .inOrder();
+  }
+
+  @Test
+  public void steering_persistenceFailureFailsReceiptWithoutNextModelRequest() {
+    InMemorySessionService sessions = Mockito.spy(new InMemorySessionService());
+    IllegalStateException failure = new IllegalStateException("append failed");
+    Mockito.doAnswer(call -> {
+          Event event = call.getArgument(1);
+          return event.content().filter(steeringUserContent("more")::equals).isPresent()
+              ? Single.error(failure)
+              : call.callRealMethod();
+        })
+        .when(sessions)
+        .appendEvent(any(), any());
+    session = sessions.createSession("test", "user").blockingGet();
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    AtomicReference<Single<Event>> receipt = new AtomicReference<>();
+    TestLlm model =
+        new TestLlm(() -> {
+          receipt.set(runner.steer("user", session.id(), context.get().invocationId(), "more"));
+          return Flowable.just(createTextLlmResponse("first"));
+        });
+    prepareSteeringRunner(createTestAgent(model), sessions, context);
+
+    runWithSteering().test().assertError(failure);
+
+    receipt.get().test().assertError(IllegalStateException.class);
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(storedSteeringEvents()).hasSize(2);
+  }
+
+  @Test
+  public void steering_rejectsUnsupportedAgentsBeforePersistingInput() {
+    LlmAgent child = createTestAgentBuilder(testLlm).name("child").build();
+    createTestAgentBuilder(testLlm).name("parent").subAgents(child).build();
+    List<BaseAgent> unsupported =
+        ImmutableList.of(
+            child,
+            createTestAgentBuilder(testLlm).includeContents(LlmAgent.IncludeContents.NONE).build(),
+            createTestAgentBuilder(testLlm).subAgents(createSubAgent("child")).build(),
+            SequentialAgent.builder().name("workflow").subAgents(createTestAgent(testLlm)).build());
+    for (BaseAgent root : unsupported) {
+      runner =
+          Runner.builder()
+              .agent(root)
+              .appName("test")
+              .sessionService(runner.sessionService())
+              .build();
+      runWithSteering().test().assertError(IllegalArgumentException.class);
+      assertThat(storedSteeringEvents()).isEmpty();
+    }
+    runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .build())
+            .sessionService(runner.sessionService())
+            .build();
+    runWithSteering().test().assertError(IllegalArgumentException.class);
+    assertThat(storedSteeringEvents()).isEmpty();
+  }
+
+  @Test
+  public void runLive_usesLiveRequestQueue() {
+    for (RunConfig.StreamingMode mode :
+        ImmutableList.of(RunConfig.StreamingMode.NONE, RunConfig.StreamingMode.BIDI)) {
+      CompletableSubject liveDone = CompletableSubject.create();
+      TestLlm liveModel =
+          createTestLlm(() ->
+              Flowable.just(createTextLlmResponse("live answer")).concatWith(liveDone.toFlowable()));
+      Runner liveRunner =
+          Runner.builder()
+              .agent(createTestAgent(liveModel))
+              .appName("test")
+              .scheduler(Schedulers.trampoline())
+              .build();
+      Session liveSession = liveRunner.sessionService().createSession("test", "user").blockingGet();
+      LiveRequestQueue queue = new LiveRequestQueue();
+      RunConfig config = RunConfig.builder().streamingMode(mode).build();
+      TestSubscriber<Event> run = liveRunner.runLive(liveSession, queue, config).test();
+
+      queue.content(steeringUserContent("live input"));
+      queue.close();
+      liveDone.onComplete();
+
+      run.awaitDone(5, SECONDS).assertComplete().assertNoErrors();
+      assertThat(simplifyEvents(run.values())).containsExactly("test agent: live answer");
+      assertThat(liveRequestTexts(liveModel)).contains("live input");
+      assertThat(liveModel.getRequests()).hasSize(1);
+    }
+  }
+
+  @Test
+  public void steering_shortCircuitClosesBeforeLifecycleAndTerminalCallbacks() {
+    for (boolean fail : ImmutableList.of(false, true)) {
+      AtomicReference<InvocationContext> context = new AtomicReference<>();
+      AtomicReference<Single<Event>> pending = new AtomicReference<>();
+      IllegalStateException failure = new IllegalStateException("before run failed");
+      prepareSteeringRunner(agent, runner.sessionService(), context);
+      when(plugin.beforeRunCallback(any()))
+          .thenAnswer(call -> {
+            context.set(call.getArgument(0));
+            pending.set(
+                runner.steer("user", session.id(), context.get().invocationId(), "pending"));
+            return fail ? Maybe.error(failure) : Maybe.just(pluginContent);
+          });
+      AtomicInteger lifecycleChecks = new AtomicInteger();
+      when(plugin.afterRunCallback(any()))
+          .thenReturn(
+              Completable.fromAction(() -> {
+                assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                        runner.steer(
+                            "user", session.id(), context.get().invocationId(), "after run"));
+                lifecycleChecks.incrementAndGet();
+              }));
+      AtomicBoolean terminalChecked = new AtomicBoolean();
+      TestSubscriber<Event> run =
+          runWithSteering()
+              .doOnTerminate(() -> {
+                assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                        runner.steer(
+                            "user", session.id(), context.get().invocationId(), "terminated"));
+                terminalChecked.set(true);
+              })
+              .test();
+
+      if (fail) {
+        run.assertError(failure);
+      } else {
+        run.assertComplete().assertNoErrors();
+      }
+      assertThat(terminalChecked.get()).isTrue();
+      assertThat(lifecycleChecks.get()).isEqualTo(fail ? 0 : 1);
+      pending.get().test().assertError(IllegalStateException.class);
+      assertThat(testLlm.getRequests()).isEmpty();
+    }
+  }
+
+  @Test
+  public void steering_cancelDuringInputPersistenceRejectsReceiptAndFurtherInput() {
+    CompletableSubject inputSaved = CompletableSubject.create();
+    InMemorySessionService backing = new InMemorySessionService();
+    InMemorySessionService sessions = Mockito.spy(backing);
+    Mockito.doAnswer(call -> {
+          Session current = call.getArgument(0);
+          Event event = call.getArgument(1);
+          return event.content().filter(steeringUserContent("pending")::equals).isPresent()
+              ? inputSaved.andThen(Single.defer(() -> backing.appendEvent(current, event)))
+              : backing.appendEvent(current, event);
+        })
+        .when(sessions)
+        .appendEvent(any(), any());
+    session = sessions.createSession("test", "user").blockingGet();
+    PublishProcessor<LlmResponse> response = PublishProcessor.create();
+    TestLlm model = new TestLlm(() -> response);
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    prepareSteeringRunner(createTestAgent(model), sessions, context);
+    TestSubscriber<Event> run = runWithSteering().test();
+    TestObserver<Event> receipt =
+        runner.steer("user", session.id(), context.get().invocationId(), "pending").test();
+    response.onNext(createTextLlmResponse("first"));
+    response.onComplete();
+    assertThat(inputSaved.hasObservers()).isTrue();
+    receipt.assertNotComplete();
+
+    run.cancel();
+
+    assertThat(inputSaved.hasObservers()).isFalse();
+    receipt.assertError(IllegalStateException.class);
+    assertThrows(
+        IllegalStateException.class,
+        () -> runner.steer("user", session.id(), context.get().invocationId(), "after cancel"));
+    inputSaved.onComplete();
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(storedSteeringEvents()).hasSize(2);
+  }
+
+  @Test
+  public void steering_inputCallbackFailureRejectsEntirePendingBatch() {
+    PublishProcessor<LlmResponse> response = PublishProcessor.create();
+    TestLlm model = new TestLlm(() -> response);
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+    IllegalStateException failure = new IllegalStateException("input callback failed");
+    when(plugin.onUserMessageCallback(any(), any()))
+        .thenAnswer(call ->
+            call.<Content>getArgument(1).equals(steeringUserContent("first input"))
+                ? Maybe.error(failure)
+                : Maybe.empty());
+    TestSubscriber<Event> run = runWithSteering().test();
+    TestObserver<Event> first =
+        runner.steer("user", session.id(), context.get().invocationId(), "first input").test();
+    TestObserver<Event> second =
+        runner.steer("user", session.id(), context.get().invocationId(), "second input").test();
+
+    response.onNext(createTextLlmResponse("first answer"));
+    response.onComplete();
+
+    run.assertError(failure);
+    first.assertError(IllegalStateException.class);
+    second.assertError(IllegalStateException.class);
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(storedSteeringEvents()).hasSize(2);
+  }
+
+  @Test
+  public void steeringInputQueue_concurrentInvocationsKeepInputsIsolated() {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    PublishProcessor<LlmResponse> secondResponse = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            switch (calls.getAndIncrement()) {
+              case 0 -> firstResponse;
+              case 1 -> secondResponse;
+              default -> Flowable.just(createTextLlmResponse("updated"));
+            });
+    AtomicReference<InvocationContext> context = new AtomicReference<>();
+    prepareSteeringRunner(createTestAgent(model), runner.sessionService(), context);
+    Session otherSession = runner.sessionService().createSession("test", "user").blockingGet();
+    SteeringInputQueue firstInput = new SteeringInputQueue();
+    SteeringInputQueue secondInput = new SteeringInputQueue();
+    TestSubscriber<Event> firstRun =
+        runner
+            .runSteerableAsync("user", session.id(), steeringUserContent("original"), firstInput)
+            .test();
+    String firstId = firstInput.started().blockingGet();
+    TestSubscriber<Event> secondRun =
+        runner
+            .runSteerableAsync(
+                "user", otherSession.id(), steeringUserContent("other original"), secondInput)
+            .test();
+    String secondId = secondInput.started().blockingGet();
+    try {
+      TestObserver<Event> firstReceipt = firstInput.steer("first only").test();
+      TestObserver<Event> secondReceipt = secondInput.steer("second only").test();
+      firstResponse.onNext(createTextLlmResponse("first answer"));
+      firstResponse.onComplete();
+      firstRun.assertComplete().assertNoErrors();
+      firstReceipt.assertComplete().assertNoErrors();
+      secondRun.assertNotComplete();
+      secondReceipt.assertNotComplete();
+
+      secondResponse.onNext(createTextLlmResponse("second answer"));
+      secondResponse.onComplete();
+
+      secondRun.assertComplete().assertNoErrors();
+      secondReceipt.assertComplete().assertNoErrors();
+      assertThat(firstId).isNotEqualTo(secondId);
+      assertThat(requestTexts(model.getRequests().get(2)))
+          .containsExactly("original", "first answer", "first only")
+          .inOrder();
+      assertThat(requestTexts(model.getRequests().get(3)))
+          .containsExactly("other original", "second answer", "second only")
+          .inOrder();
+    } finally {
+      firstRun.cancel();
+      secondRun.cancel();
+    }
+  }
+
+  @Test
+  public void steeringService_anotherRunnerSubmitsWithoutLocalExecutionOrSession() {
+    PublishProcessor<LlmResponse> first = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(() ->
+            calls.getAndIncrement() == 0
+                ? first
+                : Flowable.just(createTextLlmResponse("updated")));
+    InMemorySteeringService service = new InMemorySteeringService();
+    runner =
+        Runner.builder()
+            .appName("test")
+            .agent(createTestAgent(model))
+            .sessionService(runner.sessionService())
+            .steeringService(service)
+            .build();
+    // The receiving Runner has its own SessionService and never executes this invocation.
+    Runner receiver =
+        Runner.builder().appName("test").agent(agent).steeringService(service).build();
+    Runner unrelated =
+        Runner.builder().appName("other").agent(agent).steeringService(service).build();
+    SteeringInputQueue input = new SteeringInputQueue();
+    TestSubscriber<Event> events =
+        runner
+            .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+            .test();
+    String id = input.started().blockingGet();
+    assertThrows(
+        IllegalStateException.class, () -> unrelated.steer("user", session.id(), id, "wrong app"));
+    Single<Event> remote = receiver.steer("user", session.id(), id, "remote");
+    Single<Event> local = input.steer("local");
+    remote.test().assertNotComplete();
+    first.onNext(createTextLlmResponse("first"));
+    first.onComplete();
+    events.assertComplete().assertNoErrors();
+    remote.test().assertComplete().assertNoErrors();
+    local.test().assertComplete().assertNoErrors();
+    assertThat(requestTexts(model.getRequests().get(1)))
+        .containsExactly("original", "first", "remote", "local")
+        .inOrder();
+    assertThat(events.values().stream().map(Event::invocationId).distinct().toList())
+        .containsExactly(id);
+    assertThrows(
+        IllegalStateException.class, () -> receiver.steer("user", session.id(), id, "closed"));
+  }
+
+  @Test
+  public void steeringService_cancelDuringOpenClosesLateInbox() throws Exception {
+    java.util.concurrent.CountDownLatch opened = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch closed = new java.util.concurrent.CountDownLatch(1);
+    AtomicReference<String> invocation = new AtomicReference<>();
+    InMemorySteeringService service = Mockito.spy(new InMemorySteeringService());
+    Mockito.doAnswer(call -> {
+          BaseSteeringService.Inbox actual = (BaseSteeringService.Inbox) call.callRealMethod();
+          BaseSteeringService.Inbox inbox =
+              Mockito.mock(
+                  BaseSteeringService.Inbox.class,
+                  org.mockito.AdditionalAnswers.delegatesTo(actual));
+          Mockito.doAnswer(close -> {
+                actual.close();
+                closed.countDown();
+                return null;
+              })
+              .when(inbox)
+              .close();
+          invocation.set(call.getArgument(1));
+          opened.countDown();
+          assertThat(
+                  com.google.common.util.concurrent.Uninterruptibles.awaitUninterruptibly(
+                      release, 5, SECONDS))
+              .isTrue();
+          return inbox;
+        })
+        .when(service)
+        .open(any(), anyString());
+    TestLlm model = createTestLlm(createTextLlmResponse("answer"));
+    runner =
+        Runner.builder()
+            .appName("test")
+            .agent(createTestAgent(model))
+            .sessionService(runner.sessionService())
+            .steeringService(service)
+            .build();
+    SteeringInputQueue input = new SteeringInputQueue();
+    TestSubscriber<Event> events =
+        runner
+            .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+            .subscribeOn(Schedulers.io())
+            .test();
+    try {
+      assertThat(opened.await(5, SECONDS)).isTrue();
+      TestObserver<Event> receipt =
+          runner.steer("user", session.id(), invocation.get(), "pending").test();
+      input.close();
+      release.countDown();
+      assertThat(closed.await(5, SECONDS)).isTrue();
+      events.awaitDone(5, SECONDS).assertError(java.util.concurrent.CancellationException.class);
+      receipt.awaitDone(5, SECONDS).assertError(IllegalStateException.class);
+      assertThat(model.getRequests()).isEmpty();
+      assertThrows(
+          IllegalStateException.class,
+          () -> runner.steer("user", session.id(), invocation.get(), "late"));
+    } finally {
+      release.countDown();
+      events.cancel();
+      input.close();
+    }
+  }
+
+  @Test
+  public void steeringService_storageErrorsFailExecutionRatherThanReportNormalCompletion() {
+    for (String stage : ImmutableList.of("open", "pending", "persisted", "closeIfIdle")) {
+      RuntimeException failure = new IllegalStateException("storage failure: " + stage);
+      InMemorySteeringService service = Mockito.spy(new InMemorySteeringService());
+      Mockito.doAnswer(call -> {
+            if (stage.equals("open")) {
+              throw failure;
+            }
+            BaseSteeringService.Inbox inbox =
+                Mockito.mock(
+                    BaseSteeringService.Inbox.class,
+                    org.mockito.AdditionalAnswers.delegatesTo(call.callRealMethod()));
+            switch (stage) {
+              case "pending" -> Mockito.doThrow(failure).when(inbox).pending();
+              case "persisted" -> Mockito.doThrow(failure).when(inbox).persisted(any());
+              case "closeIfIdle" -> Mockito.doThrow(failure).when(inbox).closeIfIdle();
+              default -> throw new AssertionError(stage);
+            }
+            return inbox;
+          })
+          .when(service)
+          .open(any(), anyString());
+      TestLlm model = createTestLlm(createTextLlmResponse("answer"));
+      runner =
+          Runner.builder()
+              .appName("test")
+              .agent(createTestAgent(model))
+              .sessionService(runner.sessionService())
+              .steeringService(service)
+              .build();
+      SteeringInputQueue input = new SteeringInputQueue();
+      AtomicReference<TestObserver<Event>> receipt = new AtomicReference<>();
+      input.started().subscribe(id -> receipt.set(input.steer("pending").test()), error -> {});
+      runner
+          .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+          .test()
+          .assertError(failure);
+      if (stage.equals("open")) {
+        input.started().test().assertError(failure);
+      } else if (stage.equals("closeIfIdle")) {
+        receipt.get().assertComplete().assertNoErrors();
+      } else {
+        receipt.get().assertError(IllegalStateException.class);
+        assertThat(model.getRequests()).isEmpty();
+      }
+      assertThrows(IllegalStateException.class, () -> input.steer("late"));
+      if (!stage.equals("open")) {
+        String id = input.started().blockingGet();
+        assertThrows(
+            IllegalStateException.class, () -> runner.steer("user", session.id(), id, "late"));
+      }
+    }
+  }
+
+  @Test
+  public void steeringService_failedCloseIsRetriedByLifecycleCleanup() {
+    for (boolean cancel : ImmutableList.of(false, true)) {
+      List<Throwable> undeliverable = new ArrayList<>();
+      var previousHandler = io.reactivex.rxjava3.plugins.RxJavaPlugins.getErrorHandler();
+      io.reactivex.rxjava3.plugins.RxJavaPlugins.setErrorHandler(undeliverable::add);
+      InMemorySteeringService service = Mockito.spy(new InMemorySteeringService());
+      AtomicInteger closeAttempts = new AtomicInteger();
+      AtomicReference<BaseSteeringService.Inbox> actualInbox = new AtomicReference<>();
+      IllegalStateException storageFailure = new IllegalStateException("close failed once");
+      Mockito.doAnswer(call -> {
+            BaseSteeringService.Inbox actual =
+                (BaseSteeringService.Inbox) call.callRealMethod();
+            actualInbox.set(actual);
+            BaseSteeringService.Inbox inbox =
+                Mockito.mock(
+                    BaseSteeringService.Inbox.class,
+                    org.mockito.AdditionalAnswers.delegatesTo(actual));
+            Mockito.doAnswer(close -> {
+                  if (closeAttempts.incrementAndGet() == 1) {
+                    throw storageFailure;
+                  }
+                  actual.close();
+                  return null;
+                })
+                .when(inbox)
+                .close();
+            return inbox;
+          })
+          .when(service)
+          .open(any(), anyString());
+      PublishProcessor<LlmResponse> response = PublishProcessor.create();
+      runner =
+          Runner.builder()
+              .appName("test")
+              .agent(createTestAgent(new TestLlm(() -> response)))
+              .sessionService(runner.sessionService())
+              .steeringService(service)
+              .build();
+      SteeringInputQueue input = new SteeringInputQueue();
+      TestSubscriber<Event> run =
+          runner
+              .runSteerableAsync("user", session.id(), steeringUserContent("original"), input)
+              .test();
+      try {
+        String id = input.started().blockingGet();
+        TestObserver<Event> receipt = input.steer("pending").test();
+        IllegalStateException modelFailure = new IllegalStateException("model failed");
+        if (cancel) {
+          input.close();
+          run.assertError(java.util.concurrent.CancellationException.class);
+          assertThat(undeliverable).containsExactly(storageFailure);
+        } else {
+          response.onError(modelFailure);
+          run.assertError(error ->
+              error instanceof io.reactivex.rxjava3.exceptions.CompositeException composite
+                  && composite.getExceptions().contains(modelFailure)
+                  && composite.getExceptions().contains(storageFailure));
+          assertThat(undeliverable).isEmpty();
+        }
+        receipt.assertError(IllegalStateException.class);
+        assertThat(closeAttempts.get()).isEqualTo(2);
+        assertThat(actualInbox.get().pending()).isEmpty();
+        assertThrows(
+            IllegalStateException.class,
+            () -> runner.steer("user", session.id(), id, "after termination"));
+      } finally {
+        run.cancel();
+        actualInbox.get().close();
+        io.reactivex.rxjava3.plugins.RxJavaPlugins.setErrorHandler(previousHandler);
+      }
+    }
+  }
+
+  private void prepareSteeringRunner(
+      LlmAgent agent, BaseSessionService sessions, AtomicReference<InvocationContext> context) {
+    Mockito.doAnswer(call -> {
+          context.set(call.getArgument(0));
+          return Maybe.empty();
+        })
+        .when(plugin)
+        .beforeRunCallback(any());
+    runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .sessionService(sessions)
+            .build();
+  }
+
+  private Flowable<Event> runWithSteering() {
+    return runner.runSteerableAsync(
+        "user", session.id(), steeringUserContent("original"), new SteeringInputQueue());
+  }
+
+  private List<Event> storedSteeringEvents() {
+    return runner
+        .sessionService()
+        .getSession("test", "user", session.id(), Optional.empty())
+        .blockingGet()
+        .events();
+  }
+
+  private static List<String> requestTexts(LlmRequest request) {
+    return request.contents().stream()
+        .flatMap(content -> content.parts().orElse(ImmutableList.of()).stream())
+        .flatMap(part -> part.text().stream())
+        .toList();
+  }
+
+  private static Content steeringUserContent(String text) {
+    return Content.builder().role("user").parts(Part.fromText(text)).build();
   }
 
   @Test
@@ -995,6 +2990,253 @@ public final class RunnerTest {
   }
 
   @Test
+  public void runAsync_releasesLongCancelledQueueWithoutRecursion() {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(
+            () ->
+                calls.getAndIncrement() == 0
+                    ? firstResponse
+                    : Flowable.just(createTextLlmResponse("last done")));
+    runner =
+        Runner.builder()
+            .agent(createTestAgent(model))
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+    TestSubscriber<Event> first =
+        runner
+            .runAsync("user", session.id(), createContent("first").toBuilder().role("user").build())
+            .test();
+    TestSubscriber<Event> last = new TestSubscriber<>();
+    try {
+      for (int i = 0; i < 10_000; i++) {
+        runner
+            .runAsync(
+                "user", session.id(), createContent("cancelled").toBuilder().role("user").build())
+            .test()
+            .cancel();
+        assertThat(model.getRequests()).hasSize(1);
+      }
+      runner
+          .runAsync("user", session.id(), createContent("last").toBuilder().role("user").build())
+          .subscribe(last);
+      assertThat(model.getRequests()).hasSize(1);
+      firstResponse.onNext(createTextLlmResponse("first done"));
+      firstResponse.onComplete();
+      first.assertComplete().assertNoErrors();
+      last.awaitDone(10, SECONDS).assertComplete().assertNoErrors();
+      assertThat(model.getRequests()).hasSize(2);
+      assertThat(
+              model.getRequests().get(1).contents().stream()
+                  .flatMap(content -> content.parts().stream().flatMap(List::stream))
+                  .flatMap(part -> part.text().stream())
+                  .toList())
+          .containsExactly("first", "first done", "last")
+          .inOrder();
+    } finally {
+      first.cancel();
+      last.cancel();
+    }
+  }
+
+  @Test
+  public void runAsync_cancelledQueuedRun_canBlockOnFollowUp() throws Exception {
+    assertCancelledQueuedRunCanBlockOnFollowUp(false);
+  }
+
+  @Test
+  public void runAsync_cancelledQueuedRunWithSuccessor_canBlockOnFollowUp() throws Exception {
+    assertCancelledQueuedRunCanBlockOnFollowUp(true);
+  }
+
+  private void assertCancelledQueuedRunCanBlockOnFollowUp(boolean queueSuccessor) throws Exception {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(
+            () ->
+                calls.getAndIncrement() == 0
+                    ? firstResponse
+                    : Flowable.just(createTextLlmResponse("done")));
+    runner =
+        Runner.builder()
+            .agent(createTestAgent(model))
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+    TestSubscriber<Event> first = runner.runAsync("user", session.id(), createContent("A")).test();
+    CountDownLatch finished = new CountDownLatch(1);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    Disposable second =
+        runner
+            .runAsync("user", session.id(), createContent("B"))
+            .firstElement()
+            .subscribe(event -> {
+              try {
+                List<Event> followUp =
+                    runner
+                        .runAsync("user", session.id(), createContent("C"))
+                        .timeout(2, SECONDS)
+                        .toList()
+                        .blockingGet();
+                assertThat(followUp).isNotEmpty();
+              } catch (Throwable error) {
+                failure.set(error);
+              } finally {
+                finished.countDown();
+              }
+            }, error -> {
+              failure.set(error);
+              finished.countDown();
+            });
+    TestSubscriber<Event> successor =
+        queueSuccessor
+            ? runner.runAsync("user", session.id(), createContent("queued")).test()
+            : null;
+    Thread release = new Thread(firstResponse::onComplete);
+    release.setDaemon(true);
+    try {
+      release.start();
+      assertThat(finished.await(5, SECONDS)).isTrue();
+      assertThat(failure.get()).isNull();
+      if (successor != null) {
+        successor.awaitDone(5, SECONDS).assertComplete().assertNoErrors();
+      }
+    } finally {
+      first.cancel();
+      second.dispose();
+      if (successor != null) {
+        successor.cancel();
+      }
+      release.join(5000);
+    }
+  }
+
+  @Test
+  public void runAsync_cancelActiveRun_releasesSuccessorWhileCallbackIsBlocked() throws Exception {
+    assertCancellingBlockedRunReleasesSuccessor(false);
+    assertCancellingBlockedRunReleasesSuccessor(true);
+  }
+
+  private void assertCancellingBlockedRunReleasesSuccessor(boolean queued) throws Exception {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(
+            () ->
+                queued && calls.getAndIncrement() == 0
+                    ? firstResponse
+                    : Flowable.just(createTextLlmResponse("done")));
+    Runner local =
+        Runner.builder()
+            .agent(createTestAgent(model))
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+    TestSubscriber<Event> first =
+        queued ? local.runAsync("user", session.id(), createContent("A")).test() : null;
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch unblock = new CountDownLatch(1);
+    TestSubscriber<Event> blocked = new TestSubscriber<>();
+    Flowable<Event> work =
+        local
+            .runAsync("user", session.id(), createContent("B"))
+            .doOnNext(event -> {
+              entered.countDown();
+              assertThat(unblock.await(10, SECONDS)).isTrue();
+            });
+    Thread start =
+        new Thread(() -> {
+          if (queued) {
+            firstResponse.onComplete();
+          } else {
+            work.subscribe(blocked);
+          }
+        });
+    start.setDaemon(true);
+    if (queued) {
+      work.subscribe(blocked);
+    }
+    TestSubscriber<Event> successor = new TestSubscriber<>();
+    try {
+      start.start();
+      assertThat(entered.await(5, SECONDS)).isTrue();
+      local.runAsync("user", session.id(), createContent("C")).subscribe(successor);
+      blocked.cancel();
+      successor.awaitDone(2, SECONDS).assertComplete().assertNoErrors();
+    } finally {
+      unblock.countDown();
+      blocked.cancel();
+      successor.cancel();
+      if (first != null) {
+        first.cancel();
+      }
+      start.join(5000);
+    }
+  }
+
+  @Test
+  public void runAsync_releasesSynchronousQueuedRunsInOrderWithoutRecursion() {
+    CompletableSubject release = CompletableSubject.create();
+    AtomicInteger calls = new AtomicInteger();
+    BaseAgent ordered =
+        new BaseAgent(
+            "ordered",
+            "checks run order",
+            ImmutableList.of(),
+            ImmutableList.of(),
+            ImmutableList.of()) {
+          @Override
+          protected Flowable<Event> runAsyncImpl(InvocationContext context) {
+            String message =
+                context
+                    .userContent()
+                    .orElseThrow()
+                    .parts()
+                    .orElseThrow()
+                    .get(0)
+                    .text()
+                    .orElseThrow();
+            Flowable<Event> execution =
+                Flowable.defer(() -> {
+                  assertThat(message).isEqualTo(Integer.toString(calls.getAndIncrement()));
+                  return Flowable.empty();
+                });
+            return message.equals("0") ? release.andThen(execution) : execution;
+          }
+
+          @Override
+          protected Flowable<Event> runLiveImpl(InvocationContext context) {
+            return runAsyncImpl(context);
+          }
+        };
+    runner =
+        Runner.builder()
+            .agent(ordered)
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+    List<TestSubscriber<Event>> runs = new ArrayList<>();
+    try {
+      for (int i = 0; i < 10_000; i++) {
+        runs.add(runner.runAsync("user", session.id(), createContent(Integer.toString(i))).test());
+      }
+      assertThat(calls.get()).isEqualTo(0);
+      release.onComplete();
+      for (TestSubscriber<Event> run : runs) {
+        run.awaitDone(10, SECONDS).assertComplete().assertNoErrors();
+      }
+      assertThat(calls.get()).isEqualTo(runs.size());
+    } finally {
+      for (TestSubscriber<Event> run : runs) {
+        run.cancel();
+      }
+    }
+  }
+
+  @Test
   public void runAsync_concurrentCalls_staleRead() throws Exception {
     BaseSessionService mockSessionService = mock(BaseSessionService.class);
     Event agentEvent = Event.builder().id("agent-event").author("agent").build();
@@ -1008,7 +3250,7 @@ public final class RunnerTest {
     when(mockSessionService.getSession(anyString(), anyString(), anyString(), any()))
         .thenAnswer(invocation -> Maybe.just(dbSession.get()));
 
-    PublishSubject<Event> appendSubject = PublishSubject.create();
+    ReplaySubject<Event> appendSubject = ReplaySubject.createWithSize(1);
 
     when(mockSessionService.appendEvent(any(), any()))
         .thenAnswer(
@@ -1051,10 +3293,8 @@ public final class RunnerTest {
         .runAsync("user", "session-id", createContent("message 2"))
         .subscribe(subscriber2);
 
-    appendSubject.onNext(agentEvent); // Completes first appendEvent (user msg 1)
-    appendSubject.onNext(agentEvent); // Completes second appendEvent (agent event 1)
-    appendSubject.onNext(agentEvent); // Completes third appendEvent (user msg 2)
-    appendSubject.onNext(agentEvent); // Completes fourth appendEvent (agent event 2)
+    // Release persistence for both runs, including the asynchronously started second run.
+    appendSubject.onNext(agentEvent);
 
     subscriber1.awaitDone(5, SECONDS);
     subscriber2.awaitDone(5, SECONDS);
@@ -3825,6 +6065,43 @@ public final class RunnerTest {
     }
 
     assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void runAsync_queuedRun_preservesCallerContext() {
+    PublishProcessor<LlmResponse> firstResponse = PublishProcessor.create();
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm model =
+        new TestLlm(
+            () ->
+                calls.getAndIncrement() == 0
+                    ? firstResponse
+                    : Flowable.just(createTextLlmResponse("queued done")));
+    runner =
+        Runner.builder()
+            .agent(createTestAgent(model))
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+    TestSubscriber<Event> first = new TestSubscriber<>();
+    TestSubscriber<Event> queued = new TestSubscriber<>();
+    ContextKey<String> testKey = ContextKey.named("queued-caller");
+    try (Scope scope = Context.current().with(testKey, "caller-value").makeCurrent()) {
+      runner.runAsync("user", session.id(), createContent("A")).subscribe(first);
+      runner
+          .runAsync("user", session.id(), createContent("B"))
+          .doOnNext(event -> {
+            assertThat(Context.current().get(testKey)).isEqualTo("caller-value");
+          })
+          .subscribe(queued);
+      firstResponse.onNext(createTextLlmResponse("first done"));
+      firstResponse.onComplete();
+      first.assertComplete().assertNoErrors();
+      queued.awaitDone(10, SECONDS).assertComplete().assertNoErrors().assertValueCount(1);
+    } finally {
+      first.cancel();
+      queued.cancel();
+    }
   }
 
   @Test

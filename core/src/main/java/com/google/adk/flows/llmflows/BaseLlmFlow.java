@@ -71,6 +71,7 @@ import io.reactivex.rxjava3.processors.UnicastProcessor;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -487,6 +488,14 @@ public abstract class BaseLlmFlow implements BaseFlow {
    * @throws IllegalStateException if a transfer agent is specified but not found.
    */
   private Flowable<Event> runOneStep(Context spanContext, InvocationContext context) {
+    return Flowable.defer(() ->
+        SteeringState.get(context)
+            .map(inputs -> inputs.drain(context))
+            .orElseGet(Flowable::empty)
+            .concatWith(Flowable.defer(() -> runModelStep(spanContext, context))));
+  }
+
+  private Flowable<Event> runModelStep(Context spanContext, InvocationContext context) {
     AtomicReference<LlmRequest> llmRequestRef = new AtomicReference<>(LlmRequest.builder().build());
 
     return Flowable.defer(() -> {
@@ -564,6 +573,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
   @Override
   public Flowable<Event> run(InvocationContext invocationContext) {
     Context spanContext = Context.current();
+    // Close input before after-agent callbacks, including when only this flow is cancelled.
     return Flowable.defer(() -> {
       AtomicInteger stepsCompleted = new AtomicInteger(0);
       AtomicBoolean continueFlow = new AtomicBoolean(false);
@@ -572,7 +582,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
               runStepAndCheckContinue(
                   spanContext, invocationContext, stepsCompleted.getAndIncrement(), continueFlow))
           .repeatUntil(() -> !continueFlow.getAndSet(false));
-    });
+    })
+        .doOnTerminate(() -> SteeringState.get(invocationContext).ifPresent(SteeringState::close))
+        .doFinally(() -> SteeringState.get(invocationContext).ifPresent(SteeringState::close));
   }
 
   /**
@@ -600,9 +612,11 @@ public abstract class BaseLlmFlow implements BaseFlow {
         currentStepEvents
             .toList()
             .flatMapPublisher(eventList -> {
-              if (eventList.isEmpty()
-                  || Iterables.getLast(eventList).finalResponse()
-                  || Iterables.getLast(eventList).actions().endOfAgent()
+              Optional<SteeringState> inputs = SteeringState.get(invocationContext);
+              if ((inputs.isPresent()
+                      && (invocationContext.endInvocation() || hasPendingToolCall(eventList)))
+                  || (!eventList.isEmpty()
+                      && Iterables.getLast(eventList).actions().endOfAgent())
                   // The workflow runs the target, so the node's flow stops at its handoff.
                   || eventList.stream().anyMatch(event -> handsOffToANode(invocationContext, event))
                   || (nodeRun
@@ -611,6 +625,20 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     "Ending flow execution based on final response, endInvocation action or"
                         + " empty event list.");
                 return Flowable.empty();
+              } else if (eventList.isEmpty() || Iterables.getLast(eventList).finalResponse()) {
+                if (inputs.isEmpty()) {
+                  return Flowable.empty();
+                }
+                // Include input submitted during final-response persistence. Admission and
+                // the empty check are atomic in the input service, including remote
+                // submissions.
+                // Repeat this flow without resetting its step or call budgets.
+                return PersistBarrier.awaitPersisted(invocationContext, eventList)
+                    .andThen(
+                        Flowable.defer(() -> {
+                          continueFlow.set(!inputs.get().closeIfIdle());
+                          return Flowable.empty();
+                        }));
               } else if (legacyResumption && Functions.hasPendingLongRunningCall(eventList)) {
                 // The resumable flow decides before the model call instead, in StepResume.
                 logger.debug("Pausing flow execution on a pending long-running call.");
@@ -623,6 +651,21 @@ public abstract class BaseLlmFlow implements BaseFlow {
                 return PersistBarrier.awaitPersisted(invocationContext, eventList).toFlowable();
               }
             }));
+  }
+
+  // A confirmation request may precede a tool response, and a parallel batch may mix pending
+  // and completed calls. Only unanswered IDs must prevent steering from continuing the flow.
+  private static boolean hasPendingToolCall(List<Event> events) {
+    Set<String> pending = new HashSet<>();
+    for (Event event : events) {
+      event.longRunningToolIds().ifPresent(pending::addAll);
+    }
+    for (Event event : events) {
+      for (FunctionResponse response : event.functionResponses()) {
+        response.id().ifPresent(pending::remove);
+      }
+    }
+    return !pending.isEmpty();
   }
 
   /**
