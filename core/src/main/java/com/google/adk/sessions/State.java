@@ -18,6 +18,7 @@ package com.google.adk.sessions;
 
 import com.fasterxml.jackson.annotation.JsonValue;
 import com.google.adk.annotations.Experimental;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -218,6 +219,7 @@ public final class State implements ConcurrentMap<String, Object> {
     return oldValue;
   }
 
+  @CanIgnoreReturnValue
   @Override
   public @Nullable Object compute(
       String key,
@@ -228,6 +230,7 @@ public final class State implements ConcurrentMap<String, Object> {
         : ConcurrentMap.super.compute(key, remappingFunction);
   }
 
+  @CanIgnoreReturnValue
   @Override
   public @Nullable Object computeIfAbsent(
       String key, Function<? super String, ? extends @Nullable Object> mappingFunction) {
@@ -236,6 +239,7 @@ public final class State implements ConcurrentMap<String, Object> {
         : ConcurrentMap.super.computeIfAbsent(key, mappingFunction);
   }
 
+  @CanIgnoreReturnValue
   @Override
   public @Nullable Object computeIfPresent(
       String key,
@@ -245,6 +249,7 @@ public final class State implements ConcurrentMap<String, Object> {
         : ConcurrentMap.super.computeIfPresent(key, remappingFunction);
   }
 
+  @CanIgnoreReturnValue
   @Override
   public @Nullable Object merge(
       String key,
