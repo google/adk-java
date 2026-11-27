@@ -30,11 +30,16 @@ import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import org.jspecify.annotations.Nullable;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.model.StreamingChatModel;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -44,6 +49,9 @@ import org.springframework.ai.chat.prompt.Prompt;
  *
  * <p>This adapter allows Spring AI models to be used within the ADK framework by converting between
  * ADK's LlmRequest/LlmResponse format and Spring AI's Prompt/ChatResponse format.
+ *
+ * <p>Streaming {@code reasoningContent} with OpenAI's {@code id}/{@code index} metadata is
+ * cumulative per response and choice. Without that pair, reasoning text is treated as incremental.
  */
 public class SpringAI extends BaseLlm {
 
@@ -240,6 +248,7 @@ public class SpringAI extends BaseLlm {
     private final List<Part> parts = new ArrayList<>();
     private final StringBuilder text = new StringBuilder();
     private boolean textIsThought;
+    private final Map<String, String> reasoning = new HashMap<>();
     private @Nullable GenerateContentResponseUsageMetadata usage;
     private @Nullable String modelVersion;
     private @Nullable LlmResponse finishingChunk;
@@ -247,7 +256,8 @@ public class SpringAI extends BaseLlm {
 
     private Flowable<LlmResponse> processChunk(ChatResponse chatResponse) {
       receivedChunk = true;
-      LlmResponse chunk = withFunctionCallIds(messageConverter.toLlmResponse(chatResponse));
+      LlmResponse chunk =
+          withFunctionCallIds(messageConverter.toLlmResponse(reasoningDelta(chatResponse)));
       chunk.usageMetadata().ifPresent(chunkUsage -> usage = chunkUsage);
       chunk.modelVersion().ifPresent(version -> modelVersion = version);
       if (chunk.finishReason().isPresent()) {
@@ -278,6 +288,34 @@ public class SpringAI extends BaseLlm {
               .errorCode(null)
               .errorMessage(null)
               .build());
+    }
+
+    /** Trims OpenAI cumulative reasoning metadata to the text not yet emitted for each choice. */
+    private ChatResponse reasoningDelta(ChatResponse response) {
+      List<Generation> generations = new ArrayList<>();
+      for (Generation generation : response.getResults()) {
+        AssistantMessage message = generation.getOutput();
+        Map<String, Object> metadata = message == null ? null : message.getMetadata();
+        if (metadata != null
+            && metadata.get("id") instanceof String id
+            && !id.isEmpty()
+            && metadata.get("index") instanceof Number index
+            && metadata.get("reasoningContent") instanceof String current) {
+          String key = id + ":" + index;
+          String previous = reasoning.getOrDefault(key, "");
+          String delta =
+              current.startsWith(previous) ? current.substring(previous.length()) : current;
+          reasoning.put(key, current);
+          Map<String, Object> properties = new LinkedHashMap<>(metadata);
+          properties.put("reasoningContent", delta);
+          generations.add(
+              new Generation(
+                  message.mutate().properties(properties).build(), generation.getMetadata()));
+        } else {
+          generations.add(generation);
+        }
+      }
+      return new ChatResponse(generations, response.getMetadata());
     }
 
     private void flushText() {
@@ -433,6 +471,7 @@ public class SpringAI extends BaseLlm {
   private String extractTextFromResponse(LlmResponse response) {
     if (response.content().isPresent() && response.content().get().parts().isPresent()) {
       return response.content().get().parts().get().stream()
+          .filter(part -> !part.thought().orElse(false))
           .map(part -> part.text().orElse(""))
           .filter(text -> text != null && !text.isEmpty())
           .findFirst()

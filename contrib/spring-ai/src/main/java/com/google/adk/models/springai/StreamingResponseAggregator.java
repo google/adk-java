@@ -25,7 +25,7 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * Aggregates streaming responses from Spring AI models.
+ * Aggregates answer text and tool calls from Spring AI streaming responses, excluding thoughts.
  *
  * <p>This class helps manage the accumulation of partial responses in streaming mode, ensuring that
  * text content is properly concatenated and tool calls are correctly handled.
@@ -61,6 +61,9 @@ public class StreamingResponseAggregator {
     try {
       // Process each part in the response
       for (Part part : content.parts().get()) {
+        if (part.thought().orElse(false)) {
+          continue;
+        }
         if (part.text().isPresent()) {
           textAccumulator.append(part.text().get());
         } else if (part.functionCall().isPresent()) {

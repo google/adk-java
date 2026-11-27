@@ -17,7 +17,10 @@ package com.google.adk.models.springai;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmResponse;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Part;
@@ -25,6 +28,9 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 
 class StreamingResponseAggregatorTest {
 
@@ -33,6 +39,35 @@ class StreamingResponseAggregatorTest {
   @BeforeEach
   void setUp() {
     aggregator = new StreamingResponseAggregator();
+  }
+
+  @Test
+  void processStreamingResponse_cumulativeReasoning_doesNotPolluteAnswer() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    for (AssistantMessage message :
+        ImmutableList.of(
+            AssistantMessage.builder()
+                .properties(ImmutableMap.of("reasoningContent", "Think"))
+                .build(),
+            AssistantMessage.builder()
+                .properties(ImmutableMap.of("reasoningContent", "Think hard"))
+                .content("It is")
+                .build(),
+            AssistantMessage.builder()
+                .properties(ImmutableMap.of("reasoningContent", "Think hard"))
+                .content(" sunny.")
+                .build())) {
+      LlmResponse partial =
+          aggregator.processStreamingResponse(
+              converter.toLlmResponse(
+                  new ChatResponse(ImmutableList.of(new Generation(message))), true));
+      assertThat(partial.content().orElseThrow().parts().orElseThrow())
+          .allSatisfy(part -> assertThat(part.text().orElse("")).doesNotContain("Think"));
+    }
+    assertThat(aggregator.getAccumulatedTextLength()).isEqualTo("It is sunny.".length());
+    assertThat(aggregator.getFinalResponse().content().orElseThrow().parts().orElseThrow())
+        .containsExactly(Part.fromText("It is sunny."));
+    assertThat(aggregator.isEmpty()).isTrue();
   }
 
   @Test
