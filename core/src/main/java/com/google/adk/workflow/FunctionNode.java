@@ -24,6 +24,7 @@ import com.google.adk.agents.Context;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.ToolConfirmation;
+import com.google.adk.sessions.StateSchemaException;
 import com.google.adk.telemetry.Tracing;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
@@ -41,6 +42,7 @@ import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
@@ -48,6 +50,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.Phaser;
+import java.util.function.UnaryOperator;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -365,10 +368,12 @@ public final class FunctionNode<I, O> extends BaseNode {
       if (outcome == null || events.isCancelled()) {
         return;
       }
+      run.throwIfRejected();
       output = outcome.replacement() != null ? outcome.replacement() : finishRun(context, outcome);
     } catch (Exception | NodeInterruptedException e) {
-      // tryOnError, as a canceled run can no longer take a failure or a pause.
-      events.tryOnError(e);
+      // tryOnError, as a canceled run can no longer take a failure or a pause. A rejection from
+      // emit fails the node however the body ends after catching it.
+      events.tryOnError(run.rejectionOr(e));
       return;
     }
     if (output != null) {
@@ -553,15 +558,19 @@ public final class FunctionNode<I, O> extends BaseNode {
     @GuardedBy("this")
     private boolean canceled;
 
+    @GuardedBy("this")
+    private @Nullable StateSchemaException rejection;
+
     synchronized void open(FlowableEmitter<Object> events) {
       this.events = events;
     }
 
     /**
-     * Sends {@code event} and waits for its store unless it is partial. Returns false once the body
-     * has returned, and throws a CancellationException once the node is canceled.
+     * Sends {@code event} as {@code checkAndConvert} converts it and waits for its store unless
+     * partial. Returns false once the body has returned; throws a CancellationException once
+     * canceled.
      */
-    boolean emit(Event event) {
+    boolean emit(Event event, UnaryOperator<Event> checkAndConvert) {
       boolean partial = event.partial().orElse(false);
       CompletableFuture<Void> processed = new CompletableFuture<>();
       FlowableEmitter<Object> sink;
@@ -576,6 +585,14 @@ public final class FunctionNode<I, O> extends BaseNode {
             event.output().isEmpty()
                 && !event.nodeInfo().map(NodeInfo::messageAsOutput).orElse(false),
             "Context.emit takes an event without an output; return the value from the body.");
+        throwIfRejected(); // As in Kotlin, no emit gets through after a rejection.
+        try {
+          event = checkAndConvert.apply(event);
+        } catch (StateSchemaException e) {
+          rejection = e;
+          throw e;
+        }
+        // Last, so that a rejected event leaves nothing pending.
         checkArgument(
             partial || pending.putIfAbsent(event.id(), processed) == null,
             "Another Context.emit call still waits on an event with this ID.");
@@ -591,6 +608,40 @@ public final class FunctionNode<I, O> extends BaseNode {
         awaitStore(processed);
       }
       return true;
+    }
+
+    /**
+     * Throws the first state-delta rejection from {@link #emit}, which fails the node even if the
+     * body caught it.
+     */
+    synchronized void throwIfRejected() {
+      if (rejection != null) {
+        throw new StateSchemaException(rejection.getMessage(), rejection);
+      }
+    }
+
+    /**
+     * Returns the first state-delta rejection if one was recorded, else {@code failure}. A {@code
+     * failure} that is the rejection or a copy of it is returned as is; any other but a pause is
+     * suppressed in a copy.
+     */
+    synchronized Throwable rejectionOr(Throwable failure) {
+      if (rejection == null || failure == rejection) {
+        return failure;
+      }
+      // The copy that throwIfRejected throws.
+      boolean copy =
+          failure instanceof StateSchemaException
+              && failure.getCause() == rejection
+              && Objects.equals(failure.getMessage(), rejection.getMessage());
+      if (copy) {
+        return failure;
+      }
+      StateSchemaException rejected = new StateSchemaException(rejection.getMessage(), rejection);
+      if (!(failure instanceof NodeInterruptedException)) {
+        rejected.addSuppressed(failure);
+      }
+      return rejected;
     }
 
     /** Waits until the run stores the event; a cancel or an interrupt ends the wait. */

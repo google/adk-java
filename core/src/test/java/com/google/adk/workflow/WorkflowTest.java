@@ -68,6 +68,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
@@ -977,6 +978,344 @@ public final class WorkflowTest {
 
     assertThat(session.state()).containsEntry("count", 4);
     assertThat(emitted.actions().stateDelta()).containsExactly("count", "4");
+  }
+
+  @Test
+  public void stateSchema_aBodysEmittedStateDeltaIsStoredConverted() {
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, emitting("4")));
+
+    List<Event> events = session.turn(go());
+
+    assertThat(outputEventAt(events, "wf@1/n@1").output()).hasValue("emitted");
+    assertThat(events.stream().map(event -> event.actions().stateDelta()))
+        .contains(ImmutableMap.of("count", 4));
+    assertThat(session.state()).containsEntry("count", 4);
+  }
+
+  @Test
+  public void stateSchema_aBodyCatchingARejectedEmitStillFailsTheNode() {
+    WorkflowSession session =
+        new WorkflowSession(
+            stateSchemaWorkflow(
+                STATE_SCHEMA,
+                notingEmitError("many", /* rethrow= */ false, new AtomicReference<>())));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertCountRejected(turn, session);
+  }
+
+  @Test
+  public void stateSchema_aBodyRethrowingARejectedEmitFailsTheNode() {
+    AtomicReference<RuntimeException> rejection = new AtomicReference<>();
+    WorkflowSession session =
+        new WorkflowSession(
+            stateSchemaWorkflow(
+                STATE_SCHEMA, notingEmitError("many", /* rethrow= */ true, rejection)));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertCountRejected(turn, session);
+    // The rejection itself, so it keeps the stack trace of the body's emit call.
+    assertThat(turn.error()).isSameInstanceAs(rejection.get());
+  }
+
+  @Test
+  public void stateSchema_aBodyPausingAfterACaughtRejectedEmitStillFailsTheNode() {
+    Node node =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("n")
+            .body((ctx, message) -> {
+              try {
+                ctx.emit(countEvent("many"));
+              } catch (IllegalArgumentException e) {
+                ctx.state().put("note", e.getMessage());
+              }
+              return FunctionNodes.requestInput("ask", "Need input", /* payload= */ null);
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertCountRejected(turn, session);
+  }
+
+  @Test
+  public void stateSchema_aBodyThrowingItsOwnExceptionAfterACaughtRejectionFailsWithTheRejection() {
+    AtomicReference<RuntimeException> rejection = new AtomicReference<>();
+    AtomicReference<RuntimeException> ownFailure = new AtomicReference<>();
+    Node node =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("n")
+            .body((ctx, message) -> {
+              try {
+                ctx.emit(countEvent("many"));
+              } catch (StateSchemaException e) {
+                rejection.set(e);
+                // Wrapping the rejection still makes this the body's own failure.
+                ownFailure.set(new IllegalStateException("body's own failure", e));
+              }
+              throw ownFailure.get();
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertThat(turn.error()).isInstanceOf(StateSchemaException.class);
+    assertThat(turn.error()).hasMessageThat().isEqualTo(rejection.get().getMessage());
+    assertThat(turn.error().getSuppressed()).asList().containsExactly(ownFailure.get());
+    assertThat(errorEvent(turn.events()).errorMessage()).hasValue(rejection.get().getMessage());
+    assertThat(session.state()).doesNotContainKey("count");
+  }
+
+  @Test
+  public void stateSchema_runNodeAfterACaughtRejectionStartsNoChildAndFailsWithTheRejection() {
+    AtomicBoolean childRan = new AtomicBoolean();
+    Node child =
+        FunctionNodes.builder(Void.class, String.class)
+            .name("child")
+            .body((ctx, input) -> {
+              childRan.set(true);
+              return "ran";
+            })
+            .build();
+    AtomicReference<RuntimeException> rejection = new AtomicReference<>();
+    AtomicReference<RuntimeException> runNodeFailure = new AtomicReference<>();
+    Node node =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("n")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              try {
+                ctx.emit(countEvent("many"));
+              } catch (StateSchemaException e) {
+                rejection.set(e);
+              }
+              try {
+                var unused = ctx.runNode(child).blockingGet();
+              } catch (RuntimeException e) {
+                runNodeFailure.set(e);
+              }
+              return "done";
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertThat(childRan.get()).isFalse();
+    assertThat(runNodeFailure.get()).isInstanceOf(StateSchemaException.class);
+    assertThat(runNodeFailure.get()).hasMessageThat().isEqualTo(rejection.get().getMessage());
+    assertThat(turn.error()).isInstanceOf(StateSchemaException.class);
+    assertThat(errorEvent(turn.events()).errorMessage()).hasValue(rejection.get().getMessage());
+  }
+
+  @Test
+  public void stateSchema_aBodyOutlastingTheTimeoutAfterACaughtRejectionFailsWithTheRejection() {
+    AtomicInteger attempts = new AtomicInteger();
+    AtomicReference<RuntimeException> rejection = new AtomicReference<>();
+    RetryConfig onlyTimeouts =
+        RetryConfig.builder()
+            .maxAttempts(2)
+            .initialDelay(Duration.ZERO)
+            .jitter(0)
+            .exceptions("NodeTimeoutException")
+            .build();
+    Node node =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("n")
+            .config(
+                NodeConfig.builder()
+                    .timeout(Duration.ofMillis(200))
+                    .retryConfig(onlyTimeouts)
+                    .build())
+            .body((ctx, message) -> {
+              attempts.incrementAndGet();
+              try {
+                ctx.emit(countEvent("many"));
+              } catch (StateSchemaException e) {
+                rejection.set(e);
+              }
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                // The timeout interrupts the sleep.
+              }
+              return "late";
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertThat(turn.error()).isInstanceOf(StateSchemaException.class);
+    assertThat(turn.error()).hasMessageThat().isEqualTo(rejection.get().getMessage());
+    assertThat(turn.error().getSuppressed()).hasLength(1);
+    assertThat(turn.error().getSuppressed()[0]).isInstanceOf(NodeTimeoutException.class);
+    assertThat(errorEvent(turn.events()).errorMessage()).hasValue(rejection.get().getMessage());
+    assertThat(attempts.get()).isEqualTo(1);
+    assertThat(session.state()).doesNotContainKey("count");
+  }
+
+  /** A FunctionNode emitting a {@code count} write. */
+  private static Node emitting(Object count) {
+    Event event = countEvent(count);
+    return FunctionNodes.builder(Content.class, String.class)
+        .name("n")
+        .body((ctx, message) -> {
+          ctx.emit(event);
+          return "emitted";
+        })
+        .build();
+  }
+
+  /**
+   * A FunctionNode emitting a {@code count} write that notes emit's error in {@code caught} and the
+   * state, and may rethrow it.
+   */
+  private static Node notingEmitError(
+      Object count, boolean rethrow, AtomicReference<RuntimeException> caught) {
+    Event event = countEvent(count);
+    return FunctionNodes.builder(Content.class, String.class)
+        .name("n")
+        .body((ctx, message) -> {
+          try {
+            ctx.emit(event);
+          } catch (IllegalArgumentException e) {
+            caught.set(e);
+            ctx.state().put("note", e.getMessage());
+            if (rethrow) {
+              throw e;
+            }
+          }
+          return "emitted";
+        })
+        .build();
+  }
+
+  @Test
+  public void stateSchema_anEmitAfterTheBodyReturnedThrowsIllegalStateBeforeTheCheck() {
+    AtomicReference<Context> bodyContext = new AtomicReference<>();
+    Node node =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("n")
+            .body((ctx, message) -> {
+              bodyContext.set(ctx);
+              return "done";
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+    session.advance(go());
+
+    IllegalStateException e =
+        assertThrows(IllegalStateException.class, () -> bodyContext.get().emit(countEvent("many")));
+
+    assertThat(e).hasMessageThat().startsWith("Context.emit works only while");
+    assertThat(session.state()).doesNotContainKey("count");
+  }
+
+  @Test
+  public void stateSchema_anEmitAfterACaughtRejectionThrowsTheRejection() {
+    AtomicReference<RuntimeException> first = new AtomicReference<>();
+    AtomicReference<RuntimeException> later = new AtomicReference<>();
+    Node node = emittingTwice(countEvent("many"), countEvent(4), first, later);
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertThat(first.get()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(later.get()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(later.get()).hasMessageThat().isEqualTo(first.get().getMessage());
+    assertThat(later.get()).hasCauseThat().isSameInstanceAs(first.get());
+    assertThat(errorEvent(turn.events()).errorMessage()).hasValue(first.get().getMessage());
+    assertThat(session.state()).doesNotContainKey("count");
+  }
+
+  @Test
+  public void stateSchema_reEmittingARejectedEventThrowsTheRejection() {
+    AtomicReference<RuntimeException> first = new AtomicReference<>();
+    AtomicReference<RuntimeException> later = new AtomicReference<>();
+    Event rejected = countEvent("many");
+    Node node = emittingTwice(rejected, rejected, first, later);
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertThat(later.get()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(later.get()).hasMessageThat().isEqualTo(first.get().getMessage());
+    assertThat(errorEvent(turn.events()).errorMessage()).hasValue(first.get().getMessage());
+    assertThat(session.state()).doesNotContainKey("count");
+  }
+
+  /** A FunctionNode that emits {@code a}, then {@code b}, noting what each emit throws. */
+  private static Node emittingTwice(
+      Event a,
+      Event b,
+      AtomicReference<RuntimeException> aThrew,
+      AtomicReference<RuntimeException> bThrew) {
+    return FunctionNodes.builder(Content.class, String.class)
+        .name("n")
+        .body((ctx, message) -> {
+          try {
+            ctx.emit(a);
+          } catch (RuntimeException e) {
+            aThrew.set(e);
+          }
+          try {
+            ctx.emit(b);
+          } catch (RuntimeException e) {
+            bThrew.set(e);
+          }
+          return "done";
+        })
+        .build();
+  }
+
+  @Test
+  public void stateSchema_anEmitRefusedForItsOutputRecordsNoRejection() {
+    Event withOutput = countEvent("many").toBuilder().output("x").build();
+    Node node =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("n")
+            .body((ctx, message) -> {
+              try {
+                ctx.emit(withOutput);
+                return "emitted";
+              } catch (IllegalArgumentException e) {
+                return e.getMessage();
+              }
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    List<Event> events = session.turn(go());
+
+    assertThat(events.stream().filter(event -> event.errorCode().isPresent())).isEmpty();
+    assertThat(outputEventAt(events, "wf@1/n@1").output())
+        .hasValue("Context.emit takes an event without an output; return the value from the body.");
+    assertThat(session.state()).doesNotContainKey("count");
+  }
+
+  /** Returns an event whose state delta writes {@code count}. */
+  private static Event countEvent(Object count) {
+    return newEvent()
+        .actions(EventActions.builder().stateDelta(ImmutableMap.of("count", count)).build())
+        .build();
+  }
+
+  /** Asserts that the node failed with the schema's rejection of {@code count}, stored nowhere. */
+  private static void assertCountRejected(FailedTurn turn, WorkflowSession session) {
+    // Neither a pause nor the rejection itself is added as suppressed.
+    assertThat(turn.error()).isInstanceOf(StateSchemaException.class);
+    assertThat(turn.error().getSuppressed()).isEmpty();
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("StateSchemaException");
+    assertThat(errorEvent.errorMessage().orElseThrow())
+        .startsWith("validation error: state key 'count' does not match its schema: ");
+    assertThat(session.state()).doesNotContainKey("count");
+    assertThat(session.state()).containsEntry("note", errorEvent.errorMessage().orElseThrow());
   }
 
   @Test

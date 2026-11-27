@@ -406,6 +406,12 @@ public class Context extends ReadonlyContext {
    *
    * @throws IllegalArgumentException if {@code event} has an output, or has the ID of an event
    *     another {@code emit} call still waits on
+   * @throws StateSchemaException if the node's state schema rejects the event's state delta; the
+   *     node then fails with it even if the body catches it; later calls while the body runs throw
+   *     one with the same message, and a later {@code runNode} starts no child and fails with one.
+   *     The rejection does not interrupt the body's thread: it keeps running until it returns,
+   *     pauses or throws, and state it writes meanwhile is still saved, but the node fails with the
+   *     rejection, with any other exception the body throws added as suppressed.
    * @throws IllegalStateException if no {@code FunctionNode} body of this node is running
    * @throws CancellationException if the node is canceled, or the calling thread is interrupted
    *     while this call waits; the thread stays interrupted
@@ -476,10 +482,11 @@ public class Context extends ReadonlyContext {
    * parent or peer its flags forbid, or to an agent outside its sub-agents, parent and peers. It
    * fails with {@link IllegalStateException} if this is not a workflow node's context, if this
    * node's {@link Node#rerunOnResume} is false, or if {@code config} delegates an output that this
-   * node already has or has delegated; with {@link IllegalArgumentException} if a child or handoff
-   * target name cannot form a node path, or if the child's input schema rejects {@code nodeInput};
-   * or with {@link com.google.adk.workflow.NodeInputValidationException} (an {@code
-   * IllegalArgumentException}) if the input port or builder input schema of a {@link
+   * node already has or has delegated; with {@link StateSchemaException}, starting no child, once
+   * an {@link #emit} in this node's body was rejected; with {@link IllegalArgumentException} if a
+   * child or handoff target name cannot form a node path, or if the child's input schema rejects
+   * {@code nodeInput}; or with {@link com.google.adk.workflow.NodeInputValidationException} (an
+   * {@code IllegalArgumentException}) if the input port or builder input schema of a {@link
    * com.google.adk.workflow.FunctionNode} child rejects {@code nodeInput}. A child whose input is
    * rejected does not start.
    */

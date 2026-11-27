@@ -250,6 +250,8 @@ public final class NodeRunner {
       RunNodeConfig config,
       @Nullable String reservedRunId) {
     NodeExecutionState parentState = parent.requireNodeState();
+    // As in Kotlin, a body whose emit was rejected starts no child, nor takes a run ID.
+    parentState.throwIfBodyRejected();
     checkState(
         parentState.node().rerunOnResume(),
         "Node '%s' must rerun on resume to run child nodes: a child it runs may be interrupted, and"
@@ -688,7 +690,10 @@ public final class NodeRunner {
               .orElse(false);
     }
 
-    /** Fails {@code run} with a {@link NodeTimeoutException} if it outlasts the node's timeout. */
+    /**
+     * Fails {@code run} if it outlasts the node's timeout: with a {@link NodeTimeoutException}, or,
+     * as in Kotlin, with the rejection of an {@code emit} that its body caught.
+     */
     private Completable withTimeout(Completable run) {
       Optional<Duration> timeout = node.config().timeout();
       if (timeout.isEmpty()) {
@@ -699,7 +704,9 @@ public final class NodeRunner {
       Completable timedOut =
           nodeState
               .bodyReturned()
-              .andThen(Completable.error(() -> new NodeTimeoutException(node.name(), limit)));
+              .andThen(
+                  Completable.error(() ->
+                      nodeState.bodyRejectionOr(new NodeTimeoutException(node.name(), limit))));
       io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
       // Off the caller's thread, so a body that blocks does not block the caller.
       return completeOn(invocationContext.scheduler())

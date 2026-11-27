@@ -4902,7 +4902,7 @@ public final class FunctionNodeTest {
     Event helperEvent = Event.builder().id("h").partial(true).content(text("h")).build();
     ExecutorService threads = Executors.newFixedThreadPool(2);
     try {
-      Future<Boolean> call = threads.submit(() -> run.emit(helperEvent));
+      Future<Boolean> call = threads.submit(() -> run.emit(helperEvent, event -> event));
       assertThat(inOnNext.await(10, SECONDS)).isTrue();
 
       CountDownLatch closeStarted = new CountDownLatch(1);

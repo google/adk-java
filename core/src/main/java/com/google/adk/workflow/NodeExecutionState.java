@@ -378,7 +378,8 @@ public final class NodeExecutionState {
   public boolean emitFromBody(Event event) {
     checkArgument(!isNullOrEmpty(checkNotNull(event).id()), "Context.emit needs an event ID.");
     FunctionNode.BodyRun run = bodyRun.get();
-    return run != null && run.emit(event);
+    // Checked here too so the body's emit throws a rejection, as Kotlin's flow emit does.
+    return run != null && run.emit(event, this::withCheckedStateDelta);
   }
 
   /**
@@ -387,6 +388,23 @@ public final class NodeExecutionState {
    */
   boolean claimBodyRun(FunctionNode.BodyRun run) {
     return bodyRun.compareAndSet(null, run);
+  }
+
+  /** Throws the state-schema rejection that the body run's {@code emit} recorded, if any. */
+  void throwIfBodyRejected() {
+    FunctionNode.BodyRun run = bodyRun.get();
+    if (run != null) {
+      run.throwIfRejected();
+    }
+  }
+
+  /**
+   * Returns the state-schema rejection that the body run's {@code emit} recorded, with {@code
+   * failure} suppressed, else {@code failure}.
+   */
+  Throwable bodyRejectionOr(Throwable failure) {
+    FunctionNode.BodyRun run = bodyRun.get();
+    return run != null ? run.rejectionOr(failure) : failure;
   }
 
   /** Releases the {@link #emitFromBody} call that waits for {@code event}, if any. */
