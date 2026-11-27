@@ -20,6 +20,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.sessions.StateSchemaException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
@@ -242,6 +243,10 @@ public class FunctionTool extends BaseTool {
     return false;
   }
 
+  /**
+   * Calls the function. An exception the function throws becomes a generic error result, except a
+   * {@link StateSchemaException} from a state write, which fails the returned {@code Single}.
+   */
   @Override
   public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
     try {
@@ -265,6 +270,10 @@ public class FunctionTool extends BaseTool {
       }
       return this.call(args, toolContext).defaultIfEmpty(ImmutableMap.of());
     } catch (Exception e) {
+      // As in Python, a state schema rejection fails the call instead of becoming its result.
+      if (e instanceof InvocationTargetException && e.getCause() instanceof StateSchemaException) {
+        return Single.error(e.getCause());
+      }
       logger.error("Exception occurred while calling function tool: " + func.getName(), e);
       return Single.just(
           ImmutableMap.of("status", "error", "message", "An internal error occurred."));

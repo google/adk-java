@@ -16,7 +16,10 @@
 
 package com.google.adk.agents;
 
+import com.google.adk.annotations.Experimental;
 import com.google.adk.events.EventActions;
+import com.google.adk.sessions.StateSchemaException;
+import com.google.genai.types.Schema;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -49,5 +52,19 @@ public class CallbackContext extends Context {
       @Nullable EventActions eventActions,
       @Nullable String eventId) {
     super(invocationContext, eventActions, eventId);
+  }
+
+  /**
+   * Initializes a callback context whose {@link #state()} checks writes against {@code
+   * stateSchema}, if given, as a workflow node's does: it stores converted values and throws {@link
+   * StateSchemaException} on a mismatch or undeclared key.
+   */
+  @Experimental
+  protected CallbackContext(
+      InvocationContext invocationContext,
+      @Nullable EventActions eventActions,
+      @Nullable String eventId,
+      @Nullable Schema stateSchema) {
+    super(invocationContext, eventActions, eventId, stateSchema);
   }
 }

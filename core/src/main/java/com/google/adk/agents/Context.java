@@ -23,6 +23,7 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.memory.SearchMemoryResponse;
 import com.google.adk.sessions.State;
+import com.google.adk.sessions.StateSchemaException;
 import com.google.adk.workflow.DynamicNodeFailedException;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.NodeExecutionState;
@@ -35,17 +36,21 @@ import com.google.common.collect.ForwardingConcurrentMap;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -79,7 +84,7 @@ public class Context extends ReadonlyContext {
       InvocationContext invocationContext,
       @Nullable EventActions eventActions,
       @Nullable String eventId) {
-    this(invocationContext, eventActions, eventId, /* nodeState= */ null);
+    this(invocationContext, eventActions, eventId, /* nodeState= */ null, /* stateSchema= */ null);
   }
 
   /**
@@ -92,29 +97,58 @@ public class Context extends ReadonlyContext {
         invocationContext,
         /* eventActions= */ null,
         /* eventId= */ null,
-        Preconditions.checkNotNull(nodeState));
+        Preconditions.checkNotNull(nodeState),
+        /* stateSchema= */ null);
+  }
+
+  /**
+   * Initializes a context that is not a workflow node's and checks its state writes against {@code
+   * stateSchema}, if given.
+   */
+  Context(
+      InvocationContext invocationContext,
+      @Nullable EventActions eventActions,
+      @Nullable String eventId,
+      @Nullable Schema stateSchema) {
+    this(invocationContext, eventActions, eventId, /* nodeState= */ null, stateSchema);
   }
 
   private Context(
       InvocationContext invocationContext,
       @Nullable EventActions eventActions,
       @Nullable String eventId,
-      @Nullable NodeExecutionState nodeState) {
+      @Nullable NodeExecutionState nodeState,
+      @Nullable Schema stateSchema) {
     super(invocationContext);
     this.eventActions = eventActions != null ? eventActions : EventActions.builder().build();
     Map<String, Object> sessionState = invocationContext.session().state();
-    this.state =
-        new State(
-            nodeState != null ? new ReadOnlyViewsMap(sessionState) : sessionState,
-            this.eventActions.stateDelta());
+    Map<String, Object> stateDelta = this.eventActions.stateDelta();
+    Schema schema = nodeState != null ? nodeState.stateSchema().orElse(null) : stateSchema;
+    if (schema != null) {
+      // EventActions keeps its state delta in a ConcurrentMap.
+      ConcurrentMap<String, Object> concurrentDelta = (ConcurrentMap<String, Object>) stateDelta;
+      // DeltaView drops State's raw delta writes so only CheckedStateMap's converted ones land.
+      this.state =
+          State.delegatingCompute(
+              new CheckedStateMap(new ReadOnlyViewsMap(sessionState), concurrentDelta, schema),
+              new DeltaView(concurrentDelta));
+    } else if (nodeState != null) {
+      this.state = new State(new ReadOnlyViewsMap(sessionState), stateDelta);
+    } else {
+      this.state = new State(sessionState, stateDelta);
+    }
     this.eventId = eventId;
     this.nodeState = nodeState;
   }
 
   /**
    * Returns the delta-aware state of the current context. In the context a workflow passes to a
-   * node, writing through its map views or {@link State#clear()} throws {@link
-   * UnsupportedOperationException}; see {@link State}.
+   * node, or under a state schema, writing through its map views or {@link State#clear()} throws
+   * {@link UnsupportedOperationException}; see {@link State}. Under the node's {@link
+   * Node#stateSchema()}, which a tool node also applies to its tool's context, writes store
+   * converted values and throw {@link StateSchemaException} on a mismatch or undeclared key. A
+   * stored value reads back in the form a stored session gives: lists and maps unmodifiable, a
+   * record as a map, an enum by its name, a small whole number as an {@code Integer}.
    */
   @Override
   public State state() {
@@ -494,5 +528,225 @@ public class Context extends ReadonlyContext {
     public Collection<Object> values() {
       return readOnly.values();
     }
+  }
+
+  /**
+   * A map backing a workflow node's {@link State} that checks and converts each written value once,
+   * storing the same converted value in both the session state and the event delta.
+   */
+  private static final class CheckedStateMap extends ForwardingConcurrentMap<String, Object> {
+    private static final Object RETRY = new Object();
+
+    private final ConcurrentMap<String, Object> delegate;
+    private final ConcurrentMap<String, Object> stateDelta;
+    private final Schema stateSchema;
+
+    CheckedStateMap(
+        ConcurrentMap<String, Object> delegate,
+        ConcurrentMap<String, Object> stateDelta,
+        Schema stateSchema) {
+      this.delegate = delegate;
+      this.stateDelta = stateDelta;
+      this.stateSchema = stateSchema;
+    }
+
+    private Object check(String key, Object value) {
+      return NodeExecutionState.checkStateValue(stateSchema, key, value);
+    }
+
+    @Override
+    protected ConcurrentMap<String, Object> delegate() {
+      return delegate;
+    }
+
+    @Override
+    public @Nullable Object put(String key, Object value) {
+      Object checked = check(key, value);
+      Object previous = delegate.put(key, checked);
+      stateDelta.put(key, checked);
+      return previous;
+    }
+
+    @Override
+    public @Nullable Object putIfAbsent(String key, Object value) {
+      Object checked = check(key, value);
+      Object existing = delegate.putIfAbsent(key, checked);
+      if (existing == null) {
+        stateDelta.put(key, checked);
+      }
+      return existing;
+    }
+
+    @Override
+    public void putAll(Map<? extends String, ? extends Object> map) {
+      // Checks every entry before writing any, so a rejected entry leaves the state unchanged.
+      Map<String, Object> checked = new LinkedHashMap<>();
+      map.forEach((key, value) -> checked.put(key, check(key, value)));
+      delegate.putAll(checked);
+      stateDelta.putAll(checked);
+    }
+
+    @Override
+    public @Nullable Object remove(Object key) {
+      Object removed = delegate.remove(key);
+      if (removed != null) {
+        stateDelta.put((String) key, State.REMOVED);
+      }
+      return removed;
+    }
+
+    @Override
+    public boolean remove(Object key, Object value) {
+      boolean removed = delegate.remove(key, value);
+      if (removed) {
+        stateDelta.put((String) key, State.REMOVED);
+      }
+      return removed;
+    }
+
+    @Override
+    public boolean replace(String key, Object oldValue, Object newValue) {
+      Preconditions.checkNotNull(oldValue);
+      Object checked = check(key, newValue);
+      boolean replaced = delegate.replace(key, oldValue, checked);
+      if (replaced) {
+        stateDelta.put(key, checked);
+      }
+      return replaced;
+    }
+
+    @Override
+    public @Nullable Object replace(String key, Object value) {
+      Object checked = check(key, value);
+      Object previous = delegate.replace(key, checked);
+      if (previous != null) {
+        stateDelta.put(key, checked);
+      }
+      return previous;
+    }
+
+    // Runs user functions and schema checks outside the backing map's lock, retrying on races.
+    @Override
+    public @Nullable Object compute(
+        String key,
+        BiFunction<? super String, ? super @Nullable Object, ? extends @Nullable Object>
+            remapping) {
+      Preconditions.checkNotNull(key);
+      Preconditions.checkNotNull(remapping);
+      while (true) {
+        Object oldValue = delegate.get(key);
+        Object result = update(key, oldValue, remapping.apply(key, oldValue));
+        if (result != RETRY) {
+          return result;
+        }
+      }
+    }
+
+    @Override
+    public @Nullable Object computeIfAbsent(
+        String key, Function<? super String, ? extends @Nullable Object> mapping) {
+      Preconditions.checkNotNull(key);
+      Preconditions.checkNotNull(mapping);
+      Object existing = delegate.get(key);
+      if (existing != null) {
+        return existing;
+      }
+      Object newValue = mapping.apply(key);
+      if (newValue == null) {
+        return null;
+      }
+      Object checked = check(key, newValue);
+      Object raced = delegate.putIfAbsent(key, checked);
+      if (raced != null) {
+        return raced;
+      }
+      stateDelta.put(key, checked);
+      return checked;
+    }
+
+    @Override
+    public @Nullable Object computeIfPresent(
+        String key,
+        BiFunction<? super String, ? super Object, ? extends @Nullable Object> remapping) {
+      Preconditions.checkNotNull(key);
+      Preconditions.checkNotNull(remapping);
+      while (true) {
+        Object oldValue = delegate.get(key);
+        if (oldValue == null) {
+          return null;
+        }
+        Object result = update(key, oldValue, remapping.apply(key, oldValue));
+        if (result != RETRY) {
+          return result;
+        }
+      }
+    }
+
+    @Override
+    public @Nullable Object merge(
+        String key,
+        Object value,
+        BiFunction<? super Object, ? super Object, ? extends @Nullable Object> remapping) {
+      Preconditions.checkNotNull(key);
+      Preconditions.checkNotNull(value);
+      Preconditions.checkNotNull(remapping);
+      while (true) {
+        Object oldValue = delegate.get(key);
+        Object next = oldValue == null ? value : remapping.apply(oldValue, value);
+        Object result = update(key, oldValue, next);
+        if (result != RETRY) {
+          return result;
+        }
+      }
+    }
+
+    private @Nullable Object update(
+        String key, @Nullable Object oldValue, @Nullable Object newValue) {
+      if (newValue == null) {
+        if (oldValue == null) {
+          return null;
+        }
+        if (!delegate.remove(key, oldValue)) {
+          return RETRY;
+        }
+        stateDelta.put(key, State.REMOVED);
+        return null;
+      }
+      Object checked = check(key, newValue);
+      boolean written =
+          oldValue == null
+              ? delegate.putIfAbsent(key, checked) == null
+              : delegate.replace(key, oldValue, checked);
+      if (!written) {
+        return RETRY;
+      }
+      stateDelta.put(key, checked);
+      return checked;
+    }
+  }
+
+  /**
+   * Keeps {@link State#hasDelta()} backed by the real delta while letting {@link CheckedStateMap}
+   * perform the single write of each converted entry.
+   */
+  private static final class DeltaView extends ForwardingConcurrentMap<String, Object> {
+    private final ConcurrentMap<String, Object> stateDelta;
+
+    DeltaView(ConcurrentMap<String, Object> stateDelta) {
+      this.stateDelta = stateDelta;
+    }
+
+    @Override
+    protected ConcurrentMap<String, Object> delegate() {
+      return stateDelta;
+    }
+
+    @Override
+    public @Nullable Object put(String key, Object value) {
+      return null;
+    }
+
+    @Override
+    public void putAll(Map<? extends String, ? extends Object> map) {}
   }
 }

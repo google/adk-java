@@ -37,6 +37,7 @@ import com.google.adk.classifiers.Question.Score;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
+import com.google.adk.sessions.StateSchemaException;
 import com.google.adk.testing.TestNode;
 import com.google.adk.workflow.Edge;
 import com.google.adk.workflow.EdgesBuilder.RouteMap;
@@ -719,6 +720,25 @@ public final class ClassifierNodeTest {
     return !yes.inputs.isEmpty();
   }
 
+  @Test
+  public void answerKey_undeclaredInAncestorStateSchema_failsWithoutRouting() {
+    ClassifierNode triage = triageNode(new FixedClassifier(choice("billing")), "answer");
+    Schema stateSchema =
+        Schema.builder()
+            .type(Type.Known.OBJECT)
+            .properties(ImmutableMap.of("other", Schema.builder().type(Type.Known.STRING).build()))
+            .build();
+
+    Run result = run(triageWorkflow(triage, stateSchema));
+
+    assertThat(result.error()).isInstanceOf(StateSchemaException.class);
+    assertThat(result.error())
+        .hasMessageThat()
+        .isEqualTo("validation error: state key 'answer' is not declared in the state schema.");
+    assertThat(result.session().state()).isEmpty();
+    assertThat(billing.inputs).isEmpty();
+  }
+
   private static ClassifierNode triageNode(Classifier classifier, @Nullable String answerKey) {
     return ClassifierNode.builder()
         .name("triage")
@@ -730,23 +750,36 @@ public final class ClassifierNodeTest {
 
   /** Returns START -> {@code node}, with {@code billing} and {@code technical} routed to sinks. */
   private Workflow triageWorkflow(ClassifierNode node) {
+    return triageWorkflow(node, /* stateSchema= */ null);
+  }
+
+  private Workflow triageWorkflow(ClassifierNode node, @Nullable Schema stateSchema) {
     return routedWorkflow(
         node,
         r -> {
           r.on("billing").then(billing);
           r.on("technical").then(technical);
-        });
+        },
+        stateSchema);
   }
 
   private static Workflow routedWorkflow(ClassifierNode node, Consumer<RouteMap> routes) {
-    return Workflow.builder()
-        .name("wf")
-        .edges(
-            g -> {
+    return routedWorkflow(node, routes, /* stateSchema= */ null);
+  }
+
+  private static Workflow routedWorkflow(
+      ClassifierNode node, Consumer<RouteMap> routes, @Nullable Schema stateSchema) {
+    Workflow.Builder builder =
+        Workflow.builder()
+            .name("wf")
+            .edges(g -> {
               g.fromStart().then(node);
               g.from(node).route(routes);
-            })
-        .build();
+            });
+    if (stateSchema != null) {
+      builder.stateSchema(stateSchema);
+    }
+    return builder.build();
   }
 
   /** Returns {@link #sourcedWorkflow(Object, ClassifierNode, Node)} with a new sink. */

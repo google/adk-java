@@ -300,15 +300,25 @@ public final class NodeExecutionState {
     return resumeInputs;
   }
 
+  /** Returns the state schema in force for this run: its node's own or the nearest ancestor's. */
+  public Optional<Schema> stateSchema() {
+    return Optional.ofNullable(stateSchema);
+  }
+
+  /** Returns {@code value} as this run's state schema reads {@code key}. */
+  Object checkStateValue(String key, Object value) {
+    return checkStateValue(stateSchema, key, value);
+  }
+
   /**
-   * Returns {@code value} checked against this run's state schema for {@code key}, in the form a
-   * stored session reads back, as for node outputs (see {@link SchemaValues#check}). Keys with a
-   * colon, {@link State#REMOVED} and writes under no schema pass unchecked.
+   * Returns {@code value} checked against {@code stateSchema} for {@code key}, in the form a stored
+   * session reads back, as for node outputs; public only for {@link Context}. Keys with a colon,
+   * {@link State#REMOVED} and writes under no schema pass unchecked.
    *
    * @throws StateSchemaException if the schema does not declare {@code key}, or if the value does
    *     not match or converts to null
    */
-  Object checkStateValue(String key, Object value) {
+  public static Object checkStateValue(@Nullable Schema stateSchema, String key, Object value) {
     checkNotNull(key, "null key");
     checkNotNull(value, "null value");
     if (stateSchema == null || key.contains(":") || value == State.REMOVED) {

@@ -26,11 +26,13 @@ import static com.google.adk.testing.WorkflowTestNodes.workflow;
 import static com.google.adk.workflow.WorkflowResumeTesting.START;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
+import static com.google.adk.workflow.WorkflowResumeTesting.errorEvent;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
 import static com.google.adk.workflow.WorkflowResumeTesting.lookalikeFinishTask;
 import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
+import static com.google.adk.workflow.WorkflowResumeTesting.stateSchemaWorkflow;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.truth.Truth.assertThat;
@@ -44,6 +46,7 @@ import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.workflow.WorkflowResumeTesting.FailedTurn;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -52,6 +55,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -482,6 +486,47 @@ public final class LlmAgentTaskModeTest {
     assertThat(model.getLastRequest().tools().keySet()).contains("transfer_to_agent");
     assertThat(String.join("\n", model.getLastRequest().getSystemInstructions()))
         .doesNotContain("Agent name: other");
+  }
+
+  @Test
+  public void taskNode_outputKeyIsConvertedByStateSchema() {
+    Schema outputSchema =
+        Schema.builder()
+            .type(Type.Known.OBJECT)
+            .properties(ImmutableMap.of("count", Schema.builder().type(Type.Known.STRING).build()))
+            .build();
+    Schema bookingSchema =
+        Schema.builder()
+            .type(Type.Known.OBJECT)
+            .properties(ImmutableMap.of("count", Schema.builder().type(Type.Known.INTEGER).build()))
+            .build();
+    Schema stateSchema =
+        Schema.builder()
+            .type(Type.Known.OBJECT)
+            .properties(ImmutableMap.of("booking", bookingSchema))
+            .build();
+    TestLlm model = TestLlm.create(finishTask(ImmutableMap.of("count", "3")));
+    LlmAgent task = task(model).outputSchema(outputSchema).outputKey("booking").build();
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(stateSchema, task));
+
+    ImmutableList<Event> events = session.turn(go());
+
+    assertThat(stateValues(events, "booking")).containsExactly(ImmutableMap.of("count", 3));
+    assertThat(session.state()).containsEntry("booking", ImmutableMap.of("count", 3));
+  }
+
+  @Test
+  public void taskNode_undeclaredOutputKeyFailsUnderStateSchema() {
+    TestLlm model = TestLlm.create(finishTask(ImmutableMap.of("result", "Booked.")));
+    LlmAgent task = task(model).outputKey("booking").build();
+    WorkflowSession session =
+        new WorkflowSession(stateSchemaWorkflow(WorkflowResumeTesting.STATE_SCHEMA, task));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertThat(errorEvent(turn.events()).errorMessage())
+        .hasValue("validation error: state key 'booking' is not declared in the state schema.");
+    assertThat(session.state()).isEmpty();
   }
 
   private static LlmAgent.Builder task(TestLlm model) {

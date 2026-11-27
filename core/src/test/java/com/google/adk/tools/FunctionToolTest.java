@@ -26,6 +26,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.sessions.StateSchemaException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
@@ -682,6 +683,17 @@ public final class FunctionToolTest {
   }
 
   @Test
+  public void call_throwsStateSchemaException_failsWithIt() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "throwStateSchemaException");
+
+    StateSchemaException e =
+        assertThrows(
+            StateSchemaException.class, () -> tool.runAsync(ImmutableMap.of(), null).blockingGet());
+
+    assertThat(e).hasMessageThat().isEqualTo("rejected");
+  }
+
+  @Test
   public void create_withPojoParamWithGettersAndSetters() {
     FunctionTool tool = FunctionTool.create(Functions.class, "pojoParamWithGettersAndSetters");
 
@@ -1044,6 +1056,10 @@ public final class FunctionToolTest {
 
     public static void throwException() {
       throw new RuntimeException("test exception");
+    }
+
+    public static void throwStateSchemaException() {
+      throw new StateSchemaException("rejected");
     }
 
     public static void voidReturnWithoutSchema() {}

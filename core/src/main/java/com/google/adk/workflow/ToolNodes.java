@@ -129,6 +129,8 @@ public final class ToolNodes {
           ToolContext.builder(context.invocationContext())
               .functionCallId(context.invocationContext().newUuid())
               .toolConfirmation(ToolConfirmations.answer(context, name()))
+              // As in Python, the tool's state writes are checked when it makes them.
+              .stateSchema(context.requireNodeState().stateSchema().orElse(null))
               .build();
       return callTool(context, args, toolContext)
           // Kept on failure too; a schema rejection is suppressed so the tool's error stands.

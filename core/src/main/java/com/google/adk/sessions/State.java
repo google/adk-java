@@ -17,6 +17,7 @@
 package com.google.adk.sessions;
 
 import com.fasterxml.jackson.annotation.JsonValue;
+import com.google.adk.annotations.Experimental;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -25,14 +26,16 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 
 /**
  * Session state that also records each write made through {@link #put(String, Object)}, {@link
  * #remove(Object)} and the other write methods in a delta. Writes through the {@link #entrySet()},
  * {@link #keySet()} and {@link #values()} views and {@link #clear()} skip the delta, so no event
- * carries them; in the {@link com.google.adk.agents.Context#state()} of a workflow node, they throw
- * {@link UnsupportedOperationException}.
+ * carries them; in the {@link com.google.adk.agents.Context#state()} of a workflow node, and in a
+ * tool context under a state schema, they throw {@link UnsupportedOperationException}.
  */
 @SuppressWarnings("ShouldNotSubclass")
 public final class State implements ConcurrentMap<String, Object> {
@@ -46,15 +49,34 @@ public final class State implements ConcurrentMap<String, Object> {
 
   private final ConcurrentMap<String, Object> state;
   private final ConcurrentMap<String, Object> delta;
+  private final boolean delegatesCompute;
 
   public State(Map<String, Object> state) {
     this(state, null);
   }
 
   public State(Map<String, Object> state, @Nullable Map<String, Object> delta) {
+    this(state, delta, /* delegatesCompute= */ false);
+  }
+
+  private State(
+      Map<String, Object> state, @Nullable Map<String, Object> delta, boolean delegatesCompute) {
     Objects.requireNonNull(state, "state is null");
     this.state = toConcurrentMap(state);
     this.delta = delta == null ? new ConcurrentHashMap<>() : toConcurrentMap(delta);
+    this.delegatesCompute = delegatesCompute;
+  }
+
+  /**
+   * Returns a state whose {@code compute*} and {@code merge} methods call {@code state}'s own, so
+   * they return what {@code state} stores. {@code state} must record those writes in {@code delta}
+   * itself, which this state shares; the other write methods behave as in {@link #State(Map, Map)}.
+   */
+  @Experimental
+  public static State delegatingCompute(
+      ConcurrentMap<String, Object> state, ConcurrentMap<String, Object> delta) {
+    Objects.requireNonNull(delta, "delta is null");
+    return new State(state, delta, /* delegatesCompute= */ true);
   }
 
   /**
@@ -76,7 +98,8 @@ public final class State implements ConcurrentMap<String, Object> {
   /**
    * Clears the backing map without recording removals in the delta.
    *
-   * @throws UnsupportedOperationException if this state belongs to a workflow node's context
+   * @throws UnsupportedOperationException if this state belongs to a workflow node's context, or to
+   *     a tool context under a state schema
    */
   @Override
   public void clear() {
@@ -94,7 +117,8 @@ public final class State implements ConcurrentMap<String, Object> {
   }
 
   /**
-   * Returns the entries view; read-only in a workflow node, and writes elsewhere skip the delta.
+   * Returns the entries view; read-only in a workflow node or a tool context under a state schema,
+   * and writes elsewhere skip the delta.
    */
   @Override
   public Set<Entry<String, Object>> entrySet() {
@@ -129,7 +153,8 @@ public final class State implements ConcurrentMap<String, Object> {
   }
 
   /**
-   * Returns the key set view; read-only in a workflow node, and writes elsewhere skip the delta.
+   * Returns the key set view; read-only in a workflow node or a tool context under a state schema,
+   * and writes elsewhere skip the delta.
    */
   @Override
   public Set<String> keySet() {
@@ -194,11 +219,51 @@ public final class State implements ConcurrentMap<String, Object> {
   }
 
   @Override
+  public @Nullable Object compute(
+      String key,
+      BiFunction<? super String, ? super @Nullable Object, ? extends @Nullable Object>
+          remappingFunction) {
+    return delegatesCompute
+        ? state.compute(key, remappingFunction)
+        : ConcurrentMap.super.compute(key, remappingFunction);
+  }
+
+  @Override
+  public @Nullable Object computeIfAbsent(
+      String key, Function<? super String, ? extends @Nullable Object> mappingFunction) {
+    return delegatesCompute
+        ? state.computeIfAbsent(key, mappingFunction)
+        : ConcurrentMap.super.computeIfAbsent(key, mappingFunction);
+  }
+
+  @Override
+  public @Nullable Object computeIfPresent(
+      String key,
+      BiFunction<? super String, ? super Object, ? extends @Nullable Object> remappingFunction) {
+    return delegatesCompute
+        ? state.computeIfPresent(key, remappingFunction)
+        : ConcurrentMap.super.computeIfPresent(key, remappingFunction);
+  }
+
+  @Override
+  public @Nullable Object merge(
+      String key,
+      Object value,
+      BiFunction<? super Object, ? super Object, ? extends @Nullable Object> remappingFunction) {
+    return delegatesCompute
+        ? state.merge(key, value, remappingFunction)
+        : ConcurrentMap.super.merge(key, value, remappingFunction);
+  }
+
+  @Override
   public int size() {
     return state.size();
   }
 
-  /** Returns the values view; read-only in a workflow node, and writes elsewhere skip the delta. */
+  /**
+   * Returns the values view; read-only in a workflow node or a tool context under a state schema,
+   * and writes elsewhere skip the delta.
+   */
   @Override
   public Collection<Object> values() {
     return state.values();
