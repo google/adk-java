@@ -573,8 +573,20 @@ final class PortCodec<T> {
    * @throws IllegalArgumentException if {@code value} is not of this port's type, has no JSON form,
    *     holds a NaN or infinite number, or writes null
    */
-  @SuppressWarnings("UnusedException")
   @Nullable Object encode(@Nullable Object value, String what) {
+    Object json = encodeNullable(value, what);
+    if (json == null && value != null) {
+      throw new IllegalArgumentException(what + " writes null as " + type.toCanonical() + ".");
+    }
+    return json;
+  }
+
+  /**
+   * Like {@link #encode}, but returns null for a value that writes null, such as an empty {@code
+   * OptionalInt}.
+   */
+  @SuppressWarnings("UnusedException")
+  @Nullable Object encodeNullable(@Nullable Object value, String what) {
     if (value == null) {
       return null;
     }
@@ -604,11 +616,7 @@ final class PortCodec<T> {
       // Jackson's and genai's messages can quote the value, so no cause.
       throw new IllegalArgumentException(what + " has no JSON form as " + type.toCanonical() + ".");
     }
-    Object json = jsonNative(tree, what);
-    if (json == null) {
-      throw new IllegalArgumentException(what + " writes null as " + type.toCanonical() + ".");
-    }
-    return json;
+    return jsonNative(tree, what);
   }
 
   /** Returns the port's class, with a primitive boxed. */

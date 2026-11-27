@@ -535,6 +535,33 @@ public final class WorkflowTest {
   }
 
   @Test
+  public void run_messageBesideAnEnumInAnOutput_reachesTheSuccessorAsText() {
+    // Arrange
+    Schema string = Schema.builder().type(Type.Known.STRING).build();
+    Node producer =
+        new SchemaNode(
+            "producer",
+            /* input= */ null,
+            Schema.builder()
+                .type(Type.Known.OBJECT)
+                .properties(ImmutableMap.of("msg", string, "color", string))
+                .build(),
+            (ctx, input) ->
+                Flowable.just(
+                    ImmutableMap.of(
+                        "msg", Content.fromParts(Part.fromText("hi")), "color", Color.RED)));
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(new Edge(START, producer), new Edge(producer, captureInput("reply"))));
+
+    // Act
+    ImmutableList<Event> events = session.turn(go());
+
+    // Assert
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("msg", "hi", "color", "RED"));
+  }
+
+  @Test
   public void runNode_eventChildInputUnderAnObjectSchema_failsAsNotAnObject() {
     // Arrange
     Node child =

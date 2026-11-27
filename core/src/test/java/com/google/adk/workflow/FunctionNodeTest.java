@@ -3208,6 +3208,35 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void builder_inputSchemaOnAnObjectOrVoidPort_readsAMessageBesideAnEnumAsTheSchemaSays() {
+    // Arrange
+    Schema textAndColor = object(ImmutableMap.of("msg", STRING, "color", STRING));
+    FunctionNode<Object, Object> echo =
+        FunctionNodes.builder(Object.class, Object.class)
+            .name("read")
+            .inputSchema(textAndColor)
+            .body((ctx, value) -> value)
+            .build();
+    FunctionNode<Void, String> ignoring =
+        FunctionNodes.builder(Void.class, String.class)
+            .name("read")
+            .inputSchema(textAndColor)
+            .body((ctx, unused) -> "ran")
+            .build();
+    Object input =
+        ImmutableMap.of("msg", Content.fromParts(Part.fromText("hi")), "color", Color.RED);
+
+    // Act
+    List<@Nullable Object> outputs =
+        Arrays.asList(readWith(input, echo), readWith(input, ignoring));
+
+    // Assert
+    assertThat(outputs)
+        .containsExactly(ImmutableMap.of("msg", "hi", "color", "red"), "ran")
+        .inOrder();
+  }
+
+  @Test
   public void builder_inputSchema_checksAnInputThePortReadsAsNullAgainstItsNullability() {
     // Arrange
     FunctionNode<String, String> text =
@@ -3250,7 +3279,7 @@ public final class FunctionNodeTest {
   }
 
   @Test
-  public void builder_inputSchema_checksAnEventInputOrAnInputForAnEventPortAsItIs() {
+  public void builder_inputSchema_rejectsAnEventInputAndARecordForAnEventPort() {
     // Arrange
     FunctionNode<Object, String> anything =
         FunctionNodes.builder(Object.class, String.class)
@@ -3275,7 +3304,10 @@ public final class FunctionNodeTest {
         "validation error: input of node 'child' does not match its schema: the value is not an"
             + " object";
     assertThat(eventIntoObject.errorMessage("NodeInputValidationException")).isEqualTo(notAnObject);
-    assertThat(recordIntoEvent.errorMessage("NodeInputValidationException")).isEqualTo(notAnObject);
+    // The record is checked in JSON form, which the Event port then cannot read.
+    assertThat(recordIntoEvent.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'child' does not match com.google.adk.events.Event.");
   }
 
   @Test

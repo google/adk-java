@@ -205,7 +205,7 @@ public final class FunctionNode<I, O> extends BaseNode {
     Object formed = takesContent ? inputCodec.decode(nodeInput, what) : schemaForm(nodeInput, what);
     Object checked;
     try {
-      checked = coerceAsIs(formed, schema, what);
+      checked = SchemaValues.check(formed, schema, what);
     } catch (IllegalArgumentException e) {
       throw new NodeInputValidationException(e.getMessage(), e);
     }
@@ -230,15 +230,17 @@ public final class FunctionNode<I, O> extends BaseNode {
 
   /**
    * Returns {@code value} as a schema checks it: JSON, a message or an event as it is, and any
-   * other value read by the port and written in JSON form, as ADK Kotlin does. A {@code Void} port
-   * reads nothing, so the schema checks the value's own JSON form.
+   * other value read by the port and written in JSON form, as ADK Kotlin does. On an {@code
+   * Object}, {@code Void} or {@code Event} port, the schema checks the value's own JSON form.
    */
   private @Nullable Object schemaForm(Object value, String what) {
-    if (isJsonForm(value) || value instanceof Event || inputCodec.rawType() == Event.class) {
+    Class<?> port = inputCodec.rawType();
+    if (SchemaValues.isJsonForm(value)
+        || value instanceof Event
+        || port == Object.class
+        || port == Void.class
+        || port == Event.class) {
       return value;
-    }
-    if (inputCodec.rawType() == Void.class) {
-      return encode(ANY, value, what);
     }
     // Throws a NodeInputValidationException of its own if the port cannot read the value.
     I read = inputCodec.decode(value, what);
@@ -264,9 +266,7 @@ public final class FunctionNode<I, O> extends BaseNode {
     if (schema == null || (confirmationPredicate != null && output.equals(REJECTED_OUTPUT))) {
       return output;
     }
-    String what = "output of node '" + name() + "'";
-    // In JSON form, as a stored session reads it back: the conversion returns mutable maps.
-    return ANY.encode(ValueCoercer.coerceValue(output, schema, what), what);
+    return SchemaValues.check(output, schema, "output of node '" + name() + "'");
   }
 
   /** Whether {@link #inputSchema} was inferred rather than set on the builder. */
