@@ -930,6 +930,8 @@ public class Runner {
     PersistBarrier.enable(context);
 
     return beforeRunEvent
+        .flatMapSingle(
+            event -> persistBeforeRunEvent(context, sessionToPersist, onEachPersisted, event))
         .toFlowable()
         .switchIfEmpty(
             runRoot(
@@ -1000,6 +1002,36 @@ public class Runner {
                 .author("model")
                 .content(content)
                 .build());
+  }
+
+  /**
+   * Runs the on-event callbacks on a before-run event, then persists and returns their result. As
+   * in Python, on-event runs first so the session stores what the caller gets, and a replacement
+   * keeps the original's id, invocation id and timestamp, and its author when it sets none.
+   */
+  private Single<Event> persistBeforeRunEvent(
+      InvocationContext context,
+      Session sessionToPersist,
+      @Nullable Runnable onEachPersisted,
+      Event event) {
+    return context
+        .pluginManager()
+        .onEventCallback(context, event)
+        .map(replacement ->
+            replacement.toBuilder()
+                .id(event.id())
+                .invocationId(event.invocationId())
+                .timestamp(event.timestamp())
+                .author(Objects.requireNonNullElse(replacement.author(), event.author()))
+                .build())
+        .defaultIfEmpty(event)
+        // No PersistBarrier mark: the agent never runs, so no flow step awaits it.
+        .flatMap(outputEvent -> sessionService.appendEvent(sessionToPersist, outputEvent))
+        .doOnSuccess(unusedEvent -> {
+          if (onEachPersisted != null) {
+            onEachPersisted.run();
+          }
+        });
   }
 
   /** Fires the on-run-error plugin callback; the run paths share this error handler. */
@@ -1749,6 +1781,8 @@ public class Runner {
     return beforeRunEventFor(context)
         .doOnSuccess(unused -> started.set(true))
         .doOnComplete(() -> started.set(true))
+        .flatMapSingle(event ->
+            persistBeforeRunEvent(context, context.session(), /* onEachPersisted= */ null, event))
         .toFlowable()
         .switchIfEmpty(
             Flowable.defer(() ->

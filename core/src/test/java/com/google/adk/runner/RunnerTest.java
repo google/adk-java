@@ -384,6 +384,76 @@ public final class RunnerTest {
   }
 
   @Test
+  public void beforeRunCallback_earlyExit_passesThroughOnEventThenPersists() {
+    when(plugin.beforeRunCallback(any())).thenReturn(Maybe.just(pluginContent));
+    when(plugin.onEventCallback(any(), any()))
+        .thenAnswer(invocation -> {
+          Event event = invocation.getArgument(1);
+          return Maybe.just(
+              event.toBuilder().author("plugin").content(createContent("from onEvent")).build());
+        });
+
+    List<Event> events =
+        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
+    Session persisted =
+        runner
+            .sessionService()
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+
+    assertThat(simplifyEvents(events)).containsExactly("plugin: from onEvent");
+    assertThat(simplifyEvents(persisted.events()))
+        .containsExactly("user: from user", "plugin: from onEvent")
+        .inOrder();
+    assertThat(events).containsExactly(Iterables.getLast(persisted.events()));
+    ArgumentCaptor<Event> eventCaptor = ArgumentCaptor.forClass(Event.class);
+    verify(plugin).onEventCallback(any(), eventCaptor.capture());
+    assertThat(eventCaptor.getValue().content()).hasValue(pluginContent);
+  }
+
+  @Test
+  public void beforeRunCallback_earlyExit_onEventReplacementKeepsOriginalIdentity() {
+    when(plugin.beforeRunCallback(any())).thenReturn(Maybe.just(pluginContent));
+    // Built from scratch: no id, invocation id or author, and a wall-clock timestamp.
+    when(plugin.onEventCallback(any(), any()))
+        .thenReturn(Maybe.just(Event.builder().content(createContent("from onEvent")).build()));
+    Runner deterministicRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .instantSource(() -> Instant.ofEpochMilli(1234L))
+            .build();
+    Session deterministicSession =
+        deterministicRunner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        deterministicRunner
+            .runAsync("user", deterministicSession.id(), createContent("from user"))
+            .toList()
+            .blockingGet();
+    Event persisted =
+        Iterables.getLast(
+            deterministicRunner
+                .sessionService()
+                .listEvents("test", "user", deterministicSession.id())
+                .blockingGet()
+                .events());
+
+    ArgumentCaptor<Event> eventCaptor = ArgumentCaptor.forClass(Event.class);
+    verify(plugin).onEventCallback(any(), eventCaptor.capture());
+    Event original = eventCaptor.getValue();
+    assertThat(simplifyEvents(events)).containsExactly("model: from onEvent");
+    assertThat(events).containsExactly(persisted);
+    assertThat(persisted.id()).isEqualTo(original.id());
+    assertThat(persisted.invocationId()).isEqualTo(original.invocationId());
+    assertThat(persisted.timestamp()).isEqualTo(1234L);
+  }
+
+  @Test
   public void afterRunCallback_success() {
     when(plugin.afterRunCallback(any())).thenReturn(Completable.complete());
 
@@ -2640,6 +2710,28 @@ public final class RunnerTest {
     assertThat(simplifyEvents(testSubscriber.values())).containsExactly("model: from plugin");
     assertThat(liveRequestTexts(testLlm)).isEmpty();
     verify(plugin).afterRunCallback(any());
+  }
+
+  @Test
+  public void runLive_beforeRunCallbackContent_passesThroughOnEventThenPersists() throws Exception {
+    when(plugin.beforeRunCallback(any())).thenReturn(Maybe.just(pluginContent));
+    when(plugin.onEventCallback(any(), any()))
+        .thenAnswer(invocation -> {
+          Event event = invocation.getArgument(1);
+          return Maybe.just(event.toBuilder().content(createContent("from onEvent")).build());
+        });
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    ImmutableList<Event> history =
+        runner.sessionService().listEvents("test", "user", session.id()).blockingGet().events();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("model: from onEvent");
+    assertThat(testSubscriber.values()).containsExactlyElementsIn(history);
   }
 
   @Test
