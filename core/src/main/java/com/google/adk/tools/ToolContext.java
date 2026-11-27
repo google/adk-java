@@ -19,12 +19,9 @@ package com.google.adk.tools;
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
-import com.google.adk.annotations.Experimental;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
-import com.google.adk.sessions.StateSchemaException;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
-import com.google.genai.types.Schema;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 
@@ -36,19 +33,15 @@ import org.jspecify.annotations.Nullable;
  */
 public class ToolContext extends CallbackContext {
 
-  private final @Nullable Schema stateSchema;
-
   private ToolContext(
       InvocationContext invocationContext,
       EventActions eventActions,
       Optional<String> functionCallId,
       Optional<ToolConfirmation> toolConfirmation,
-      @Nullable String eventId,
-      @Nullable Schema stateSchema) {
-    super(invocationContext, eventActions, eventId, stateSchema);
+      @Nullable String eventId) {
+    super(invocationContext, eventActions, eventId);
     functionCallId(functionCallId.orElse(null));
     toolConfirmation(toolConfirmation.orElse(null));
-    this.stateSchema = stateSchema;
   }
 
   public void setActions(EventActions actions) {
@@ -74,8 +67,7 @@ public class ToolContext extends CallbackContext {
         .actions(eventActions)
         .functionCallId(functionCallId().orElse(null))
         .toolConfirmation(toolConfirmation().orElse(null))
-        .eventId(eventId())
-        .stateSchema(stateSchema);
+        .eventId(eventId());
   }
 
   @Override
@@ -99,7 +91,6 @@ public class ToolContext extends CallbackContext {
     private Optional<String> functionCallId = Optional.empty();
     private Optional<ToolConfirmation> toolConfirmation = Optional.empty();
     private String eventId;
-    private @Nullable Schema stateSchema;
 
     private Builder(InvocationContext invocationContext) {
       this.invocationContext = invocationContext;
@@ -129,21 +120,9 @@ public class ToolContext extends CallbackContext {
       return this;
     }
 
-    /**
-     * Sets the state schema that the tool's {@link ToolContext#state()} checks writes against, as a
-     * workflow tool node does: writes store converted values and throw {@link StateSchemaException}
-     * on a mismatch or undeclared key.
-     */
-    @Experimental
-    @CanIgnoreReturnValue
-    public Builder stateSchema(@Nullable Schema stateSchema) {
-      this.stateSchema = stateSchema;
-      return this;
-    }
-
     public ToolContext build() {
       return new ToolContext(
-          invocationContext, eventActions, functionCallId, toolConfirmation, eventId, stateSchema);
+          invocationContext, eventActions, functionCallId, toolConfirmation, eventId);
     }
   }
 }

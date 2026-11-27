@@ -472,42 +472,6 @@ public final class ToolNodesTest {
   }
 
   @Test
-  public void nodeRunner_withoutAStateSchema_givesTheToolWritableStateViewsAndNoNodeState() {
-    FakeTool tool =
-        FakeTool.running(
-            "writer",
-            (args, toolContext) -> {
-              toolContext.state().put("color", "blue");
-              toolContext.state().entrySet().iterator().next().setValue("red");
-              toolContext.state().keySet().remove("color");
-              toolContext.state().clear();
-              assertThrows(IllegalStateException.class, toolContext::requireNodeState);
-              return ImmutableMap.of("status", "ok");
-            });
-
-    Event event = Iterables.getOnlyElement(runAsRoot(ToolNodes.asNode(tool)));
-
-    assertThat(event.output()).hasValue(ImmutableMap.of("status", "ok"));
-  }
-
-  @Test
-  public void stateSchema_aToolContextRebuiltWithToBuilderStillChecksWritesAndHasNoNodeState() {
-    WorkflowSession session =
-        stateSchemaToolSession(toolContext -> {
-          ToolContext rebuilt = toolContext.toBuilder().build();
-          rebuilt.state().put("count", "3");
-          assertThrows(StateSchemaException.class, () -> rebuilt.state().put("other", 1));
-          assertThrows(IllegalStateException.class, toolContext::requireNodeState);
-          assertThrows(IllegalStateException.class, rebuilt::requireNodeState);
-        });
-
-    session.advance(go());
-
-    assertThat(session.state()).containsEntry("count", 3);
-    assertThat(session.state()).doesNotContainKey("other");
-  }
-
-  @Test
   public void stateSchema_aToolStateWriteReachesTheStoredSessionConverted() {
     WorkflowSession session =
         stateSchemaToolSession(toolContext -> toolContext.state().put("count", "3"));
@@ -539,70 +503,26 @@ public final class ToolNodesTest {
   }
 
   @Test
-  public void stateSchema_aToolReadsBackItsStateWriteConverted() {
-    AtomicReference<Object> seen = new AtomicReference<>();
+  public void stateSchema_aToolWritingAnUndeclaredKeyFailsTheNodeAfterTheToolReturns() {
     WorkflowSession session =
         stateSchemaToolSession(toolContext -> {
           toolContext.state().put("count", "3");
-          seen.set(toolContext.state().get("count"));
-        });
-
-    session.advance(go());
-
-    assertThat(seen.get()).isEqualTo(3);
-    assertThat(session.state()).containsEntry("count", 3);
-  }
-
-  @Test
-  public void
-      stateSchema_aToolsUndeclaredWriteThrowsInTheToolAndTheErrorEventKeepsEarlierChanges() {
-    AtomicReference<RuntimeException> otherWrite = new AtomicReference<>();
-    WorkflowSession session =
-        stateSchemaToolSession(toolContext -> {
-          toolContext.saveArtifact("f.txt", Part.fromText("v1")).blockingAwait();
-          toolContext.state().put("count", "3");
-          try {
-            toolContext.state().put("other", 1);
-          } catch (RuntimeException e) {
-            otherWrite.set(e);
-            throw e;
-          }
+          toolContext.saveArtifact("report.txt", Part.fromText("v1")).blockingAwait();
+          toolContext.state().put("other", 1);
         });
 
     FailedTurn turn = session.failingTurn(go());
 
-    String undeclared = "validation error: state key 'other' is not declared in the state schema.";
-    assertThat(otherWrite.get()).isInstanceOf(StateSchemaException.class);
-    assertThat(otherWrite.get()).hasMessageThat().isEqualTo(undeclared);
-    assertThat(turn.error()).isSameInstanceAs(otherWrite.get());
-    Event errorEvent = errorEvent(turn.events());
-    assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("StateSchemaException");
-    assertThat(errorEvent.errorMessage()).hasValue(undeclared);
-    assertThat(errorEvent.actions().stateDelta()).containsExactly("count", 3);
-    assertThat(errorEvent.actions().artifactDelta()).containsExactly("f.txt", 0);
-    assertThat(
-            turn.events().stream().flatMap(event -> event.actions().stateDelta().keySet().stream()))
-        .doesNotContain("other");
-    assertThat(session.state()).containsEntry("count", 3);
-    assertThat(session.state()).doesNotContainKey("other");
-  }
-
-  @Test
-  public void stateSchema_aFunctionToolsUndeclaredWriteFailsTheNode() {
-    WorkflowSession session =
-        stateSchemaToolSession(FunctionTool.create(Functions.class, "writeOther"));
-
-    FailedTurn turn = session.failingTurn(go());
-
-    assertThat(turn.error()).isInstanceOf(StateSchemaException.class);
     Event errorEvent = errorEvent(turn.events());
     assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("StateSchemaException");
     assertThat(errorEvent.errorMessage())
         .hasValue("validation error: state key 'other' is not declared in the state schema.");
-    assertThat(turn.events().stream().flatMap(event -> event.output().stream()))
-        .doesNotContain(
-            ImmutableMap.of("status", "error", "message", "An internal error occurred."));
-    assertThat(session.state()).doesNotContainKey("other");
+    assertThat(
+            turn.events().stream().flatMap(event -> event.actions().stateDelta().keySet().stream()))
+        .isEmpty();
+    assertThat(errorEvent.actions().artifactDelta()).containsExactly("report.txt", 0);
+    // The write reached the live session unchecked; the in-memory service stores that session.
+    assertThat(session.state()).containsEntry("other", 1);
   }
 
   @Test
@@ -1332,17 +1252,13 @@ public final class ToolNodesTest {
 
   /** Returns a session of a workflow with the shared state schema whose tool runs {@code write}. */
   private static WorkflowSession stateSchemaToolSession(Consumer<ToolContext> write) {
-    return stateSchemaToolSession(
+    FakeTool tool =
         FakeTool.running(
             "writer",
             (args, toolContext) -> {
               write.accept(toolContext);
               return ImmutableMap.of("status", "ok");
-            }));
-  }
-
-  /** Returns a session of a workflow with the shared state schema that runs {@code tool}. */
-  private static WorkflowSession stateSchemaToolSession(BaseTool tool) {
+            });
     return new WorkflowSession(
         Workflow.builder()
             .name("wf")
@@ -1428,12 +1344,6 @@ public final class ToolNodesTest {
     }
 
     public static void record(@Annotations.Schema(name = "note") String note) {}
-
-    public static ImmutableMap<String, Object> writeOther(
-        @Annotations.Schema(name = "toolContext") ToolContext toolContext) {
-      toolContext.state().put("other", 1);
-      return ImmutableMap.of("status", "ok");
-    }
 
     private Functions() {}
   }

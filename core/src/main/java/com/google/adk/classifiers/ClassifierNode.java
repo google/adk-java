@@ -40,7 +40,6 @@ import com.google.adk.classifiers.Answer.ChoiceAnswer;
 import com.google.adk.classifiers.Answer.RefusalAnswer;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
-import com.google.adk.sessions.StateSchemaException;
 import com.google.adk.workflow.BaseNode;
 import com.google.adk.workflow.Edge;
 import com.google.adk.workflow.GraphValidationException;
@@ -152,10 +151,9 @@ public final class ClassifierNode extends BaseNode {
 
   /**
    * Classifies {@code nodeInput} and outputs it with the route. Fails with {@link
-   * NodeInputValidationException} if the input is missing or not a kind the node can classify, with
-   * {@link WorkflowDataException} if the answer is missing, a refusal, a label outside the
-   * question's labels, or of the wrong type, and with {@link StateSchemaException} if {@link
-   * #answerKey()} is rejected by the node's state schema.
+   * NodeInputValidationException} if the input is missing or not a kind the node can classify, and
+   * with {@link WorkflowDataException} if the answer is missing, a refusal, a label outside the
+   * question's labels, or of the wrong type.
    */
   @Override
   public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {

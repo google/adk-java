@@ -58,7 +58,6 @@ import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.Model;
 import com.google.adk.sessions.Session;
-import com.google.adk.sessions.StateSchemaException;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
 import com.google.adk.workflow.NodeExecutionState;
@@ -931,12 +930,11 @@ public class LlmAgent extends BaseAgent {
   /**
    * Runs this agent as a workflow node: a {@link AgentMode#SINGLE_TURN} agent takes the node input
    * as its user turn and gives the first final reply, its own or its inline target's, as output; a
-   * {@link AgentMode#TASK} agent works until {@code finish_task} succeeds, failing with {@link
-   * StateSchemaException} if the node's state schema rejects its {@link #outputKey()} write; and a
-   * {@link AgentMode#CHAT} agent runs the tasks it delegates and stays open ({@link
-   * #waitForOutput}). The flow of a chat or task agent stops at a handoff, and the workflow runs
-   * the target as a node, or fails the run if the handoff is invalid. Any other agent runs as
-   * {@link BaseAgent#runNode} runs it.
+   * {@link AgentMode#TASK} agent works until {@code finish_task} succeeds; and a {@link
+   * AgentMode#CHAT} agent runs the tasks it delegates and stays open ({@link #waitForOutput}). The
+   * flow of a chat or task agent stops at a handoff, and the workflow runs the target as a node, or
+   * fails the run if the handoff is invalid. Any other agent runs as {@link BaseAgent#runNode} runs
+   * it.
    */
   @Experimental
   @Override
