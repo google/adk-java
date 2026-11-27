@@ -59,6 +59,12 @@ import org.slf4j.LoggerFactory;
  *     LoopAgent.builder().name("loop").subAgents(refiner).maxIterations(3).build();
  * var root = SequentialAgent.builder().name("root").subAgents(loop, publisher).build();
  * }</pre>
+ *
+ * <p><b>Persistence:</b> in {@link #runAsync}, each sub-agent starts only after the {@code Runner}
+ * has saved the previous sub-agent's events to the session, so it sees their state changes. An
+ * agent that wraps this one and drops, holds back, buffers or changes the id of those events can
+ * make this agent wait forever; to use its output inside your own agent, run this agent with a
+ * separate {@code Runner} and session.
  */
 public class LoopAgent extends BaseAgent {
   private static final Logger logger = LoggerFactory.getLogger(LoopAgent.class);
@@ -161,7 +167,10 @@ public class LoopAgent extends BaseAgent {
 
     if (!invocationContext.isResumable()) {
       return Flowable.fromIterable(subAgents)
-          .concatMap(subAgent -> subAgent.runAsync(invocationContext))
+          .concatMap(subAgent ->
+              subAgent
+                  .runAsync(invocationContext)
+                  .compose(completeAfterPersisted(invocationContext)))
           .repeat(maxIterations != null ? maxIterations : Integer.MAX_VALUE)
           .takeUntil(LoopAgent::hasEscalateAction);
     }
@@ -189,22 +198,20 @@ public class LoopAgent extends BaseAgent {
     AtomicBoolean paused = new AtomicBoolean(false);
     AtomicInteger timesLooped = new AtomicInteger(0);
     return Flowable.fromIterable(subAgents)
-        .concatMap(
-            subAgent ->
-                paused.get()
-                    ? Flowable.<Event>empty()
-                    : subAgent
-                        .runAsync(invocationContext)
-                        .doOnNext(
-                            event -> {
-                              if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
-                                paused.set(true);
-                              }
-                            }))
-        .repeatUntil(
-            () ->
-                paused.get()
-                    || (maxIterations != null && timesLooped.incrementAndGet() >= maxIterations))
+        .concatMap(subAgent ->
+            paused.get()
+                ? Flowable.<Event>empty()
+                : subAgent
+                    .runAsync(invocationContext)
+                    .doOnNext(event -> {
+                      if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
+                        paused.set(true);
+                      }
+                    })
+                    .compose(completeAfterPersisted(invocationContext)))
+        .repeatUntil(() ->
+            paused.get()
+                || (maxIterations != null && timesLooped.incrementAndGet() >= maxIterations))
         .takeUntil(LoopAgent::hasEscalateAction);
   }
 
@@ -256,75 +263,67 @@ public class LoopAgent extends BaseAgent {
       List<? extends BaseAgent> subAgents,
       int startIndex,
       LoopState state) {
-    return Flowable.defer(
-        () -> {
-          // Checked here so a resume already at the cap stops, not just a completed iteration.
-          if (maxIterations != null && state.timesLooped.get() >= maxIterations) {
-            state.finished.set(true);
-            return endOfAgentAndRecord(context);
-          }
-          AtomicReference<BaseAgent> ranLast = new AtomicReference<>(null);
-          Flowable<Event> iteration =
-              Flowable.fromIterable(subAgents.subList(startIndex, subAgents.size()))
-                  .concatMap(
-                      subAgent ->
-                          Flowable.defer(
-                              () -> {
-                                if (state.shouldExit.get() || state.paused.get()) {
-                                  return Flowable.<Event>empty();
-                                }
-                                // Catches a silent pause by the previous sub-agent.
-                                BaseAgent previous = ranLast.get();
-                                if (previous != null
-                                    && context.hasUnansweredLongRunningCallIn(previous)) {
-                                  state.paused.set(true);
-                                  return Flowable.<Event>empty();
-                                }
-                                ranLast.set(subAgent);
-                                Flowable<Event> checkpoint = Flowable.empty();
-                                if (!state.resuming.getAndSet(false)) {
-                                  ImmutableMap<String, Object> subState =
-                                      ImmutableMap.of(
-                                          WorkflowAgentStates.CURRENT_SUB_AGENT, subAgent.name(),
-                                          WorkflowAgentStates.TIMES_LOOPED,
-                                              state.timesLooped.get());
-                                  checkpoint = checkpointAndRecord(context, subState);
-                                }
-                                Flowable<Event> run =
-                                    subAgent
-                                        .runAsync(context)
-                                        .doOnNext(
-                                            event -> {
-                                              if (hasEscalateAction(event)) {
-                                                state.shouldExit.set(true);
-                                              }
-                                              if (context.shouldPauseInvocation(event)) {
-                                                state.paused.set(true);
-                                              }
-                                            });
-                                return checkpoint.concatWith(run);
-                              }));
-          return iteration.concatWith(
-              Flowable.defer(
-                  () -> {
-                    // An escalation exit still closes the loop, as in Python.
-                    if (state.paused.get()
-                        || (!state.shouldExit.get()
-                            && context.hasUnansweredLongRunningCallIn(this))) {
-                      state.finished.set(true);
+    return Flowable.defer(() -> {
+      // Checked here so a resume already at the cap stops, not just a completed iteration.
+      if (maxIterations != null && state.timesLooped.get() >= maxIterations) {
+        state.finished.set(true);
+        return endOfAgentAndRecord(context);
+      }
+      AtomicReference<BaseAgent> ranLast = new AtomicReference<>(null);
+      Flowable<Event> iteration =
+          Flowable.fromIterable(subAgents.subList(startIndex, subAgents.size()))
+              .concatMap(subAgent ->
+                  Flowable.defer(() -> {
+                    if (state.shouldExit.get() || state.paused.get()) {
                       return Flowable.<Event>empty();
                     }
-                    // Anything but a pause completes the iteration, so count and clear state.
-                    state.timesLooped.incrementAndGet();
-                    context.resetSubAgentStates(name());
-                    if (state.shouldExit.get()) {
-                      state.finished.set(true);
-                      return endOfAgentAndRecord(context);
+                    // Catches a silent pause by the previous sub-agent.
+                    BaseAgent previous = ranLast.get();
+                    if (previous != null && context.hasUnansweredLongRunningCallIn(previous)) {
+                      state.paused.set(true);
+                      return Flowable.<Event>empty();
                     }
-                    // resuming is already false here, so the next iteration checkpoints normally.
-                    return Flowable.<Event>empty();
+                    ranLast.set(subAgent);
+                    Flowable<Event> checkpoint = Flowable.empty();
+                    if (!state.resuming.getAndSet(false)) {
+                      ImmutableMap<String, Object> subState =
+                          ImmutableMap.of(
+                              WorkflowAgentStates.CURRENT_SUB_AGENT, subAgent.name(),
+                              WorkflowAgentStates.TIMES_LOOPED, state.timesLooped.get());
+                      checkpoint = checkpointAndRecord(context, subState);
+                    }
+                    Flowable<Event> run =
+                        subAgent
+                            .runAsync(context)
+                            .doOnNext(event -> {
+                              if (hasEscalateAction(event)) {
+                                state.shouldExit.set(true);
+                              }
+                              if (context.shouldPauseInvocation(event)) {
+                                state.paused.set(true);
+                              }
+                            });
+                    return checkpoint.concatWith(run).compose(completeAfterPersisted(context));
                   }));
-        });
+      return iteration.concatWith(
+          Flowable.defer(() -> {
+            // An escalation exit still closes the loop, as in Python.
+            if (state.paused.get()
+                || (!state.shouldExit.get() && context.hasUnansweredLongRunningCallIn(this))) {
+              state.finished.set(true);
+              return Flowable.<Event>empty();
+            }
+            // Anything but a pause completes the iteration, so count and clear state.
+            state.timesLooped.incrementAndGet();
+            context.resetSubAgentStates(name());
+            if (state.shouldExit.get()) {
+              state.finished.set(true);
+              return endOfAgentAndRecord(context);
+            }
+            // resuming is already false here, so the next iteration checkpoints normally.
+            return Flowable.<Event>empty();
+          }));
+    });
   }
 
   @Override

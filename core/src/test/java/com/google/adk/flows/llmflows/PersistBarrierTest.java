@@ -25,12 +25,21 @@ import com.google.adk.events.Event;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.functions.Function;
 import io.reactivex.rxjava3.observers.TestObserver;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
+import io.reactivex.rxjava3.schedulers.TestScheduler;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -39,10 +48,36 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public final class PersistBarrierTest {
 
+  private final TestScheduler scheduler = new TestScheduler();
+  // The stall warning's timer is the only computation work these tests schedule.
+  private final AtomicInteger stallTimers = new AtomicInteger();
+  private final AtomicInteger stallWarnings = new AtomicInteger();
+  private final Scheduler countingScheduler =
+      new Scheduler() {
+        @Override
+        public Worker createWorker() {
+          return scheduler.createWorker();
+        }
+
+        @Override
+        public Disposable scheduleDirect(Runnable run, long delay, TimeUnit unit) {
+          stallTimers.incrementAndGet();
+          return scheduler.scheduleDirect(
+              () -> {
+                stallWarnings.incrementAndGet();
+                run.run();
+              },
+              delay,
+              unit);
+        }
+      };
+  private Function<? super Scheduler, ? extends Scheduler> previousComputationHandler;
   private InvocationContext context;
 
   @Before
   public void setUp() {
+    previousComputationHandler = RxJavaPlugins.getComputationSchedulerHandler();
+    RxJavaPlugins.setComputationSchedulerHandler(unused -> countingScheduler);
     context =
         InvocationContext.builder()
             .sessionService(mock(BaseSessionService.class))
@@ -50,6 +85,11 @@ public final class PersistBarrierTest {
             .agent(mock(BaseAgent.class))
             .session(Session.builder("s").build())
             .build();
+  }
+
+  @After
+  public void tearDown() {
+    RxJavaPlugins.setComputationSchedulerHandler(previousComputationHandler);
   }
 
   private static Event event(String id) {
@@ -189,6 +229,81 @@ public final class PersistBarrierTest {
   }
 
   @Test
+  public void stalledAwait_warnsOnceAndKeepsWaiting() {
+    PersistBarrier.enable(context);
+    TestObserver<Void> observer =
+        PersistBarrier.awaitPersisted(context, ImmutableList.of(event("e1"))).test();
+
+    scheduler.advanceTimeBy(
+        PersistBarrier.STALL_WARNING_DELAY.toMillis() - 1, TimeUnit.MILLISECONDS);
+    assertThat(stallWarnings.get()).isEqualTo(0);
+
+    scheduler.advanceTimeBy(
+        PersistBarrier.STALL_WARNING_DELAY.toMillis() + 1, TimeUnit.MILLISECONDS);
+
+    assertThat(stallWarnings.get()).isEqualTo(1);
+    observer.assertNotComplete().assertNoErrors();
+    PersistBarrier.markPersisted(context, "e1");
+    observer.assertComplete();
+  }
+
+  @Test
+  public void completedAwait_followedByLongStep_doesNotWarn() {
+    // After a transfer, the next agent runs inside the await's onComplete.
+    PersistBarrier.enable(context);
+    TestObserver<Void> observer =
+        PersistBarrier.awaitPersisted(context, ImmutableList.of(event("e1")))
+            .andThen(
+                Completable.fromAction(() ->
+                    scheduler.advanceTimeBy(
+                        PersistBarrier.STALL_WARNING_DELAY.toMillis(), TimeUnit.MILLISECONDS)))
+            .test();
+
+    PersistBarrier.markPersisted(context, "e1");
+
+    observer.assertComplete();
+    assertThat(stallWarnings.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void alreadyPersisted_awaitCompletesOnCallingThreadWithoutStallTimer() {
+    // The usual case: flows and workflow agents await events the Runner has already saved.
+    // Nothing runs this scheduler, so a hop to it would leave the await pending.
+    TestScheduler idleScheduler = new TestScheduler();
+    PersistBarrier.enable(context);
+    PersistBarrier.markPersisted(context, "e1", idleScheduler);
+
+    PersistBarrier.awaitPersisted(context, ImmutableList.of(event("e1"))).test().assertComplete();
+
+    assertThat(stallTimers.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void markPersistedWithScheduler_whenAwaiting_completesOnScheduler() {
+    TestScheduler resumeScheduler = new TestScheduler();
+    PersistBarrier.enable(context);
+    TestObserver<Void> observer =
+        PersistBarrier.awaitPersisted(context, ImmutableList.of(event("e1"))).test();
+
+    PersistBarrier.markPersisted(context, "e1", resumeScheduler);
+
+    observer.assertNotComplete();
+    resumeScheduler.triggerActions();
+    observer.assertComplete();
+    assertThat(PersistBarrier.pendingCount(context)).isEqualTo(0);
+  }
+
+  @Test
+  public void disposedAwait_doesNotWarn() {
+    PersistBarrier.enable(context);
+    PersistBarrier.awaitPersisted(context, ImmutableList.of(event("e1"))).test().dispose();
+
+    scheduler.advanceTimeBy(PersistBarrier.STALL_WARNING_DELAY.toMillis(), TimeUnit.MILLISECONDS);
+
+    assertThat(stallWarnings.get()).isEqualTo(0);
+  }
+
+  @Test
   public void copiedContextData_awaitCompletesWhenOriginalMarks() {
     // A copy of callbackContextData made after enable() must see the Runner's marks.
     PersistBarrier.enable(context);
@@ -209,8 +324,10 @@ public final class PersistBarrierTest {
   @Test
   public void notEnabled_awaitIsNoOp() {
     // No enable(): flow runs without a Runner, so await must not block forever.
+    PersistBarrier.markPersisted(context, "e1", new TestScheduler());
+    PersistBarrier.markFailed(context, "e2", new RuntimeException("boom"));
     PersistBarrier.awaitPersisted(context, ImmutableList.of(event("e1"))).test().assertComplete();
-    assertThat(PersistBarrier.pendingCount(context)).isEqualTo(0);
+    assertThat(context.callbackContextData()).isEmpty();
   }
 
   @Test
