@@ -26,6 +26,7 @@ import com.google.adk.annotations.Experimental;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.plugins.Plugin;
+import com.google.adk.sessions.StateSchemaException;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
@@ -130,8 +131,15 @@ public final class ToolNodes {
               .toolConfirmation(ToolConfirmations.answer(context, name()))
               .build();
       return callTool(context, args, toolContext)
-          // Kept on failure too, so the recorded deltas match the live session state.
-          .doOnEvent((unusedResult, unusedError) -> keepDeltas(context, toolContext));
+          // Kept on failure too; a schema rejection is suppressed so the tool's error stands.
+          .doOnError(error -> {
+            try {
+              keepDeltas(context, toolContext);
+            } catch (StateSchemaException e) {
+              error.addSuppressed(e);
+            }
+          })
+          .doOnSuccess(unusedResult -> keepDeltas(context, toolContext));
     }
 
     /**
@@ -253,10 +261,17 @@ public final class ToolNodes {
       return json instanceof Map ? json : text;
     }
 
+    /**
+     * Merges the tool's deltas into the node's. A rejected state write merges no state, but the
+     * artifact delta still lands, so a saved artifact keeps its record.
+     */
     private static void keepDeltas(Context context, ToolContext toolContext) {
       EventActions toolActions = toolContext.eventActions();
-      context.eventActions().stateDelta().putAll(toolActions.stateDelta());
       context.eventActions().artifactDelta().putAll(toolActions.artifactDelta());
+      context
+          .eventActions()
+          .stateDelta()
+          .putAll(context.requireNodeState().checkStateDelta(toolActions.stateDelta()));
     }
   }
 

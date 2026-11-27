@@ -24,9 +24,11 @@ import static com.google.adk.testing.WorkflowTestNodes.emitter;
 import static com.google.adk.testing.WorkflowTestNodes.workflow;
 import static com.google.adk.workflow.WorkflowResumeTesting.LONG_RUNNING_CALL;
 import static com.google.adk.workflow.WorkflowResumeTesting.START;
+import static com.google.adk.workflow.WorkflowResumeTesting.STATE_SCHEMA;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.callContent;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
+import static com.google.adk.workflow.WorkflowResumeTesting.errorEvent;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
 import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
 import static com.google.adk.workflow.WorkflowResumeTesting.newEvent;
@@ -45,6 +47,7 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.plugins.PluginManager;
+import com.google.adk.sessions.StateSchemaException;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
@@ -53,6 +56,7 @@ import com.google.adk.tools.Annotations;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
+import com.google.adk.workflow.WorkflowResumeTesting.FailedTurn;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -77,6 +81,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
+import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -464,6 +469,157 @@ public final class ToolNodesTest {
 
     assertThat(event.output()).hasValue(ImmutableMap.of("status", "ok"));
     assertThat(event.actions().stateDelta()).containsExactly("color", "blue");
+  }
+
+  @Test
+  public void stateSchema_aToolStateWriteReachesTheStoredSessionConverted() {
+    WorkflowSession session =
+        stateSchemaToolSession(toolContext -> toolContext.state().put("count", "3"));
+
+    session.advance(go());
+
+    assertThat(session.state()).containsEntry("count", 3);
+  }
+
+  @Test
+  public void stateSchema_aToolWritingARecordStoresItsJsonForm() {
+    // Arrange
+    WorkflowSession session =
+        stateSchemaToolSession(
+            toolContext -> toolContext.state().put("note", new City("Paris", "metric")));
+
+    // Act
+    session.advance(go());
+
+    // Assert
+    ImmutableMap<String, Object> jsonForm = ImmutableMap.of("city", "Paris", "units", "metric");
+    Map<String, Object> storedDelta =
+        session.storedEvents().stream()
+            .map(event -> event.actions().stateDelta())
+            .filter(delta -> delta.containsKey("note"))
+            .collect(onlyElement());
+    assertThat(storedDelta).containsExactly("note", jsonForm);
+    assertThat(session.state()).containsEntry("note", jsonForm);
+  }
+
+  @Test
+  public void stateSchema_aToolWritingAnUndeclaredKeyFailsTheNodeAfterTheToolReturns() {
+    WorkflowSession session =
+        stateSchemaToolSession(toolContext -> {
+          toolContext.state().put("count", "3");
+          toolContext.saveArtifact("report.txt", Part.fromText("v1")).blockingAwait();
+          toolContext.state().put("other", 1);
+        });
+
+    FailedTurn turn = session.failingTurn(go());
+
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("StateSchemaException");
+    assertThat(errorEvent.errorMessage())
+        .hasValue("validation error: state key 'other' is not declared in the state schema.");
+    assertThat(
+            turn.events().stream().flatMap(event -> event.actions().stateDelta().keySet().stream()))
+        .isEmpty();
+    assertThat(errorEvent.actions().artifactDelta()).containsExactly("report.txt", 0);
+    // The write reached the live session unchecked; the in-memory service stores that session.
+    assertThat(session.state()).containsEntry("other", 1);
+  }
+
+  @Test
+  public void stateSchema_aDirectStateDeltaWriteIsStoredConvertedToTheKeysSchema() {
+    WorkflowSession session =
+        stateSchemaToolSession(
+            toolContext -> toolContext.eventActions().stateDelta().put("count", "3"));
+
+    session.advance(go());
+
+    assertThat(session.state()).containsEntry("count", 3);
+  }
+
+  @Test
+  public void stateSchema_aDirectUndeclaredKeyFailsTheNode() {
+    WorkflowSession session =
+        stateSchemaToolSession(
+            toolContext -> toolContext.eventActions().stateDelta().put("other", 1));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertThat(errorEvent(turn.events()).errorMessage())
+        .hasValue("validation error: state key 'other' is not declared in the state schema.");
+    assertThat(session.state()).doesNotContainKey("other");
+  }
+
+  @Test
+  public void stateSchema_aRejectedDirectDeltaWriteKeepsTheToolsArtifactDelta() {
+    WorkflowSession session =
+        stateSchemaToolSession(toolContext -> {
+          toolContext.saveArtifact("report.txt", Part.fromText("v1")).blockingAwait();
+          toolContext.eventActions().stateDelta().put("other", 1);
+        });
+
+    FailedTurn turn = session.failingTurn(go());
+
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("StateSchemaException");
+    assertThat(errorEvent.actions().artifactDelta()).containsExactly("report.txt", 0);
+    assertThat(errorEvent.actions().stateDelta()).isEmpty();
+    assertThat(session.state()).doesNotContainKey("other");
+  }
+
+  @Test
+  public void stateSchema_aFailingToolKeepsItsDeltaConvertedAndFailsWithItsOwnError() {
+    WorkflowSession session =
+        stateSchemaToolSession(toolContext -> {
+          toolContext.state().put("count", "3");
+          throw new IllegalStateException("tool broke");
+        });
+
+    FailedTurn turn = session.failingTurn(go());
+
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(errorEvent.errorMessage()).hasValue("tool broke");
+    assertThat(errorEvent.actions().stateDelta()).containsExactly("count", 3);
+  }
+
+  @Test
+  public void stateSchema_aFailingToolsRejectedDeltaIsSuppressedUnderItsOwnError() {
+    WorkflowSession session =
+        stateSchemaToolSession(toolContext -> {
+          toolContext.state().put("count", "3");
+          toolContext.saveArtifact("report.txt", Part.fromText("v1")).blockingAwait();
+          toolContext.eventActions().stateDelta().put("other", 1);
+          throw new IllegalStateException("tool broke");
+        });
+
+    FailedTurn turn = session.failingTurn(go());
+
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("IllegalStateException");
+    assertThat(errorEvent.errorMessage()).hasValue("tool broke");
+    assertThat(turn.error()).isInstanceOf(IllegalStateException.class);
+    assertThat(turn.error()).hasMessageThat().isEqualTo("tool broke");
+    assertThat(turn.error().getSuppressed()).hasLength(1);
+    assertThat(turn.error().getSuppressed()[0]).isInstanceOf(StateSchemaException.class);
+    assertThat(turn.error().getSuppressed()[0])
+        .hasMessageThat()
+        .isEqualTo("validation error: state key 'other' is not declared in the state schema.");
+    assertThat(
+            turn.events().stream().flatMap(event -> event.actions().stateDelta().keySet().stream()))
+        .isEmpty();
+    assertThat(errorEvent.actions().artifactDelta()).containsExactly("report.txt", 0);
+  }
+
+  @Test
+  public void stateSchema_aToolRemovingAKeyPassesTheCheck() {
+    WorkflowSession session =
+        stateSchemaToolSession(toolContext -> {
+          toolContext.state().put("count", "3");
+          toolContext.state().remove("count");
+        });
+
+    session.advance(go());
+
+    assertThat(session.state()).doesNotContainKey("count");
   }
 
   @Test
@@ -1092,6 +1248,25 @@ public final class ToolNodesTest {
     return context.resumeInputs().containsKey("review")
         ? "done"
         : RequestInput.builder().interruptId("review").message("Please review").build();
+  }
+
+  /** Returns a session of a workflow with the shared state schema whose tool runs {@code write}. */
+  private static WorkflowSession stateSchemaToolSession(Consumer<ToolContext> write) {
+    FakeTool tool =
+        FakeTool.running(
+            "writer",
+            (args, toolContext) -> {
+              write.accept(toolContext);
+              return ImmutableMap.of("status", "ok");
+            });
+    return new WorkflowSession(
+        Workflow.builder()
+            .name("wf")
+            .stateSchema(STATE_SCHEMA)
+            .edges(g ->
+                g.fromStart()
+                    .chain(emitter("arguments", ImmutableMap.of()), ToolNodes.asNode(tool)))
+            .build());
   }
 
   /** Returns a workflow named {@code wf} that passes {@code {"name": "prod"}} to delete_db. */

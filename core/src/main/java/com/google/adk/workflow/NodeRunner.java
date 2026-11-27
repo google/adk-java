@@ -726,11 +726,12 @@ public final class NodeRunner {
     }
 
     private Completable dispatch(Event event) {
-      boolean outputKept = track(event);
+      Event checked = nodeState.withCheckedStateDelta(event);
+      boolean outputKept = track(checked);
       if (outputKept) {
-        return send(event);
+        return send(checked);
       }
-      return withoutDroppedOutput(event).map(this::send).orElseGet(Completable::complete);
+      return withoutDroppedOutput(checked).map(this::send).orElseGet(Completable::complete);
     }
 
     /**

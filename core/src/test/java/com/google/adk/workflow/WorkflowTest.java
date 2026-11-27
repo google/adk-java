@@ -20,8 +20,10 @@ import static com.google.adk.testing.WorkflowTestNodes.dispatcher;
 import static com.google.adk.testing.WorkflowTestNodes.emitter;
 import static com.google.adk.testing.WorkflowTestNodes.workflow;
 import static com.google.adk.workflow.WorkflowResumeTesting.START;
+import static com.google.adk.workflow.WorkflowResumeTesting.STATE_SCHEMA;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
+import static com.google.adk.workflow.WorkflowResumeTesting.errorEvent;
 import static com.google.adk.workflow.WorkflowResumeTesting.eventAt;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
 import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
@@ -29,6 +31,8 @@ import static com.google.adk.workflow.WorkflowResumeTesting.newEvent;
 import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
+import static com.google.adk.workflow.WorkflowResumeTesting.stateSchemaWorkflow;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
@@ -36,9 +40,15 @@ import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
+import com.google.adk.sessions.State;
+import com.google.adk.sessions.StateSchemaException;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
+import com.google.adk.tools.Annotations;
+import com.google.adk.tools.FunctionTool;
+import com.google.adk.tools.ToolContext;
 import com.google.adk.workflow.WorkflowResumeTesting.FailedTurn;
 import com.google.adk.workflow.WorkflowResumeTesting.JsonSessionService;
 import com.google.adk.workflow.WorkflowResumeTesting.LiveEventSessionService;
@@ -52,12 +62,14 @@ import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
@@ -80,12 +92,35 @@ public final class WorkflowTest {
   /** A record whose JSON form fits {@link #COUNT_SCHEMA}. */
   private record Count(int count) {}
 
+  /** A record whose JSON form does not fit {@link #COUNT_SCHEMA}: its count is text. */
+  private record TextCount(String count) {}
+
   private record Ratio(double value) {}
 
   private enum Color {
     RED,
     GREEN
   }
+
+  /**
+   * A state schema whose {@code total} takes a {@link Count}, {@code color} a color name and {@code
+   * tags} a list of strings.
+   */
+  private static final Schema TYPED_STATE_SCHEMA =
+      Schema.builder()
+          .type(Type.Known.OBJECT)
+          .properties(
+              ImmutableMap.of(
+                  "total",
+                  COUNT_SCHEMA,
+                  "color",
+                  Schema.builder().type(Type.Known.STRING).enum_("RED", "GREEN").build(),
+                  "tags",
+                  Schema.builder()
+                      .type(Type.Known.ARRAY)
+                      .items(Schema.builder().type(Type.Known.STRING).build())
+                      .build()))
+          .build();
 
   @Test
   public void build_buildsTheGraphFromTheEdges() {
@@ -926,5 +961,355 @@ public final class WorkflowTest {
     public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
       return body.apply(context, nodeInput);
     }
+  }
+
+  @Test
+  public void stateSchema_anEmittedStateDeltaIsCheckedWithoutChangingTheEmittedEvent() {
+    Event emitted =
+        newEvent()
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("count", "4")).build())
+            .build();
+    Node node = new TestNode("n", (ctx, input) -> Flowable.just(emitted));
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    session.advance(go());
+
+    assertThat(session.state()).containsEntry("count", 4);
+    assertThat(emitted.actions().stateDelta()).containsExactly("count", "4");
+  }
+
+  @Test
+  public void stateSchema_anUndeclaredKeyInAnEmittedDeltaFailsTheNode() {
+    Node node =
+        new TestNode(
+            "n",
+            (ctx, input) ->
+                Flowable.just(
+                    newEvent()
+                        .actions(
+                            EventActions.builder().stateDelta(ImmutableMap.of("other", 1)).build())
+                        .build()));
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("StateSchemaException");
+    assertThat(errorEvent.errorMessage())
+        .hasValue("validation error: state key 'other' is not declared in the state schema.");
+    assertThat(session.state()).doesNotContainKey("other");
+  }
+
+  @Test
+  public void stateSchema_aTypeMismatchInAnEmittedDeltaFailsTheNode() {
+    Event emitted =
+        newEvent()
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("count", "nope")).build())
+            .build();
+    Node node = new TestNode("n", (ctx, input) -> Flowable.just(emitted));
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(turn.error()).isInstanceOf(StateSchemaException.class);
+    assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("StateSchemaException");
+    assertThat(errorEvent.errorMessage().orElseThrow())
+        .startsWith("validation error: state key 'count' does not match its schema: ");
+    assertThat(session.state()).doesNotContainKey("count");
+  }
+
+  @Test
+  public void stateSchema_anEmittedDeltaValueConvertingToNullFailsTheNode() {
+    Content nullText = Content.fromParts(Part.fromText("null"));
+    Event emitted =
+        newEvent()
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("note", nullText)).build())
+            .build();
+    Node node = new TestNode("n", (ctx, input) -> Flowable.just(emitted));
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(turn.error()).isInstanceOf(StateSchemaException.class);
+    assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("StateSchemaException");
+    assertThat(errorEvent.errorMessage()).hasValue("validation error: state key 'note' is null.");
+    assertThat(session.state()).doesNotContainKey("note");
+  }
+
+  @Test
+  public void stateSchema_aRecordAndAnEnumInAnEmittedDeltaAreStoredInJsonForm() {
+    // Arrange
+    Event emitted =
+        newEvent()
+            .actions(
+                EventActions.builder()
+                    .stateDelta(ImmutableMap.of("total", new Count(3), "color", Color.RED))
+                    .build())
+            .build();
+    Node node = new TestNode("n", (ctx, input) -> Flowable.just(emitted));
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(TYPED_STATE_SCHEMA, node));
+
+    // Act
+    session.advance(go());
+
+    // Assert
+    Map<String, Object> storedDelta =
+        session.storedEvents().stream()
+            .map(event -> event.actions().stateDelta())
+            .filter(delta -> delta.containsKey("total"))
+            .collect(onlyElement());
+    assertThat(storedDelta).containsExactly("total", ImmutableMap.of("count", 3), "color", "RED");
+    assertThat(session.state())
+        .containsAtLeast("total", ImmutableMap.of("count", 3), "color", "RED");
+  }
+
+  @Test
+  public void stateSchema_aRecordWhoseJsonFormDoesNotFitFailsTheNode() {
+    // Arrange
+    Event emitted =
+        newEvent()
+            .actions(
+                EventActions.builder()
+                    .stateDelta(ImmutableMap.of("total", new TextCount("many")))
+                    .build())
+            .build();
+    Node node = new TestNode("n", (ctx, input) -> Flowable.just(emitted));
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(TYPED_STATE_SCHEMA, node));
+
+    // Act
+    FailedTurn turn = session.failingTurn(go());
+
+    // Assert
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(turn.error()).isInstanceOf(StateSchemaException.class);
+    assertThat(errorEvent.errorMessage().orElseThrow())
+        .startsWith("validation error: state key 'total' does not match its schema: ");
+    assertThat(session.state()).doesNotContainKey("total");
+  }
+
+  @Test
+  public void stateSchema_aValueWithNoJsonFormFailsWithStateSchemaException() {
+    // Arrange
+    Event emitted =
+        newEvent()
+            .actions(
+                EventActions.builder().stateDelta(ImmutableMap.of("note", new Object())).build())
+            .build();
+    Node node = new TestNode("n", (ctx, input) -> Flowable.just(emitted));
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    // Act
+    FailedTurn turn = session.failingTurn(go());
+
+    // Assert
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(turn.error()).isInstanceOf(StateSchemaException.class);
+    assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("StateSchemaException");
+    assertThat(session.state()).doesNotContainKey("note");
+  }
+
+  @Test
+  public void stateSchema_aLongUnderAnIntegerKeyIsStoredAsAnInteger() {
+    // Arrange
+    AtomicReference<@Nullable Object> live = new AtomicReference<>();
+    WorkflowSession session =
+        new WorkflowSession(
+            emitThenRead(STATE_SCHEMA, ImmutableMap.of("count", 3L), "count", live));
+
+    // Act
+    session.advance(go());
+
+    // Assert
+    assertThat(live.get()).isInstanceOf(Integer.class);
+    assertThat(live.get()).isEqualTo(3);
+    assertThat(storedDelta(session, "count").get("count")).isInstanceOf(Integer.class);
+    assertThat(session.state().get("count")).isEqualTo(3);
+  }
+
+  @Test
+  public void stateSchema_aMutableListIsStoredUnmodifiable() {
+    // Arrange
+    AtomicReference<@Nullable Object> live = new AtomicReference<>();
+    List<String> tags = new ArrayList<>(ImmutableList.of("a"));
+    WorkflowSession session =
+        new WorkflowSession(
+            emitThenRead(TYPED_STATE_SCHEMA, ImmutableMap.of("tags", tags), "tags", live));
+
+    // Act
+    session.advance(go());
+
+    // Assert
+    @SuppressWarnings("unchecked") // The schema declares a list.
+    List<Object> liveTags = (List<Object>) live.get();
+    assertThat(liveTags).containsExactly("a");
+    assertThrows(UnsupportedOperationException.class, () -> liveTags.add("b"));
+    assertThat(storedDelta(session, "tags")).containsExactly("tags", ImmutableList.of("a"));
+  }
+
+  @Test
+  public void stateSchema_aNaNUnderAnUntypedKeyFailsWithStateSchemaException() {
+    // Arrange
+    Event emitted =
+        newEvent()
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("note", Double.NaN)).build())
+            .build();
+    Node node = new TestNode("n", (ctx, input) -> Flowable.just(emitted));
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    // Act
+    FailedTurn turn = session.failingTurn(go());
+
+    // Assert
+    assertThat(turn.error()).isInstanceOf(StateSchemaException.class);
+    assertThat(errorEvent(turn.events()).errorMessage())
+        .hasValue(
+            "validation error: state key 'note' holds a NaN or infinite number, which JSON"
+                + " lacks.");
+    assertThat(session.state()).doesNotContainKey("note");
+  }
+
+  @Test
+  public void stateSchema_aNestedMessageUnderAnUntypedKeyIsStoredAsItsJsonMap() {
+    // Arrange
+    AtomicReference<@Nullable Object> live = new AtomicReference<>();
+    Map<String, Object> doc = ImmutableMap.of("body", Content.fromParts(Part.fromText("hi")));
+    WorkflowSession session =
+        new WorkflowSession(emitThenRead(STATE_SCHEMA, ImmutableMap.of("note", doc), "note", live));
+
+    // Act
+    session.advance(go());
+
+    // Assert
+    ImmutableMap<String, Object> json =
+        ImmutableMap.of(
+            "body",
+            ImmutableMap.of(
+                "parts", ImmutableList.of(ImmutableMap.of("text", "hi")), "role", "user"));
+    assertThat(live.get()).isEqualTo(json);
+    assertThat(storedDelta(session, "note")).containsExactly("note", json);
+    assertThat(session.state()).containsEntry("note", json);
+  }
+
+  /**
+   * Returns a workflow under {@code stateSchema} whose first node emits {@code delta} and whose
+   * second node puts the live value of {@code key} into {@code live}.
+   */
+  private static Workflow emitThenRead(
+      Schema stateSchema,
+      Map<String, Object> delta,
+      String key,
+      AtomicReference<@Nullable Object> live) {
+    Node emit =
+        new TestNode(
+            "emit",
+            (ctx, input) ->
+                Flowable.just(
+                    newEvent().actions(EventActions.builder().stateDelta(delta).build()).build()));
+    Node read =
+        new TestNode(
+            "read",
+            (ctx, input) -> {
+              live.set(ctx.state().get(key));
+              return Flowable.empty();
+            });
+    return Workflow.builder()
+        .name("wf")
+        .stateSchema(stateSchema)
+        .edges(g -> g.fromStart().then(emit).then(read))
+        .build();
+  }
+
+  /** Returns the only stored state delta that holds {@code key}. */
+  private static Map<String, Object> storedDelta(WorkflowSession session, String key) {
+    return session.storedEvents().stream()
+        .map(event -> event.actions().stateDelta())
+        .filter(delta -> delta.containsKey(key))
+        .collect(onlyElement());
+  }
+
+  @Test
+  public void stateSchema_anLlmAgentNodeToolsUndeclaredWriteFailsTheNodeAtDispatch() {
+    TestLlm model =
+        TestLlm.create(
+            TestUtils.createFunctionCallLlmResponse("call_1", "writeOther", ImmutableMap.of()),
+            TestUtils.createTextLlmResponse("done"));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(model)
+            .tools(FunctionTool.create(StateTools.class, "writeOther"))
+            .build();
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, agent));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    Event errorEvent = errorEvent(turn.events());
+    assertThat(errorEvent.errorCode().orElseThrow().toString()).contains("StateSchemaException");
+    assertThat(errorEvent.errorMessage())
+        .hasValue("validation error: state key 'other' is not declared in the state schema.");
+    assertThat(
+            turn.events().stream().flatMap(event -> event.actions().stateDelta().keySet().stream()))
+        .doesNotContain("other");
+    // The write reached the live session unchecked; the in-memory service stores that session.
+    assertThat(session.state()).containsEntry("other", 1);
+  }
+
+  @Test
+  public void stateSchema_colonKeysAndRemovalsInEmittedDeltaPassUnchecked() {
+    Event emitted =
+        newEvent()
+            .actions(
+                EventActions.builder()
+                    .stateDelta(
+                        ImmutableMap.of(
+                            "app:mode", "fast", "owner:count", "many", "count", State.REMOVED))
+                    .build())
+            .build();
+    Node node = new TestNode("n", (ctx, input) -> Flowable.just(emitted));
+    WorkflowSession session = new WorkflowSession(stateSchemaWorkflow(STATE_SCHEMA, node));
+
+    session.advance(go());
+
+    assertThat(session.state()).containsEntry("app:mode", "fast");
+    assertThat(session.state()).containsEntry("owner:count", "many");
+    assertThat(session.state()).doesNotContainKey("count");
+  }
+
+  @Test
+  public void stateSchema_theNearestDeclaringAncestorsSchemaApplies() {
+    Schema innerSchema =
+        Schema.builder()
+            .type(Type.Known.OBJECT)
+            .properties(ImmutableMap.of("count", Schema.builder().type(Type.Known.STRING).build()))
+            .build();
+    Event emitted =
+        newEvent()
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("count", "3")).build())
+            .build();
+    Node node = new TestNode("n", (ctx, input) -> Flowable.just(emitted));
+    Workflow outer =
+        Workflow.builder()
+            .name("outer")
+            .stateSchema(STATE_SCHEMA)
+            .edges(g -> g.fromStart().then(stateSchemaWorkflow(innerSchema, node)))
+            .build();
+    WorkflowSession session = new WorkflowSession(outer);
+
+    session.advance(go());
+
+    assertThat(session.state()).containsEntry("count", "3");
+  }
+
+  /** The target of a model tool that writes an undeclared state key. */
+  public static final class StateTools {
+    public static ImmutableMap<String, Object> writeOther(
+        @Annotations.Schema(name = "toolContext") ToolContext toolContext) {
+      toolContext.state().put("other", 1);
+      return ImmutableMap.of("status", "ok");
+    }
+
+    private StateTools() {}
   }
 }

@@ -82,7 +82,32 @@ final class WorkflowResumeTesting {
           .required("age")
           .build();
 
+  /** An object schema with an integer {@code count} and a nullable, untyped {@code note}. */
+  static final Schema STATE_SCHEMA =
+      Schema.builder()
+          .type(Type.Known.OBJECT)
+          .properties(
+              ImmutableMap.of(
+                  "count",
+                  Schema.builder().type(Type.Known.INTEGER).build(),
+                  "note",
+                  Schema.builder().nullable(true).build()))
+          .build();
+
   private WorkflowResumeTesting() {}
+
+  /** Returns a workflow named {@code wf} with {@code stateSchema} that runs {@code node}. */
+  static Workflow stateSchemaWorkflow(Schema stateSchema, Node node) {
+    return Workflow.builder()
+        .name("wf")
+        .stateSchema(stateSchema)
+        .edges(g -> g.fromStart().then(node))
+        .build();
+  }
+
+  static Event errorEvent(List<Event> events) {
+    return events.stream().filter(event -> event.errorCode().isPresent()).collect(onlyElement());
+  }
 
   /** Returns the input that the {@code reply} node of a workflow named {@code wf} received. */
   static @Nullable Object replyInput(List<Event> events) {
@@ -293,16 +318,23 @@ final class WorkflowResumeTesting {
       checkState(!turn(message).isEmpty(), "a turn produced no events to resume from");
     }
 
+    Map<String, Object> state() {
+      return session().state();
+    }
+
     ImmutableList<String> invocationIds() {
       return storedEvents().stream().map(Event::invocationId).distinct().collect(toImmutableList());
     }
 
     ImmutableList<Event> storedEvents() {
+      return session().immutableEvents();
+    }
+
+    private Session session() {
       return runner
           .sessionService()
           .getSession(APP, USER, sessionId, Optional.empty())
-          .blockingGet()
-          .immutableEvents();
+          .blockingGet();
     }
   }
 

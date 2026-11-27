@@ -27,10 +27,13 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
+import com.google.adk.sessions.State;
+import com.google.adk.sessions.StateSchemaException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Completable;
 import java.util.Collection;
 import java.util.Collections;
@@ -70,6 +73,8 @@ public final class NodeExecutionState {
   private final String nodePath;
   private final ImmutableList<String> outputFor;
   private final @Nullable String isolationScope;
+  // This node's state schema, or else the nearest ancestor's.
+  private final @Nullable Schema stateSchema;
   private final Map<String, @Nullable Object> resumeInputs;
   private final ConcurrentMap<String, Integer> childRunCounts;
   private final ConcurrentMap<String, NodeRunner.SharedChildRun> childRuns;
@@ -123,6 +128,8 @@ public final class NodeExecutionState {
     } else {
       this.isolationScope = parentState == null ? null : parentState.isolationScope;
     }
+    this.stateSchema =
+        node.stateSchema().orElse(parentState == null ? null : parentState.stateSchema);
     NodeExecutionState previousAttempt = builder.previousAttempt;
     this.attemptCount = previousAttempt == null ? 1 : previousAttempt.attemptCount + 1;
     // A hop at the top shares the root's records, so its run IDs and paths cannot collide.
@@ -286,6 +293,63 @@ public final class NodeExecutionState {
    */
   public Map<String, @Nullable Object> resumeInputs() {
     return resumeInputs;
+  }
+
+  /**
+   * Returns {@code value} checked against this run's state schema for {@code key}, in the form a
+   * stored session reads back, as for node outputs (see {@link SchemaValues#check}). Keys with a
+   * colon, {@link State#REMOVED} and writes under no schema pass unchecked.
+   *
+   * @throws StateSchemaException if the schema does not declare {@code key}, or if the value does
+   *     not match or converts to null
+   */
+  Object checkStateValue(String key, Object value) {
+    checkNotNull(key, "null key");
+    checkNotNull(value, "null value");
+    if (stateSchema == null || key.contains(":") || value == State.REMOVED) {
+      return value;
+    }
+    Schema propertySchema = stateSchema.properties().map(p -> p.get(key)).orElse(null);
+    if (propertySchema == null) {
+      throw new StateSchemaException(
+          String.format(
+              "validation error: state key '%s' is not declared in the state schema.", key));
+    }
+    String what = "state key '" + key + "'";
+    Object checked;
+    try {
+      checked = SchemaValues.check(value, propertySchema, what);
+    } catch (IllegalArgumentException e) {
+      throw new StateSchemaException(e.getMessage(), e);
+    }
+    if (checked == null) {
+      throw new StateSchemaException(
+          String.format("validation error: state key '%s' is null.", key));
+    }
+    return checked;
+  }
+
+  /** Returns {@code delta} with each value passed through {@link #checkStateValue}. */
+  Map<String, Object> checkStateDelta(Map<String, Object> delta) {
+    if (stateSchema == null) {
+      return delta;
+    }
+    Map<String, Object> checked = new LinkedHashMap<>();
+    delta.forEach((key, value) -> checked.put(key, checkStateValue(key, value)));
+    return checked;
+  }
+
+  /** Returns {@code event} with its state delta converted to the state schema's types. */
+  Event withCheckedStateDelta(Event event) {
+    Map<String, Object> delta = event.actions().stateDelta();
+    Map<String, Object> checked = checkStateDelta(delta);
+    // By identity: a mutable list equals its checked, unmodifiable copy.
+    if (delta.keySet().stream().allMatch(key -> checked.get(key) == delta.get(key))) {
+      return event;
+    }
+    return event.toBuilder()
+        .actions(event.actions().toBuilder().stateDelta(checked).build())
+        .build();
   }
 
   NodeRunner.EventSink eventSink() {
