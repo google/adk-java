@@ -34,15 +34,19 @@ public interface BaseComputer {
   Single<int[]> screenSize();
 
   /** Opens the web browser. */
+  @Schema(name = "open_web_browser")
   Single<ComputerState> openWebBrowser();
 
   /** Clicks at a specific x, y coordinate on the webpage. */
+  @Schema(name = "click_at")
   Single<ComputerState> clickAt(@Schema(name = "x") int x, @Schema(name = "y") int y);
 
   /** Hovers at a specific x, y coordinate on the webpage. */
+  @Schema(name = "hover_at")
   Single<ComputerState> hoverAt(@Schema(name = "x") int x, @Schema(name = "y") int y);
 
   /** Types text at a specific x, y coordinate. */
+  @Schema(name = "type_text_at")
   Single<ComputerState> typeTextAt(
       @Schema(name = "x") int x,
       @Schema(name = "y") int y,
@@ -51,9 +55,11 @@ public interface BaseComputer {
       @Schema(name = "clear_before_typing", optional = true) Boolean clearBeforeTyping);
 
   /** Scrolls the entire webpage in a direction. */
+  @Schema(name = "scroll_document")
   Single<ComputerState> scrollDocument(@Schema(name = "direction") String direction);
 
   /** Scrolls at a specific x, y coordinate by magnitude. */
+  @Schema(name = "scroll_at")
   Single<ComputerState> scrollAt(
       @Schema(name = "x") int x,
       @Schema(name = "y") int y,
@@ -64,9 +70,11 @@ public interface BaseComputer {
   Single<ComputerState> wait(@Schema(name = "duration") Duration duration);
 
   /** Navigates back. */
+  @Schema(name = "go_back")
   Single<ComputerState> goBack();
 
   /** Navigates forward. */
+  @Schema(name = "go_forward")
   Single<ComputerState> goForward();
 
   /** Jumps to search. */
@@ -76,9 +84,11 @@ public interface BaseComputer {
   Single<ComputerState> navigate(@Schema(name = "url") String url);
 
   /** Presses key combination. */
+  @Schema(name = "key_combination")
   Single<ComputerState> keyCombination(@Schema(name = "keys") List<String> keys);
 
   /** Drag and drop. */
+  @Schema(name = "drag_and_drop")
   Single<ComputerState> dragAndDrop(
       @Schema(name = "x") int x,
       @Schema(name = "y") int y,

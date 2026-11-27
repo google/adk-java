@@ -18,9 +18,13 @@ package com.google.adk.tools.computeruse;
 
 import static java.lang.String.format;
 
+import com.google.adk.models.LlmRequest;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.GenerateContentConfig;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Method;
 import java.util.Base64;
@@ -121,5 +125,26 @@ public class ComputerUseTool extends FunctionTool {
               }
               return result;
             });
+  }
+
+  /**
+   * Registers the tool without a function declaration when the request already configures computer
+   * use, since the model then knows the action as a predefined function.
+   */
+  @Override
+  public Completable processLlmRequest(
+      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+    LlmRequest request = llmRequestBuilder.build();
+    if (request.tools().containsKey(name())) {
+      return Completable.complete();
+    }
+    boolean computerUseConfigured =
+        request.config().flatMap(GenerateContentConfig::tools).orElse(ImmutableList.of()).stream()
+            .anyMatch(tool -> tool.computerUse().isPresent());
+    if (!computerUseConfigured) {
+      return super.processLlmRequest(llmRequestBuilder, toolContext);
+    }
+    llmRequestBuilder.appendTools(ImmutableList.of(this));
+    return Completable.complete();
   }
 }

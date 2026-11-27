@@ -16,10 +16,9 @@
 
 package com.google.adk.tools.computeruse;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
-
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.ToolContext;
@@ -31,7 +30,9 @@ import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Tool;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -91,19 +92,24 @@ public class ComputerUseToolset implements BaseToolset {
   public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
     return ensureInitialized()
         .andThen(computer.screenSize())
-        .flatMapPublisher(
-            actualScreenSize -> {
-              if (tools == null) {
-                tools = new ArrayList<>();
-                for (Method method : BaseComputer.class.getMethods()) {
-                  if (!EXCLUDED_METHODS.contains(method.getName())) {
-                    tools.add(
-                        new ComputerUseTool(computer, method, actualScreenSize, virtualScreenSize));
-                  }
-                }
+        .flatMapPublisher(actualScreenSize -> {
+          if (tools == null) {
+            tools = new ArrayList<>();
+            for (Method method : BaseComputer.class.getMethods()) {
+              if (!EXCLUDED_METHODS.contains(method.getName())) {
+                tools.add(
+                    new ComputerUseTool(computer, method, actualScreenSize, virtualScreenSize));
               }
-              return Flowable.fromIterable(tools);
-            });
+            }
+            tools.add(
+                new ComputerUseTool(
+                    new FixedWait(computer),
+                    FixedWait.METHOD,
+                    actualScreenSize,
+                    virtualScreenSize));
+          }
+          return Flowable.fromIterable(tools);
+        });
   }
 
   @Override
@@ -111,26 +117,20 @@ public class ComputerUseToolset implements BaseToolset {
     computer.close().blockingAwait();
   }
 
-  /** Adds computer use configuration to the LLM request. */
+  /** Adds the computer actions and the computer use configuration to the LLM request. */
+  @Override
   public Completable processLlmRequest(
       LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
-    return getTools(null) // Fetch tools to ensure they are added to the list
+    return getTools(toolContext)
         .toList()
-        .flatMapCompletable(
-            tools -> {
-              return Completable.concat(
-                      tools.stream()
-                          .map(t -> t.processLlmRequest(llmRequestBuilder, toolContext))
-                          .collect(toImmutableList()))
-                  .andThen(
-                      computer
-                          .environment()
-                          .flatMapCompletable(
-                              env -> {
-                                configureComputerUseIfNeeded(llmRequestBuilder, env);
-                                return Completable.complete();
-                              }));
-            });
+        .flatMapCompletable(tools -> {
+          // Each ComputerUseTool's own processLlmRequest is a no-op, so register them here.
+          llmRequestBuilder.appendTools(tools);
+          return computer
+              .environment()
+              .doOnSuccess(env -> configureComputerUseIfNeeded(llmRequestBuilder, env))
+              .ignoreElement();
+        });
   }
 
   /**
@@ -177,5 +177,34 @@ public class ComputerUseToolset implements BaseToolset {
     currentTools.add(computerUseTool);
     llmRequestBuilder.config(config.toBuilder().tools(ImmutableList.copyOf(currentTools)).build());
     logger.debug("Added computer use tool with environment: {}", knownEnv);
+  }
+
+  /**
+   * Backs the predefined {@code wait_5_seconds} action with {@link BaseComputer#wait(Duration)}.
+   */
+  private static final class FixedWait {
+    private static final Method METHOD = waitMethod();
+
+    private final BaseComputer computer;
+
+    private FixedWait(BaseComputer computer) {
+      this.computer = computer;
+    }
+
+    @Schema(name = "wait_5_seconds")
+    public Single<ComputerState> waitFiveSeconds() {
+      return computer.wait(Duration.ofSeconds(5));
+    }
+
+    private static Method waitMethod() {
+      try {
+        Method method = FixedWait.class.getMethod("waitFiveSeconds");
+        // FunctionTool invokes it from another package, and this class is not public.
+        method.setAccessible(true);
+        return method;
+      } catch (NoSuchMethodException e) {
+        throw new LinkageError("FixedWait.waitFiveSeconds is missing", e);
+      }
+    }
   }
 }
