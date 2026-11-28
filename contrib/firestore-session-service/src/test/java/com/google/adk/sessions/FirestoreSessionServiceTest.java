@@ -1504,6 +1504,52 @@ public class FirestoreSessionServiceTest {
         });
   }
 
+  /** Tests that listSessions sorts out-of-order documents by updateTime ascending. */
+  @Test
+  void listSessions_outOfOrderDocuments_returnsSortedByUpdateTime() {
+    // Arrange
+    when(mockSessionsCollection.whereEqualTo(Constants.KEY_APP_NAME, APP_NAME))
+        .thenReturn(mockQuery);
+    when(mockQuery.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
+
+    QueryDocumentSnapshot mockDocOlder = mock(QueryDocumentSnapshot.class);
+    Map<String, Object> olderData =
+        ImmutableMap.of(
+            "id", "session-old",
+            "appName", APP_NAME,
+            "userId", USER_ID,
+            "updateTime", NOW.toString());
+    when(mockDocOlder.getData()).thenReturn(olderData);
+
+    QueryDocumentSnapshot mockDocNewer = mock(QueryDocumentSnapshot.class);
+    Map<String, Object> newerData =
+        ImmutableMap.of(
+            "id", "session-new",
+            "appName", APP_NAME,
+            "userId", USER_ID,
+            "updateTime", NOW.plusSeconds(30).toString());
+    when(mockDocNewer.getData()).thenReturn(newerData);
+
+    // Return newer document first from Firestore
+    when(mockQuerySnapshot.getDocuments())
+        .thenReturn(ImmutableList.of(mockDocNewer, mockDocOlder));
+
+    // Act
+    TestObserver<ListSessionsResponse> testObserver =
+        sessionService.listSessions(APP_NAME, USER_ID).test();
+
+    // Assert
+    testObserver.awaitCount(1);
+    testObserver.assertComplete();
+    testObserver.assertValue(
+        response -> {
+          assertThat(response.sessions()).hasSize(2);
+          assertThat(response.sessions().get(0).id()).isEqualTo("session-old");
+          assertThat(response.sessions().get(1).id()).isEqualTo("session-new");
+          return true;
+        });
+  }
+
   // --- appName scope enforcement tests ---
   // Sessions are keyed by (userId, sessionId) only, so getSession, deleteSession and listEvents
   // must reject a request whose appName does not match the stored session's appName; otherwise one

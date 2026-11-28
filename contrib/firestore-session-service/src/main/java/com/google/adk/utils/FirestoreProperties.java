@@ -43,8 +43,9 @@ public class FirestoreProperties {
 
   private final Properties properties;
 
-  private final String firebaseRootCollectionNameKey = "firebase.root.collection.name";
-  private final String firebaseRootCollectionDefaultValue = "adk-session";
+  private final String firestoreRootCollectionNameKey = "firestore.root.collection.name";
+  private final String legacyFirebaseRootCollectionNameKey = "firebase.root.collection.name";
+  private final String firestoreRootCollectionDefaultValue = "adk-session";
 
   private final String gcsAdkBucketNameKey = "gcs.adk.bucket.name";
 
@@ -120,13 +121,28 @@ public class FirestoreProperties {
 
   /**
    * Get the root collection name from the properties file, or return the default value if not
-   * found.
+   * found. Checks 'firestore.root.collection.name' first, falling back to legacy
+   * 'firebase.root.collection.name'.
    *
    * @return the root collection name
    */
-  public String getFirebaseRootCollectionName() {
+  public String getFirestoreRootCollectionName() {
+    String name = this.properties.getProperty(firestoreRootCollectionNameKey);
+    if (name != null && !name.trim().isEmpty()) {
+      return name;
+    }
     return this.properties.getProperty(
-        firebaseRootCollectionNameKey, firebaseRootCollectionDefaultValue);
+        legacyFirebaseRootCollectionNameKey, firestoreRootCollectionDefaultValue);
+  }
+
+  /**
+   * Legacy method for getting the root collection name.
+   *
+   * @deprecated Use {@link #getFirestoreRootCollectionName()} instead.
+   */
+  @Deprecated
+  public String getFirebaseRootCollectionName() {
+    return getFirestoreRootCollectionName();
   }
 
   /**

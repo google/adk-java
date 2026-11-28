@@ -573,6 +573,10 @@ public class FirestoreSessionService implements BaseSessionService {
             }
           }
 
+          // Sort in-memory by updateTime ascending, matching Python ADK DatabaseSessionService
+          sessions.sort(
+              Comparator.comparing((Session s) -> s.lastUpdateTime()).thenComparing(Session::id));
+
           return ListSessionsResponse.builder().sessions(sessions).build();
         });
   }

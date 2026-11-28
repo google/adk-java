@@ -69,7 +69,7 @@ public class Constants {
 
   /** root collection name fof firestore */
   public static final String ROOT_COLLECTION_NAME =
-      FirestoreProperties.getInstance().getFirebaseRootCollectionName();
+      FirestoreProperties.getInstance().getFirestoreRootCollectionName();
 
   /** private constrctor */
   private Constants() {
