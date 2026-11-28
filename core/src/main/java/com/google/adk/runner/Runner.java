@@ -194,11 +194,12 @@ public class Runner {
      * Sets the {@link Scheduler} for the work ADK hands off to worker threads in this runner's
      * invocations: the sub-agents of a {@code ParallelAgent}, tool calls in {@link
      * RunConfig.ToolExecutionMode#PARALLEL_SUBSCRIBE} mode, the nodes of a workflow graph and the
-     * items of a {@code parallelNode}, workflow node retries and attempts with a timeout, and the
-     * hop that starts the live send loop. A workflow {@code FunctionNode} decodes its input and
-     * runs its confirmation predicate and body on it, unless {@code FunctionNode.Builder#scheduler}
-     * sets another; then only the hand-back after them runs on it. The runs that an {@code
-     * AgentTool} nests inherit it. An agent-level {@code ParallelAgent.Builder#scheduler} or {@code
+     * items of a {@code parallelNode}, workflow node retries and attempts with a timeout, the hop
+     * that starts the live send loop, and the work that resumes after a wait for this runner to
+     * save events. A workflow {@code FunctionNode} decodes its input and runs its confirmation
+     * predicate and body on it, unless {@code FunctionNode.Builder#scheduler} sets another; then
+     * only the hand-back after them runs on it. The runs that an {@code AgentTool} nests inherit
+     * it. An agent-level {@code ParallelAgent.Builder#scheduler} or {@code
      * LlmAgent.Builder#executor} takes precedence. {@code null} (the default) selects {@code
      * Schedulers.io()}.
      *
@@ -952,15 +953,11 @@ public class Runner {
     // Mirror ADK Python (runners.py): partial events are streamed to the caller but
     // never persisted, so managed session services (e.g. VertexAiSessionService) do
     // not store a duplicate of the function call/text that the final aggregated event
-    // already carries. A partial shares its complete event's id, so it leaves the barrier alone.
+    // already carries.
     Single<Event> persistStep =
         event.partial().orElse(false)
             ? Single.just(event)
-            : this.sessionService
-                .appendEvent(sessionToPersist, event)
-                // Release (or fail) BaseLlmFlow's wait for this step (see PersistBarrier).
-                .doOnSuccess(unusedEvent -> PersistBarrier.markPersisted(context, event.id()))
-                .doOnError(error -> PersistBarrier.markFailed(context, event.id(), error));
+            : this.sessionService.appendEvent(sessionToPersist, event);
     return persistStep.flatMap(registeredEvent -> {
       if (onEachPersisted != null) {
         onEachPersisted.run();
@@ -972,12 +969,36 @@ public class Runner {
     });
   }
 
+  /**
+   * Emits the processed event to the caller and then releases (or fails) {@link PersistBarrier} for
+   * non-partial events, so {@code onEventCallback} and caller delivery finish before the next step
+   * or sub-agent starts. Partial events are never persisted and share their complete event's id, so
+   * they leave the barrier alone.
+   */
+  private static Flowable<Event> deliverAndMarkPersisted(
+      InvocationContext context, Event event, Single<Event> processed) {
+    if (event.partial().orElse(false)) {
+      return processed.toFlowable();
+    }
+    String eventId = event.id();
+    return processed
+        .toFlowable()
+        // Mark failed only after concatMap delivers the error and cancels active awaiters, so
+        // BaseLlmFlow does not re-emit the same error into RxJavaPlugins.onError.
+        .onErrorResumeNext(error ->
+            Flowable.<Event>error(error)
+                .doAfterTerminate(() -> PersistBarrier.markFailed(context, eventId, error)))
+        .doAfterNext(unused -> PersistBarrier.markPersisted(context, eventId, context.scheduler()));
+  }
+
   /** Runs an agent root through its own lifecycle, and any other node root through NodeRunner. */
   private static Flowable<Event> runRoot(
       InvocationContext context, Function<Event, Single<Event>> processEvent) {
     Node root = context.node().orElse(context.agent());
     if (root instanceof BaseAgent agent) {
-      return agent.runAsync(context).concatMapSingle(processEvent::apply);
+      return agent
+          .runAsync(context)
+          .concatMap(event -> deliverAndMarkPersisted(context, event, processEvent.apply(event)));
     }
     return NodeRunner.runRoot(root, context, processEvent);
   }
@@ -1789,9 +1810,12 @@ public class Runner {
                 context
                     .agent()
                     .runLive(context)
-                    .concatMapSingle(event ->
-                        processEvent(
-                            context, context.session(), /* onEachPersisted= */ null, event))))
+                    .concatMap(event ->
+                        deliverAndMarkPersisted(
+                            context,
+                            event,
+                            processEvent(
+                                context, context.session(), /* onEachPersisted= */ null, event)))))
         .concatWith(afterRun)
         .doOnCancel(() -> cancelled.set(true))
         // Live runs usually end when the caller cancels the stream. As in ADK Python,

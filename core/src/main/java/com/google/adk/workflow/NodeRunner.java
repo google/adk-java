@@ -28,6 +28,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.flows.llmflows.PersistBarrier;
 import com.google.adk.telemetry.Tracing;
 import com.google.adk.workflow.ResumeScan.Interception;
 import com.google.common.collect.ImmutableMap;
@@ -143,9 +144,10 @@ public final class NodeRunner {
    * Runs {@code node} as the root of {@code context} on the invocation's user content, passing each
    * event through {@code processEvent} in order; only {@link com.google.adk.runner.Runner} should
    * call this method. The node is asked for its next event, and its failure is signaled, only after
-   * the previous non-partial event is processed and emitted, so a failure follows the error event
-   * that reports it. If processing an event fails with an exception, the failures reported by
-   * unprocessed error events are attached to it as suppressed.
+   * the previous non-partial event is processed and emitted (also settling {@link PersistBarrier}
+   * when enabled), so a failure follows the error event that reports it. If processing an event
+   * fails with an exception, the failures reported by unprocessed error events are attached to it
+   * as suppressed.
    */
   @Experimental
   public static Flowable<Event> runRoot(
@@ -155,61 +157,69 @@ public final class NodeRunner {
     checkNotNull(node);
     checkNotNull(context);
     checkNotNull(processEvent);
-    return Flowable.defer(
-        () -> {
-          // App checks a root node's name only against the agent-name rule, which allows '.'.
-          NodeNames.validate(node.name());
-          FlowableProcessor<QueuedEvent> queue =
-              UnicastProcessor.<QueuedEvent>create().toSerialized();
-          Queue<Exception> unprocessedFailures = new ConcurrentLinkedQueue<>();
-          EventSink sink =
-              (event, nodeFailure) -> {
-                CompletableSubject processed = CompletableSubject.create();
-                if (nodeFailure != null) {
-                  unprocessedFailures.add(nodeFailure);
-                }
-                queue.onNext(new QueuedEvent(event, processed, nodeFailure));
-                return event.partial().orElse(false) ? Completable.complete() : processed;
-              };
-          Completable nodeRun =
-              builder()
-                  .node(node)
-                  .invocationContext(context)
-                  .eventSink(sink)
-                  .build()
-                  .run(context.userContent().orElse(null))
-                  .doOnSuccess(
-                      nodeContext ->
-                          nodeContext
-                              .requireNodeState()
-                              .failure()
-                              .ifPresentOrElse(queue::onError, queue::onComplete))
-                  .doOnError(queue::onError)
-                  .ignoreElement()
-                  .onErrorComplete();
-          return queue
-              .concatMap(
-                  queued ->
-                      processEvent
-                          .apply(queued.event())
-                          .doOnError(
-                              error -> {
-                                // As in Kotlin, keep the failures of unprocessed error events.
-                                if (error instanceof Exception) {
-                                  unprocessedFailures.forEach(error::addSuppressed);
-                                }
-                              })
-                          .toFlowable()
-                          // The node proceeds only after the caller receives the processed event.
-                          .doAfterNext(
-                              unused -> {
-                                if (queued.nodeFailure() != null) {
-                                  unprocessedFailures.remove(queued.nodeFailure());
-                                }
-                                queued.processed().onComplete();
-                              }))
-              .mergeWith(nodeRun);
-        });
+    return Flowable.defer(() -> {
+      // App checks a root node's name only against the agent-name rule, which allows '.'.
+      NodeNames.validate(node.name());
+      FlowableProcessor<QueuedEvent> queue = UnicastProcessor.<QueuedEvent>create().toSerialized();
+      Queue<Exception> unprocessedFailures = new ConcurrentLinkedQueue<>();
+      EventSink sink =
+          (event, nodeFailure) -> {
+            CompletableSubject processed = CompletableSubject.create();
+            if (nodeFailure != null) {
+              unprocessedFailures.add(nodeFailure);
+            }
+            queue.onNext(new QueuedEvent(event, processed, nodeFailure));
+            return event.partial().orElse(false) ? Completable.complete() : processed;
+          };
+      Completable nodeRun =
+          builder()
+              .node(node)
+              .invocationContext(context)
+              .eventSink(sink)
+              .build()
+              .run(context.userContent().orElse(null))
+              .doOnSuccess(nodeContext ->
+                  nodeContext
+                      .requireNodeState()
+                      .failure()
+                      .ifPresentOrElse(queue::onError, queue::onComplete))
+              .doOnError(queue::onError)
+              .ignoreElement()
+              .onErrorComplete();
+      return queue
+          .concatMap(queued -> {
+            Event event = queued.event();
+            boolean persistable = !event.partial().orElse(false);
+            String eventId = event.id();
+            return processEvent
+                .apply(event)
+                .doOnError(error -> {
+                  // As in Kotlin, keep the failures of unprocessed error events.
+                  if (error instanceof Exception) {
+                    unprocessedFailures.forEach(error::addSuppressed);
+                  }
+                })
+                .toFlowable()
+                .onErrorResumeNext(error ->
+                    Flowable.<Event>error(error)
+                        .doAfterTerminate(() -> {
+                          if (persistable) {
+                            PersistBarrier.markFailed(context, eventId, error);
+                          }
+                        }))
+                // The node proceeds only after the caller receives the processed event.
+                .doAfterNext(unused -> {
+                  if (queued.nodeFailure() != null) {
+                    unprocessedFailures.remove(queued.nodeFailure());
+                  }
+                  if (persistable) {
+                    PersistBarrier.markPersisted(context, eventId, context.scheduler());
+                  }
+                  queued.processed().onComplete();
+                });
+          })
+          .mergeWith(nodeRun);
+    });
   }
 
   /**

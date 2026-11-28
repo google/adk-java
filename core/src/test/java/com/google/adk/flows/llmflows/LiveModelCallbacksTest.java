@@ -592,6 +592,7 @@ public final class LiveModelCallbacksTest {
     }
     assertThat(texts.get(400)).isEqualTo("I can't help with that.");
     // Reconnect waits until the blocked turn is saved, so its history ends with that turn.
+    await(() -> testLlm.getRequests().size() == 2);
     assertThat(testLlm.getRequests()).hasSize(2);
     assertThat(Iterables.getLast(testLlm.getRequests().get(1).contents()).text())
         .isEqualTo(REPLACEMENT.text());
@@ -638,6 +639,7 @@ public final class LiveModelCallbacksTest {
     assertThat(texts.subList(10, texts.size()))
         .containsExactly("I can't help with that.", "output blocked")
         .inOrder();
+    await(() -> testLlm.getRequests().size() == 2);
     assertThat(testLlm.getRequests()).hasSize(2);
     assertThat(Iterables.getLast(testLlm.getRequests().get(1).contents()).text())
         .isEqualTo("output blocked");

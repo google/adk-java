@@ -619,8 +619,11 @@ public abstract class BaseLlmFlow implements BaseFlow {
                 logger.debug("Continuing to next step of the flow.");
                 continueFlow.set(true);
                 // Wait until the Runner has persisted this step's events so the next step's
-                // request is not built from a stale session (see PersistBarrier).
-                return PersistBarrier.awaitPersisted(invocationContext, eventList).toFlowable();
+                // request is not built from a stale session (see PersistBarrier). Restore the
+                // agent's span context so repeatUntil resubscribes to the next step inside it.
+                return PersistBarrier.awaitPersisted(invocationContext, eventList)
+                    .compose(Tracing.withContext(spanContext))
+                    .toFlowable();
               }
             }));
   }
@@ -1029,11 +1032,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
               // includes it.
               PersistBarrier.awaitPersisted(invocationContext, ImmutableList.of(event))
                   .andThen(
-                      Flowable.defer(() -> {
-                        try (Scope scope = spanContext.makeCurrent()) {
-                          return runLive(invocationContext);
-                        }
-                      })));
+                      Flowable.defer(() -> runLive(invocationContext))
+                          .compose(Tracing.withContext(spanContext))));
     }
     return events;
   }
@@ -1330,7 +1330,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
     return self.concatWith(
         PersistBarrier.awaitPersisted(context, ImmutableList.of(event))
             .andThen(
-                // Not around the barrier: andThen subscribes the target on the append's thread.
+                // Not around the barrier: andThen may subscribe the target on another thread.
                 Flowable.defer(() -> target.runAsync(context))
                     .compose(Tracing.withContext(spanContext))));
   }
